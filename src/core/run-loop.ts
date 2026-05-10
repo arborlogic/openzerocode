@@ -64,8 +64,8 @@ export function runLoop(
       }
 
       for (const call of toolCalls) {
-        const args = parseToolArgs(call.function.arguments)
-        const def = tools.find((t) => t.id === call.function.name)
+        const args = parseToolArgs(call.function.arguments ?? "{}")
+        const def = tools.find((t) => t.id === (call.function.name ?? ""))
         if (!def) {
           allMessages.push({
             role: "tool",
@@ -75,7 +75,7 @@ export function runLoop(
           continue
         }
 
-        yield* config.ask({ permission: def.id, patterns: [call.function.arguments] })
+        yield* config.ask({ permission: def.id, patterns: [call.function.arguments ?? ""] })
 
         const ctx = new Context({
           abort: config.abort,

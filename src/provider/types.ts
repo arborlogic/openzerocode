@@ -4,8 +4,9 @@ export type Role = "user" | "assistant" | "system" | "tool"
 
 export type ToolCall = {
   id: string
+  index?: number
   type: "function"
-  function: { name: string; arguments: string }
+  function: { name?: string; arguments?: string }
 }
 
 export type Message = {
