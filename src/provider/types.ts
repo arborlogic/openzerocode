@@ -1,0 +1,62 @@
+import { Effect, Context, Schema } from "effect"
+
+export type Role = "user" | "assistant" | "system"
+
+export type ToolCall = {
+  id: string
+  type: "function"
+  function: { name: string; arguments: string }
+}
+
+export type Message = {
+  role: Role
+  content?: string
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
+}
+
+export type ToolDef = {
+  type: "function"
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+export type CompletionRequest = {
+  model: string
+  messages: Message[]
+  tools?: ToolDef[]
+  stream: boolean
+  max_tokens?: number
+  temperature?: number
+}
+
+export type Usage = {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
+export type CompletionResult = {
+  id: string
+  model: string
+  message: Message
+  usage: Usage
+}
+
+export type Chunk = {
+  delta: { content?: string; reasoning_content?: string }
+  tool_calls?: ToolCall[]
+  finish_reason?: string | null
+  usage?: Usage
+}
+
+export interface Interface {
+  readonly complete: (req: CompletionRequest) => Effect.Effect<CompletionResult>
+  readonly stream: (req: CompletionRequest) => Effect.Effect<ReadableStream<Chunk>>
+  readonly models: () => Effect.Effect<string[]>
+}
+
+export class Provider extends Context.Service<Provider, Interface>()("@openzerocode/Provider") {}
