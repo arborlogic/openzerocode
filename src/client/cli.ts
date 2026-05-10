@@ -20,13 +20,22 @@ const appLayer = Layer.merge(
 const SYSTEM_PROMPT = [
   "You are openzerocode, an AI coding assistant.",
   "You have access to tools for reading, writing, searching files and running shell commands.",
+  "Use tools when the user asks you to perform actions like running commands or accessing files.",
+  "For simple conversation or questions, just respond directly without tools.",
   "Be concise and helpful.",
-  "When you need to run a shell command or access files, use the available tools.",
-  "For simple questions, just answer directly without calling tools.",
 ].join("\n")
 
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(appLayer) as any))
+}
+
+async function askYN(rl: ReturnType<typeof createInterface>, label: string): Promise<boolean> {
+  while (true) {
+    const answer = await rl.question(chalk.yellow(`  Allow ${chalk.bold(label)}? `) + chalk.dim("[Y/n] "))
+    const trimmed = answer.trim().toLowerCase()
+    if (!trimmed || trimmed === "y" || trimmed === "yes") return true
+    if (trimmed === "n" || trimmed === "no") return false
+  }
 }
 
 async function main() {
@@ -45,9 +54,11 @@ async function main() {
     const trimmed = input.trim()
     if (!trimmed) continue
     if (trimmed === "exit" || trimmed === "quit") break
-    messages = await runSession(trimmed, messages, abort.signal)
+    messages = await runSession(trimmed, messages, abort.signal, rl)
   }
+
   rl.close()
+  process.stdin.destroy?.()
 }
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
@@ -56,6 +67,7 @@ async function runSession(
   userInput: string,
   history: Message[],
   abort: AbortSignal,
+  rl: ReturnType<typeof createInterface>,
 ): Promise<Message[]> {
   const systemMessage: Message = { role: "system", content: SYSTEM_PROMPT }
   const userMessage: Message = { role: "user", content: userInput }
@@ -87,17 +99,25 @@ async function runSession(
     let collectedContent = ""
     let collectedReasoning = ""
     const accToolCalls = new Map<number, AccToolCall>()
+    let headerShown = false
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+
+      if (value.delta.reasoning_content) {
+        if (!headerShown) {
+          process.stdout.write(chalk.dim(" ─ thinking\n"))
+          headerShown = true
+        }
+        collectedReasoning += value.delta.reasoning_content
+      }
+
       if (value.delta.content) {
         process.stdout.write(value.delta.content)
         collectedContent += value.delta.content
       }
-      if (value.delta.reasoning_content) {
-        collectedReasoning += value.delta.reasoning_content
-      }
+
       for (const tc of value.tool_calls ?? []) {
         const acc: AccToolCall = accToolCalls.get(tc.index ?? 0) ?? { name: "", arguments: "" }
         if (tc.id) acc.id = tc.id
@@ -137,13 +157,21 @@ async function runSession(
       const fnArgs = call.function.arguments ?? "{}"
       const args = tryParseJSON(fnArgs)
       const def = tools.find((t) => t.id === fnName)
+
       if (!def) {
         process.stdout.write(chalk.red(`  ✗ unknown tool: ${fnName}\n`))
         allMessages.push({ role: "tool", tool_call_id: call.id, content: `Unknown tool: ${fnName}` })
         continue
       }
 
-      process.stdout.write(chalk.dim(`  ⚡ ${fnName} `))
+      const allowed = await askYN(rl, fnName)
+      if (!allowed) {
+        process.stdout.write(chalk.dim(`  └ ${fnName} ${chalk.red("denied")}\n`))
+        allMessages.push({ role: "tool", tool_call_id: call.id, content: "Permission denied" })
+        continue
+      }
+
+      process.stdout.write(chalk.dim(`  └ ${fnName} `))
 
       const ctx = new Context({
         abort, cwd: process.cwd(), root: process.cwd(),
@@ -159,9 +187,10 @@ async function runSession(
 
       process.stdout.write(chalk.green("✓\n"))
       const text = convertToolResult(result)
-      if (text.length < 200) process.stdout.write(chalk.dim(`    ${text}\n`))
+      const preview = text.length < 200 ? text : text.slice(0, 200) + chalk.dim("...")
+      process.stdout.write(chalk.dim(`    ${preview}\n`))
 
-      allMessages.push({ role: "tool", tool_call_id: call.id, content: fnName + "\n---\n" + text })
+      allMessages.push({ role: "tool", tool_call_id: call.id, content: text })
     }
     process.stdout.write("\n")
   }
