@@ -1,6 +1,6 @@
 import { Effect, Context, Schema } from "effect"
 
-export type Role = "user" | "assistant" | "system"
+export type Role = "user" | "assistant" | "system" | "tool"
 
 export type ToolCall = {
   id: string
@@ -11,6 +11,7 @@ export type ToolCall = {
 export type Message = {
   role: Role
   content?: string
+  reasoning_content?: string
   tool_calls?: ToolCall[]
   tool_call_id?: string
 }

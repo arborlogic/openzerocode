@@ -75,6 +75,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             message: {
               role: "assistant" as const,
               content: choice?.message?.content ?? undefined,
+              reasoning_content: choice?.message?.reasoning_content ?? undefined,
               tool_calls: choice?.message?.tool_calls,
             },
             usage: json.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
