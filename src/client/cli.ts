@@ -60,6 +60,24 @@ class Screen {
   private cursorCol = 0
   private scrollOffset = 0
   private inputRow = 0
+  private autoApprove = false
+  private retry429 = false
+  private enterMode: "submit" | "newline" = "submit"
+  private lastRole: "user" | "assistant" | "tool" | undefined
+  private latestStatusLine = ""
+  private palette: { open: boolean; title: string; items: string[]; selected: number; query: string } = {
+    open: false,
+    title: "",
+    items: [],
+    selected: 0,
+    query: "",
+  }
+
+  private fitLine(text: string, width: number) {
+    if (width <= 4) return text
+    if (text.length <= width) return text
+    return text.slice(0, Math.max(0, width - 1)) + "…"
+  }
 
   private statusBadge() {
     if (this.status.startsWith("thinking") || this.status.startsWith("reasoning") || this.status.startsWith("generating")) {
@@ -83,6 +101,7 @@ class Screen {
 
   setStatus(status: string) {
     this.status = status
+    this.latestStatusLine = status
     this.render()
   }
 
@@ -90,6 +109,18 @@ class Screen {
     this.cursorRow = row
     this.cursorCol = col
     this.inputRow = row
+    this.render()
+  }
+
+  setFlags(flags: { autoApprove: boolean; retry429: boolean; enterMode: "submit" | "newline" }) {
+    this.autoApprove = flags.autoApprove
+    this.retry429 = flags.retry429
+    this.enterMode = flags.enterMode
+    this.render()
+  }
+
+  setPalette(palette: { open: boolean; title: string; items: string[]; selected: number; query: string }) {
+    this.palette = palette
     this.render()
   }
 
@@ -113,15 +144,45 @@ class Screen {
   }
 
   addUser(text: string) {
-    this.append(`${chalk.bgHex("#1E2A1E").hex("#98C379")(" user ")} ${text}`)
+    this.appendRole("user", text)
   }
 
   addAssistant(text: string) {
-    this.append(`${chalk.bgHex("#1A2430").hex("#61AFEF")(" assistant ")} ${text}`)
+    this.appendRole("assistant", text)
   }
 
   addTool(text: string) {
-    this.append(`${chalk.bgHex("#2B1F31").hex("#C678DD")(" tool ")} ${text}`)
+    this.appendRole("tool", text)
+  }
+
+  private stamp() {
+    const now = new Date()
+    const hh = String(now.getHours()).padStart(2, "0")
+    const mm = String(now.getMinutes()).padStart(2, "0")
+    return `${hh}:${mm}`
+  }
+
+  private appendRole(role: "user" | "assistant" | "tool", text: string) {
+    const label = role === "user"
+      ? chalk.bgHex("#1E2A1E").hex("#98C379")(" user ")
+      : role === "assistant"
+        ? chalk.bgHex("#1A2430").hex("#61AFEF")(" assistant ")
+        : chalk.bgHex("#2B1F31").hex("#C678DD")(" tool ")
+    const lines = text.split("\n")
+    const time = chalk.hex("#7D8796")(`[${this.stamp()}]`)
+    const accent = role === "assistant" ? chalk.hex("#61AFEF")("▎") : role === "tool" ? chalk.hex("#C678DD")("▎") : " "
+    if (this.lastRole === role) {
+      for (const line of lines) this.logs.push(`${accent} ${line}`)
+      this.scrollOffset = 0
+      this.render()
+      return
+    }
+    if (this.logs.length > 0) this.logs.push("")
+    this.lastRole = role
+    this.logs.push(`${label} ${time} ${lines[0] ?? ""}`)
+    for (let i = 1; i < lines.length; i++) this.logs.push(`${accent} ${lines[i]}`)
+    this.scrollOffset = 0
+    this.render()
   }
 
   clearLogs() {
@@ -151,6 +212,8 @@ class Screen {
         text: part,
         source: idx,
         cont: sub > 0,
+        start: sub * inputWidth,
+        end: sub * inputWidth + part.length,
       })),
     )
     const input = wrapped.slice(-4)
@@ -177,20 +240,45 @@ class Screen {
     process.stdout.write(chalk.hex(border)(this.panelLine(hr.length + 2, "Response")) + "\n")
     for (let i = 0; i < response.length; i++) {
       const rowBg = i % 2 === 0 ? "#101722" : "#0F141B"
-      process.stdout.write(chalk.hex(border)("│") + chalk.bgHex(rowBg)(` ${response[i]}`) + "\n")
+      const line = this.fitLine(response[i] ?? "", cols - 6)
+      process.stdout.write(chalk.hex(border)("│") + chalk.bgHex(rowBg)(` ${line}`) + "\n")
     }
     for (let i = response.length; i < responseHeight; i++) process.stdout.write(chalk.hex(border)("│") + "\n")
     process.stdout.write(chalk.hex(border)(`└${hr}┘`) + "\n")
+    process.stdout.write(chalk.hex("#7D8796")(`latest: ${this.latestStatusLine || "idle"}`) + "\n")
     process.stdout.write(chalk.hex(border)(this.panelLine(hr.length + 2, "Input")) + "\n")
-    if (input.length === 0) process.stdout.write(chalk.hex(border)("│ ") + chalk.hex(accent)("> ") + chalk.hex(muted)("Ask anything. Empty line to submit") + "\n")
+    if (input.length === 0) process.stdout.write(chalk.hex(border)("│ ") + chalk.hex(accent)("> ") + chalk.hex(muted)("Ask anything. Enter to submit") + "\n")
     for (const line of input) {
       const isActive = line.source === this.inputRow
       const prefix = line.cont ? "  " : "> "
-      const text = isActive ? chalk.hex(title).bold(line.text) : chalk.hex("#C9D1D9")(line.text)
+      let shown = line.text
+      if (isActive && this.cursorCol >= line.start && this.cursorCol <= line.end) {
+        const local = this.cursorCol - line.start
+        shown = line.text.slice(0, local) + "▌" + line.text.slice(local)
+      }
+      const text = isActive ? chalk.hex(title).bold(shown) : chalk.hex("#C9D1D9")(shown)
       process.stdout.write(chalk.hex(border)("│ ") + chalk.hex(accent)(prefix) + text + "\n")
     }
     for (let i = input.length; i < 4; i++) process.stdout.write(chalk.hex(border)("│") + "\n")
     process.stdout.write(chalk.hex(border)(`└${hr}┘`) + "\n")
+    if (this.palette.open) {
+      const titleLine = `${this.palette.title}${this.palette.query ? `  query: ${this.palette.query}` : ""}`
+      process.stdout.write(chalk.hex("#3B4252")(`┌ ${titleLine} ${"─".repeat(Math.max(0, cols - titleLine.length - 6))}┐`) + "\n")
+      const shown = this.palette.items.slice(0, 6)
+      for (let i = 0; i < shown.length; i++) {
+        const active = i === this.palette.selected
+        const header = shown[i]?.startsWith("[ ")
+        const line = header
+          ? chalk.hex("#7D8796").bold(`  ${shown[i]}`)
+          : active
+            ? chalk.bgHex("#1F2937").hex("#E5E7EB")(`› ${shown[i]}`)
+            : chalk.hex("#A8B0BE")(`  ${shown[i]}`)
+        process.stdout.write(chalk.hex("#3B4252")("│") + ` ${this.fitLine(line, cols - 6)}` + "\n")
+      }
+      for (let i = shown.length; i < 6; i++) process.stdout.write(chalk.hex("#3B4252")("│") + "\n")
+      process.stdout.write(chalk.hex("#3B4252")(`└${"─".repeat(Math.max(10, cols - 4))}┘`) + "\n")
+      process.stdout.write(chalk.hex("#667085")("palette: ↑↓ select  Enter apply  Tab complete  Esc close") + "\n")
+    }
     process.stdout.write(
       chalk.hex(muted)(`L${this.cursorRow + 1}:C${this.cursorCol + 1}`) +
         "  " +
@@ -201,9 +289,17 @@ class Screen {
         chalk.hex(accent)("/info") +
         chalk.hex(muted)(" ") +
         chalk.hex(accent)("/exit") +
-        chalk.hex(muted)("  •  scroll PgUp/PgDn  •  submit: empty line") +
+        chalk.hex(muted)(`  •  enter:${this.enterMode}  •  scroll PgUp/PgDn  •  auto:${this.autoApprove ? "on" : "off"} retry429:${this.retry429 ? "on" : "off"}`) +
         "\n",
     )
+    process.stdout.write(chalk.hex("#667085")("keys: ↑↓ move  ←→ cursor  Enter/Ctrl+Enter/Ctrl+N based on mode  PgUp/PgDn scroll") + "\n")
+  }
+
+  formatToolOutput(text: string) {
+    const lower = text.toLowerCase()
+    if (lower.includes("error") || lower.includes("failed") || lower.includes("denied")) return chalk.hex("#E06C75")(text)
+    if (lower.includes("warning") || lower.includes("warn") || lower.includes("rate limit")) return chalk.hex("#E5C07B")(text)
+    return chalk.hex("#98C379")(text)
   }
 }
 
@@ -215,8 +311,27 @@ class InputController {
   private col = 0
   private confirm = ""
   private confirmResolve: ((v: string) => void) | undefined
+  private enterMode: "submit" | "newline"
+  private paletteOpen = false
+  private paletteTitle = ""
+  private paletteItems: string[] = []
+  private paletteSelected = 0
+  private paletteQuery = ""
+  private commands = [
+    { group: "Session", cmd: "/help", desc: "show help" },
+    { group: "Session", cmd: "/clear", desc: "clear conversation history" },
+    { group: "Session", cmd: "/info", desc: "show session info" },
+    { group: "Input", cmd: "/enter submit", desc: "Enter submits, Ctrl+N newline" },
+    { group: "Input", cmd: "/enter newline", desc: "Enter newline, Ctrl+Enter submit" },
+    { group: "App", cmd: "/exit", desc: "exit program" },
+  ]
+  private recent: string[] = []
+  private paletteFiltered: Array<{ group: string; cmd: string; desc: string }> = []
+  private paletteDisplayMap: number[] = []
+  private paletteCommandSelected = 0
 
-  constructor(private screen: Screen, private abort: AbortController) {
+  constructor(private screen: Screen, private abort: AbortController, enterMode: "submit" | "newline") {
+    this.enterMode = enterMode
     readline.emitKeypressEvents(process.stdin)
     if (process.stdin.isTTY) process.stdin.setRawMode(true)
     process.stdin.on("keypress", (str, key) => this.onKey(str, key))
@@ -224,6 +339,14 @@ class InputController {
 
   close() {
     if (process.stdin.isTTY) process.stdin.setRawMode(false)
+  }
+
+  setEnterMode(mode: "submit" | "newline") {
+    this.enterMode = mode
+  }
+
+  getEnterMode() {
+    return this.enterMode
   }
 
   readPrompt(): Promise<string> {
@@ -250,8 +373,60 @@ class InputController {
     const value = this.lines.join("\n")
     const next = this.queue.shift()
     this.mode = "idle"
+    this.closePalette()
     this.screen.setDraft([])
     next?.(value)
+  }
+
+  private updatePalette() {
+    const query = this.paletteQuery.toLowerCase()
+    const source = this.commands
+      .filter((x) => `${x.cmd} ${x.desc}`.toLowerCase().includes(query))
+      .toSorted((a, b) => {
+        const ai = this.recent.indexOf(a.cmd)
+        const bi = this.recent.indexOf(b.cmd)
+        if (ai === -1 && bi === -1) return 0
+        if (ai === -1) return 1
+        if (bi === -1) return -1
+        return ai - bi
+      })
+    this.paletteFiltered = source
+    this.paletteCommandSelected = Math.max(0, Math.min(this.paletteCommandSelected, Math.max(0, source.length - 1)))
+
+    const groups = ["Session", "Input", "App"]
+    const items: string[] = []
+    const map: number[] = []
+    let selectedDisplay = 0
+    for (const group of groups) {
+      const inGroup = source
+        .map((x, idx) => ({ x, idx }))
+        .filter((v) => v.x.group === group)
+      if (inGroup.length === 0) continue
+      items.push(`[ ${group} ]`)
+      map.push(-1)
+      for (const v of inGroup) {
+        if (v.idx === this.paletteCommandSelected) selectedDisplay = items.length
+        items.push(`${v.x.cmd}  —  ${v.x.desc}`)
+        map.push(v.idx)
+      }
+    }
+    this.paletteDisplayMap = map
+    this.screen.setPalette({
+      open: this.paletteOpen,
+      title: this.paletteTitle,
+      items,
+      selected: selectedDisplay,
+      query: this.paletteQuery,
+    })
+  }
+
+  private closePalette() {
+    this.paletteOpen = false
+    this.paletteTitle = ""
+    this.paletteItems = []
+    this.paletteSelected = 0
+    this.paletteQuery = ""
+    this.screen.setPalette({ open: false, title: "", items: [], selected: 0, query: "" })
   }
 
   private onKey(str: string, key: readline.Key) {
@@ -275,11 +450,73 @@ class InputController {
     }
     if (this.mode !== "prompt") return
 
+    if (key.ctrl && key.name === "p") {
+      this.paletteOpen = true
+      this.paletteTitle = "Command Palette"
+      this.paletteItems = []
+      this.paletteSelected = 0
+      this.paletteCommandSelected = 0
+      this.paletteQuery = ""
+      this.updatePalette()
+      return
+    }
+    if (key.name === "escape") {
+      this.closePalette()
+      return
+    }
+    if (this.paletteOpen) {
+      if (key.name === "up") {
+        this.paletteCommandSelected = Math.max(0, this.paletteCommandSelected - 1)
+        this.updatePalette()
+        return
+      }
+      if (key.name === "down") {
+        this.paletteCommandSelected = this.paletteCommandSelected + 1
+        this.updatePalette()
+        return
+      }
+      if (key.name === "backspace") {
+        this.paletteQuery = this.paletteQuery.slice(0, -1)
+        this.updatePalette()
+        return
+      }
+      if (key.name === "return") {
+        const pick = this.paletteFiltered[this.paletteCommandSelected]
+        if (pick) {
+          const cmd = pick.cmd
+          this.lines = [cmd]
+          this.row = 0
+          this.col = cmd.length
+          this.screen.setDraft(this.lines)
+          this.screen.setCursor(this.row, this.col)
+          this.recent = [cmd, ...this.recent.filter((x) => x !== cmd)].slice(0, 8)
+          this.closePalette()
+          this.submitPrompt()
+          return
+        }
+        this.closePalette()
+        return
+      }
+      if (str && !key.ctrl && !key.meta && str >= " ") {
+        this.paletteQuery += str
+        this.paletteCommandSelected = 0
+        this.updatePalette()
+        return
+      }
+    }
+
     const line = this.lines[this.row]
     if (key.name === "return") {
       const total = this.lines.join("\n").trim()
-      if (line.length === 0 && total.length > 0) {
+      const submitByEnter = this.enterMode === "submit" && !key.ctrl
+      const submitByCtrlEnter = this.enterMode === "newline" && key.ctrl
+      if ((submitByEnter || submitByCtrlEnter) && total.length > 0) {
         this.submitPrompt()
+        return
+      }
+      if (submitByEnter || submitByCtrlEnter) {
+        this.screen.setDraft(this.lines)
+        this.screen.setCursor(this.row, this.col)
         return
       }
       const head = line.slice(0, this.col)
@@ -288,6 +525,42 @@ class InputController {
       this.lines.splice(this.row + 1, 0, tail)
       this.row++
       this.col = 0
+      this.screen.setDraft(this.lines)
+      this.screen.setCursor(this.row, this.col)
+      if (this.row === 0 && this.lines[0]?.startsWith("/")) {
+        this.paletteOpen = true
+        this.paletteTitle = "Slash Commands"
+        this.paletteItems = []
+        this.paletteQuery = this.lines[0]
+        this.paletteSelected = 0
+        this.paletteCommandSelected = 0
+        this.updatePalette()
+      }
+      return
+    }
+    if (key.ctrl && key.name === "n") {
+      if (this.enterMode === "submit") {
+        const head = line.slice(0, this.col)
+        const tail = line.slice(this.col)
+        this.lines[this.row] = head
+        this.lines.splice(this.row + 1, 0, tail)
+        this.row++
+        this.col = 0
+        this.screen.setDraft(this.lines)
+        this.screen.setCursor(this.row, this.col)
+        return
+      }
+      if (this.lines.join("\n").trim().length > 0) {
+        this.submitPrompt()
+      }
+      return
+    }
+    if (key.ctrl && key.name === "m") {
+      const total = this.lines.join("\n").trim()
+      if (total.length > 0) {
+        this.submitPrompt()
+        return
+      }
       this.screen.setDraft(this.lines)
       this.screen.setCursor(this.row, this.col)
       return
@@ -362,6 +635,29 @@ class InputController {
     this.col += str.length
     this.screen.setDraft(this.lines)
     this.screen.setCursor(this.row, this.col)
+    if (key.name === "tab" && this.row === 0 && this.lines[0]?.startsWith("/")) {
+      const query = this.lines[0]
+      const matches = this.commands.filter((x) => x.cmd.startsWith(query))
+      if (matches.length === 1) {
+        const cmd = matches[0]?.cmd ?? query
+        this.lines[0] = cmd
+        this.col = cmd.length
+        this.screen.setDraft(this.lines)
+        this.screen.setCursor(this.row, this.col)
+        return
+      }
+    }
+    if (this.row === 0 && this.lines[0]?.startsWith("/")) {
+      this.paletteOpen = true
+      this.paletteTitle = "Slash Commands"
+      this.paletteItems = []
+      this.paletteQuery = this.lines[0]
+      this.paletteSelected = 0
+      this.paletteCommandSelected = 0
+      this.updatePalette()
+      return
+    }
+    if (this.paletteOpen) this.closePalette()
   }
 }
 
@@ -397,19 +693,30 @@ function delay(ms: number) {
 }
 
 function printHelp() {
-  console.log("\nCommands:")
-  console.log(`  /help  Show this help`)
-  console.log(`  /clear Clear conversation history`)
-  console.log(`  /info  Show current session info`)
-  console.log(`  /exit  Exit the program`)
-  console.log("Input:")
-  console.log("  Multi-line input is enabled. Submit with an empty line.")
+  // kept for compatibility when running outside fullscreen mode
+}
+
+function helpLines() {
+  return [
+    "Commands:",
+    "  /help   show this help",
+    "  /clear  clear conversation history",
+    "  /info   show session info",
+    "  /enter submit   Enter=submit, Ctrl+N=newline",
+    "  /enter newline  Enter=newline, Ctrl+Enter/Ctrl+N=submit",
+    "  /exit   exit program",
+    "Input:",
+    "  multi-line input enabled",
+    "  empty line to submit",
+    "  PgUp/PgDn to scroll response",
+  ]
 }
 
 async function main() {
   const abort = new AbortController()
   const screen = new Screen()
-  const input = new InputController(screen, abort)
+  const enterMode = (process.env.OPENZEROCODE_ENTER_MODE ?? "submit").toLowerCase() === "newline" ? "newline" : "submit"
+  const input = new InputController(screen, abort, enterMode)
   process.stdout.write("\x1b[?1049h")
   process.stdin.on("end", () => abort.abort())
 
@@ -417,9 +724,12 @@ async function main() {
   let historyCount = messages.length
 
   const autoApprove = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_AUTO_APPROVE ?? "").toLowerCase())
+  const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
   let autoApproved = false
+  screen.setFlags({ autoApprove, retry429, enterMode: input.getEnterMode() })
   if (autoApprove) {
     autoApproved = await input.readConfirm("Auto-approve all tool calls?")
+    screen.setFlags({ autoApprove: autoApproved, retry429, enterMode: input.getEnterMode() })
   }
 
   screen.render()
@@ -439,7 +749,21 @@ async function main() {
 
     if (trimmed.startsWith("/")) {
       switch (trimmed) {
-        case "/help": printHelp(); screen.append(chalk.dim("Use empty line to submit multi-line prompt.")); continue
+        case "/help":
+          screen.addTool("help")
+          for (const line of helpLines()) screen.append(chalk.hex("#A8B0BE")(line))
+          screen.append("")
+          continue
+        case "/enter submit":
+          input.setEnterMode("submit")
+          screen.setFlags({ autoApprove: autoApproved, retry429, enterMode: "submit" })
+          screen.addTool("enter mode: submit")
+          continue
+        case "/enter newline":
+          input.setEnterMode("newline")
+          screen.setFlags({ autoApprove: autoApproved, retry429, enterMode: "newline" })
+          screen.addTool("enter mode: newline")
+          continue
         case "/clear": messages = []; historyCount = 0; screen.clearLogs(); screen.append(chalk.dim("History cleared.")); continue
         case "/exit":
         case "/quit": input.close(); process.stdout.write("\x1b[?1049l"); return
@@ -518,14 +842,14 @@ async function runSession(
       await delay(wait)
     }
 
-    if (!stream) {
-      clearInterval(statusTimer)
-      screen.setStatus("idle")
-      screen.addTool("provider error")
-      screen.append(chalk.red(formatProviderError(lastError)))
-      screen.append("")
-      return resultHistory
-    }
+      if (!stream) {
+        clearInterval(statusTimer)
+        screen.setStatus("idle")
+        screen.addTool("provider error")
+      screen.append(screen.formatToolOutput(formatProviderError(lastError)))
+        screen.append("")
+        return resultHistory
+      }
     if (!stream) return resultHistory
 
     const reader = stream.getReader()
@@ -606,7 +930,7 @@ async function runSession(
       const def = tools.find((t) => t.id === fnName)
 
       if (!def) {
-        screen.append(chalk.red(`  ✗ unknown tool: ${fnName}`))
+        screen.append(screen.formatToolOutput(`✗ unknown tool: ${fnName}`))
         allMessages.push({ role: "tool", tool_call_id: call.id, content: `Unknown tool: ${fnName}` })
         continue
       }
@@ -614,7 +938,7 @@ async function runSession(
       if (!autoApproved) {
         const ok = await input.readConfirm(`Allow ${fnName}?`)
         if (!ok) {
-          screen.append(chalk.dim(`  └ ${fnName} ${chalk.red("denied")}`))
+          screen.append(screen.formatToolOutput(`└ ${fnName} denied`))
           allMessages.push({ role: "tool", tool_call_id: call.id, content: "Permission denied" })
           continue
         }
@@ -622,7 +946,7 @@ async function runSession(
 
       screen.setStatus(`running tool: ${fnName}`)
       screen.addTool(`${fnName} pending`)
-      screen.append(`  └ ${chalk.bold(fnName)} ${chalk.dim("running...")}`)
+      screen.append(screen.formatToolOutput(`└ ${fnName} running...`))
       const t0 = performance.now()
       const ctx = new Context({
         abort, cwd: process.cwd(), root: process.cwd(),
@@ -638,11 +962,11 @@ async function runSession(
 
       const elapsed = Math.round(performance.now() - t0)
       screen.addTool(`${fnName} complete ${elapsed}ms`)
-      screen.append(`    ${chalk.green("✓")} ${chalk.dim(`(${elapsed}ms)`)}`)
+      screen.append(screen.formatToolOutput(`✓ ${fnName} (${elapsed}ms)`))
 
       const text = convertToolResult(result)
       const preview = text.length < 300 ? text : text.slice(0, 300) + chalk.dim("...")
-      screen.append(chalk.dim(`    ${preview}`))
+      screen.append(screen.formatToolOutput(preview))
       screen.append("")
 
       allMessages.push({ role: "tool", tool_call_id: call.id, content: text })
