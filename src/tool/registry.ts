@@ -5,6 +5,8 @@ import { WriteTool } from "./write"
 import { GrepTool } from "./grep"
 import { GlobTool } from "./glob"
 import { BashTool } from "./bash"
+import { EditTool } from "./edit"
+import { WebFetchTool } from "./web-fetch"
 
 export interface Interface {
   readonly all: () => Effect.Effect<readonly Def[]>
@@ -23,6 +25,8 @@ export const layer = Layer.effect(
       yield* GrepTool,
       yield* GlobTool,
       yield* BashTool,
+      yield* EditTool,
+      yield* WebFetchTool,
     ]
     const custom: Def[] = []
 

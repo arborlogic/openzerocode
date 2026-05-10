@@ -9,10 +9,12 @@
     "noEmit": true,
     "noUncheckedIndexedAccess": false,
     "esModuleInterop": true,
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "skipLibCheck": true,
     "paths": {
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }
