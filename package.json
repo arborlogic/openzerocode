@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "start": "tsx src/client/cli.ts",
     "test": "tsx --test"
   },
   "dependencies": {
