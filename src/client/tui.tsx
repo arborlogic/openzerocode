@@ -159,7 +159,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
     case "user":
       return msg.content ? [{ kind: "user", text: msg.content }] : []
     case "tool":
-      return msg.content ? [{ kind: "tool", text: msg.content }] : []
+      return msg.content ? [{ kind: "tool", text: msg.content, title: msg.tool_call_id }] : []
     case "system":
       return msg.content ? [{ kind: "system", text: msg.content }] : []
     default:
