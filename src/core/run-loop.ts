@@ -67,12 +67,14 @@ export function runLoop(
         const args = parseToolArgs(call.function.arguments ?? "{}")
         const def = tools.find((t) => t.id === (call.function.name ?? ""))
         if (!def) {
-          allMessages.push(createToolMessage({
+          const tm = createToolMessage({
             tool_call_id: call.id,
             tool: call.function.name,
             output: `Unknown tool: ${call.function.name}`,
             error: true,
-          }))
+          })
+          allMessages.push(tm)
+          history.push(tm)
           continue
         }
 
@@ -92,11 +94,13 @@ export function runLoop(
           ),
         )
 
-        allMessages.push(createToolMessage({
+        const tm = createToolMessage({
           tool_call_id: call.id,
           tool: def.id,
           output: convertToolResult(toolResult),
-        }))
+        })
+        allMessages.push(tm)
+        history.push(tm)
       }
     }
 
