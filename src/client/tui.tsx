@@ -4,7 +4,7 @@ import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opent
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { platform } from "os"
-import { buildLayer, autoDetectProvider, PROVIDERS } from "../provider/index"
+import { buildLayer, autoDetectProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
@@ -16,12 +16,12 @@ import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSession, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
 import { getModelConfig } from "../provider/models"
 import { buildCompactionTranscript, createCompactSummaryMessage, selectCompactionTail } from "./session-compact"
 
-let currentProvider = autoDetectProvider() ?? "big-pickle"
-let currentModel = process.env.OPENZERO_MODEL ?? "big-pickle"
+let currentProvider = autoDetectProvider() ?? "openapi"
+let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 
 const SYSTEM_PROMPT = [
@@ -226,8 +226,22 @@ function App() {
   let initialMessages: Message[] = []
   let sid = getCurrentSessionId()
   if (sid) {
-    const loaded = loadSession(sid)
-    if (loaded) initialMessages = loaded
+    const loaded = loadSessionState(sid)
+    const meta = currentSessionMeta()
+    if (loaded) {
+      initialMessages = loaded.messages
+      if (loaded.provider) currentProvider = loaded.provider
+      if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
+    }
+    if (meta?.provider) currentProvider = meta.provider
+    if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
+    try {
+      rebuildLayer()
+    } catch {
+      currentProvider = autoDetectProvider() ?? "openapi"
+      currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
+      rebuildLayer()
+    }
   }
   if (!sid) {
     sid = createSession(currentModel, currentProvider).id
@@ -242,10 +256,16 @@ function App() {
   const [copyNotice, setCopyNotice] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
+  const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
+  const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
   const [sessionRevision, setSessionRevision] = createSignal(0)
+  const [selectionRevision, setSelectionRevision] = createSignal(0)
+  const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
+  const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
+  const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -288,8 +308,74 @@ function App() {
     }
   }
 
+  const providerLabel = createMemo(() => {
+    selectionRevision()
+    return currentProvider
+  })
+
+  const modelLabel = createMemo(() => {
+    selectionRevision()
+    return currentModel
+  })
+
+  const applyProviderModel = (providerId: string, model: string, persist = false) => {
+    try {
+      const nextProvider = providerId
+      const nextModel = nextProvider === "openapi" ? normalizeBigPickleModel(model) : model
+      currentLayer = Layer.merge(buildLayer(nextProvider, nextModel), toolLayer)
+      currentProvider = nextProvider
+      currentModel = nextModel
+      setSelectionRevision((value) => value + 1)
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider)
+      refreshSessions()
+      return true
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }
+
+  const loadModelsForProvider = async (providerId: string) => {
+    if (providerModels()[providerId] || providerModelsLoading() === providerId) return
+    setProviderModelsLoading(providerId)
+    setProviderModelsError((prev) => ({ ...prev, [providerId]: "" }))
+    try {
+      const layer = Layer.merge(buildLayer(providerId, currentModel), toolLayer)
+      const models = await Effect.runPromise(
+        Effect.gen(function* () {
+          const provider = yield* Provider
+          return yield* provider.models()
+        }).pipe(Effect.provide(layer)),
+      )
+      const unique = [...new Set(models)].sort((a, b) => a.localeCompare(b))
+      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [currentModel] }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setProviderModelsError((prev) => ({ ...prev, [providerId]: message }))
+    } finally {
+      setProviderModelsLoading((loading) => (loading === providerId ? null : loading))
+    }
+  }
+
+  const ensureModelsForProvider = async (providerId: string) => {
+    if (!providerModels()[providerId] && providerModelsLoading() !== providerId) {
+      await loadModelsForProvider(providerId)
+    }
+    return providerModels()[providerId] ?? []
+  }
+
+  const openModelsPalette = (providerId: string, backMode: "actions" | "providers") => {
+    setPalettePendingDelete(null)
+    setPaletteProviderTarget(providerId)
+    setPaletteModelBackMode(backMode)
+    setPaletteMode("models")
+    setPaletteIndex(0)
+    void loadModelsForProvider(providerId)
+  }
+
   const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
+    selectionRevision()
     return [
       {
         label: "INPUT",
@@ -325,6 +411,25 @@ function App() {
         label: "Compact session",
         onSelect: () => { void compactCurrentSession() },
       },
+      {
+        label: "MODEL",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Switch provider",
+        hint: providerLabel(),
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteMode("providers")
+          setPaletteIndex(0)
+        },
+      },
+      {
+        label: "Switch model",
+        hint: modelLabel(),
+        onSelect: () => openModelsPalette(providerLabel(), "actions"),
+      },
     ]
   })
 
@@ -357,8 +462,84 @@ function App() {
     return items
   })
 
+  const providerPaletteItems = createMemo<PaletteItem[]>(() => {
+    selectionRevision()
+    const seen = new Set<string>()
+    const items = Object.values(PROVIDERS).filter((provider) => {
+      if (seen.has(provider.id)) return false
+      seen.add(provider.id)
+      return true
+    }).map<PaletteItem>((provider) => ({
+      label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
+      hint: provider.id,
+      onSelect: () => openModelsPalette(provider.id, "providers"),
+    }))
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("actions")
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+      },
+    })
+    return items
+  })
+
+  const modelPaletteItems = createMemo<PaletteItem[]>(() => {
+    selectionRevision()
+    const providerId = paletteProviderTarget()
+    const loading = providerModelsLoading() === providerId
+    const error = providerModelsError()[providerId]
+    const models = providerModels()[providerId] ?? []
+    const items: PaletteItem[] = []
+
+    if (loading) {
+      items.push({ label: "Loading models...", kind: "section", onSelect: () => {} })
+    }
+
+    if (error) {
+      items.push({ label: error.slice(0, 44), kind: "section", onSelect: () => {} })
+    }
+
+    if (!loading && models.length === 0 && !error) {
+      items.push({ label: "No models available", kind: "section", onSelect: () => {} })
+    }
+
+    for (const model of models) {
+      const isCurrent = providerId === providerLabel() && model === modelLabel()
+      items.push({
+        label: `${isCurrent ? ">" : " "} ${model}`,
+        hint: providerId,
+        onSelect: () => {
+          if (!applyProviderModel(providerId, model, true)) return
+          setStatus(`provider/model -> ${providerId}/${model}`)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        const backMode = paletteModelBackMode()
+        setPaletteMode(backMode)
+        setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+      },
+    })
+    return items
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
-    paletteMode() === "sessions" ? sessionPaletteItems() : actionPaletteItems(),
+    paletteMode() === "sessions"
+      ? sessionPaletteItems()
+      : paletteMode() === "providers"
+        ? providerPaletteItems()
+        : paletteMode() === "models"
+          ? modelPaletteItems()
+          : actionPaletteItems(),
   )
 
   const blocks = createMemo(() => {
@@ -422,7 +603,7 @@ function App() {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    if (msgs.length > 0) saveSession(id, msgs, currentModel, currentProvider)
+    saveSession(id, msgs, currentModel, currentProvider)
   }
 
   const refreshSessions = () => {
@@ -432,8 +613,9 @@ function App() {
 
   const doSwitchSession = (id: string) => {
     doSaveCurrent()
-    const loaded = loadSession(id)
-    setMessages(loaded ?? [])
+    const loaded = loadSessionState(id)
+    if (loaded?.provider && loaded.model) applyProviderModel(loaded.provider, loaded.model)
+    setMessages(loaded?.messages ?? [])
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -526,9 +708,29 @@ function App() {
     if (input.startsWith("/")) {
       const ctx: CommandContext = {
         currentProvider,
-        setCurrentProvider: (id) => { currentProvider = id; rebuildLayer() },
+        setCurrentProvider: async (id) => {
+          const provider = PROVIDERS[id]
+          if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
+          const models = await ensureModelsForProvider(id)
+          const nextModel = models.includes(currentModel) ? currentModel : models[0]
+          if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
+          if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
+          return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
+        },
         currentModel,
-        setCurrentModel: (name) => { currentModel = name; rebuildLayer() },
+        setCurrentModel: async (name) => {
+          const slash = name.indexOf("/")
+          const providerId = slash > 0 ? name.slice(0, slash) : currentProvider
+          const modelId = slash > 0 ? name.slice(slash + 1) : name
+          const provider = PROVIDERS[providerId]
+          if (!provider) return { ok: false, message: `Unknown provider: ${providerId}` }
+          const models = await ensureModelsForProvider(providerId)
+          if (models.length > 0 && !models.includes(modelId)) {
+            return { ok: false, message: `Model not found for ${providerId}: ${modelId}` }
+          }
+          if (!applyProviderModel(providerId, modelId, true)) return { ok: false, message: `Failed to switch model: ${providerId}/${modelId}` }
+          return { ok: true, message: `Model switched to ${providerId}/${modelId}` }
+        },
         mode: mode(),
         setMode,
         messages,
@@ -540,14 +742,25 @@ function App() {
         switchSession: doSwitchSession,
         createNewSession: doCreateNewSession,
         currentSessionId: sessionId,
+        openProviderList: () => {
+          setShowPalette(true)
+          setPalettePendingDelete(null)
+          setPaletteMode("providers")
+          setPaletteIndex(firstSelectablePaletteIndex(providerPaletteItems()))
+        },
+        openModelList: () => {
+          setShowPalette(true)
+          openModelsPalette(currentProvider, "actions")
+        },
         openSessionList: () => {
           setShowPalette(true)
           setPalettePendingDelete(null)
           setPaletteMode("sessions")
           setPaletteIndex(0)
         },
+        refreshSessions,
       }
-      executeCommand(input, ctx)
+      await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
         setComposerText("")
         queueMicrotask(scrollBottom)
@@ -669,10 +882,14 @@ function App() {
         return
       }
       if (event.name === "escape") {
-        if (paletteMode() === "sessions") {
+        if (paletteMode() === "sessions" || paletteMode() === "providers") {
           setPalettePendingDelete(null)
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else if (paletteMode() === "models") {
+          const backMode = paletteModelBackMode()
+          setPaletteMode(backMode)
+          setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
         } else {
             setShowPalette(false)
           }
@@ -844,7 +1061,7 @@ function App() {
                 {mode() === "build" ? "Build" : "Plan"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-              <text style={{ fg: THEME.text }}>{currentModel}</text>
+              <text style={{ fg: THEME.text }}>{modelLabel()}</text>
               <Show when={running()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
               }>
@@ -866,8 +1083,8 @@ function App() {
         messages={messages}
         theme={THEME}
         width={SIDEBAR_WIDTH}
-        model={currentModel}
-        provider={currentProvider}
+        provider={providerLabel()}
+        model={modelLabel()}
         sessionTitle={sessionMeta()?.title}
       />
       </box>
@@ -905,7 +1122,15 @@ function App() {
         >
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
             <text style={{ fg: THEME.accent }}>
-              {paletteMode() === "rename" ? "Rename Session" : paletteMode() === "sessions" ? "Switch Session" : "Command Palette"}
+              {paletteMode() === "rename"
+                ? "Rename Session"
+                : paletteMode() === "sessions"
+                  ? "Switch Session"
+                  : paletteMode() === "providers"
+                    ? "Switch Provider"
+                    : paletteMode() === "models"
+                      ? `Switch Model · ${paletteProviderTarget()}`
+                      : "Command Palette"}
             </text>
             <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
           </box>
@@ -970,6 +1195,8 @@ function App() {
                 ? "Enter confirm  •  Esc cancel"
                 : paletteMode() === "sessions"
                   ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  : paletteMode() === "providers" || paletteMode() === "models"
+                    ? "↑↓ navigate  •  Enter select  •  Esc back"
                   : "↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>

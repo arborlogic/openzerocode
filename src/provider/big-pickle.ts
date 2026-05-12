@@ -3,6 +3,28 @@ import { Provider, type CompletionRequest, type CompletionResult, type Chunk } f
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 
+const ANONYMOUS_MODELS = [
+  "big-pickle",
+  "deepseek-v4-flash-free",
+  "minimax-m2.5-free",
+  "ring-2.6-1t-free",
+  "nemotron-3-super-free",
+]
+
+export function hasBigPickleApiKey() {
+  return Boolean(process.env.OPENCODE_API || process.env.OPENCODE_API_KEY)
+}
+
+export function filterBigPickleModels(models: string[]) {
+  if (hasBigPickleApiKey()) return models
+  return models.filter((model) => ANONYMOUS_MODELS.includes(model))
+}
+
+export function normalizeBigPickleModel(model: string) {
+  if (hasBigPickleApiKey()) return model
+  return ANONYMOUS_MODELS.includes(model) ? model : "big-pickle"
+}
+
 function parseSSE(text: string): { data: string; event?: string }[] {
   const messages: { data: string; event?: string }[] = []
   let event = ""
@@ -129,7 +151,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             fetch(`${baseURL}/models`, { headers: headers() })
           )
           const json = yield* Effect.promise(() => res.json()) as Effect.Effect<any>
-          return (json.data ?? []).map((m: any) => m.id) as string[]
+          return filterBigPickleModels((json.data ?? []).map((m: any) => m.id) as string[])
         }).pipe(Effect.orDie)
 
       return { complete, stream, models }
@@ -137,8 +159,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
   )
 
 export const def: ProviderDef = {
-  id: "big-pickle",
-  name: "Big Pickle",
-  env: { apiKey: "OPENCODE_API_KEY", baseURL: "OPENCODE_BASE_URL" },
+  id: "openapi",
+  name: "OpenAPI",
+  env: { apiKey: ["OPENCODE_API", "OPENCODE_API_KEY"], baseURL: "OPENCODE_BASE_URL", authOptional: true },
   factory: (cfg) => layer({ apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model }),
 }

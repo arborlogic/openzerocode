@@ -11,9 +11,9 @@ export type SlashCommandDef = {
 
 export type CommandContext = {
   currentProvider: string
-  setCurrentProvider: (id: string) => void
+  setCurrentProvider: (id: string) => Promise<{ ok: boolean; message: string }>
   currentModel: string
-  setCurrentModel: (name: string) => void
+  setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
   mode: "build" | "plan"
   setMode: (mode: "build" | "plan") => void
   messages: () => Message[]
@@ -26,32 +26,54 @@ export type CommandContext = {
   createNewSession: () => void
   currentSessionId: () => string | null
   openSessionList: () => void
+  openProviderList: () => void
+  openModelList: () => void
+  refreshSessions: () => void
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "help", description: "Show available commands" },
   { name: "clear", description: "Clear conversation history", aliases: ["new"] },
   { name: "info", description: "Show session info" },
-  { name: "model", description: "Switch model: /model <name>" },
+  { name: "provider", description: "Switch provider: /provider <id>" },
+  { name: "model", description: "Switch model: /model <name> or /model <provider>/<name>" },
   { name: "mode", description: "Switch mode: /mode build|plan" },
-  { name: "sessions", description: "List all sessions", aliases: ["s"] },
-  { name: "session", description: "Manage sessions: /session new|delete|rename" },
+  { name: "sessions", description: "Open session list", aliases: ["s"] },
+  { name: "session", description: "Manage sessions: /session new|open|delete|rename" },
   { name: "exit", description: "Exit program", aliases: ["quit"] },
 ]
 
-export function executeCommand(input: string, ctx: CommandContext): boolean {
+export async function executeCommand(input: string, ctx: CommandContext): Promise<boolean> {
   const parts = input.slice(1).trim().split(/\s+/)
   const cmd = parts[0]?.toLowerCase()
   const arg = parts.slice(1).join(" ")
   const args = parts.slice(1)
 
-  if (cmd === "model") {
-    if (arg) {
-      ctx.setCurrentModel(arg)
-      ctx.setNotices((prev) => [...prev, { kind: "tool", text: `model -> ${arg}` }])
-    } else {
-      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Current model: ${ctx.currentModel}` }])
+  if (cmd === "provider") {
+    if (!arg) {
+      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Current provider: ${ctx.currentProvider}` }])
+      return true
     }
+    if (arg === "list") {
+      ctx.openProviderList()
+      return true
+    }
+    const result = await ctx.setCurrentProvider(arg)
+    ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+    return true
+  }
+
+  if (cmd === "model") {
+    if (!arg) {
+      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Current model: ${ctx.currentModel}` }])
+      return true
+    }
+    if (arg === "list") {
+      ctx.openModelList()
+      return true
+    }
+    const result = await ctx.setCurrentModel(arg)
+    ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
     return true
   }
 
@@ -113,8 +135,13 @@ export function executeCommand(input: string, ctx: CommandContext): boolean {
     }
 
     if (sub === "delete" && args[1]) {
+      if (args[1] === ctx.currentSessionId()) {
+        ctx.setNotices((prev) => [...prev, { kind: "error", text: "Cannot delete current session." }])
+        return true
+      }
       const ok = deleteSession(args[1])
-      ctx.setNotices((prev) => [...prev, { kind: ok ? "tool" : "error", text: ok ? `Deleted session ${args[1]}` : `Session not found: ${args[1]}` }])
+      ctx.refreshSessions()
+      ctx.setNotices((prev) => [...prev, { kind: ok ? "system" : "error", text: ok ? `Deleted session ${args[1]}` : `Session not found: ${args[1]}` }])
       return true
     }
 
@@ -125,7 +152,8 @@ export function executeCommand(input: string, ctx: CommandContext): boolean {
 
     if (sub === "rename" && args[1] && args[2]) {
       updateSessionMeta(args[1], { title: args.slice(2).join(" ") })
-      ctx.setNotices((prev) => [...prev, { kind: "tool", text: `Session renamed.` }])
+      ctx.refreshSessions()
+      ctx.setNotices((prev) => [...prev, { kind: "system", text: "Session renamed." }])
       return true
     }
 

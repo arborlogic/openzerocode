@@ -147,6 +147,17 @@ export function loadSession(id: string): Message[] | null {
   }
 }
 
+export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string } | null {
+  try {
+    const path = sessionPath(id)
+    if (!existsSync(path)) return null
+    const data = JSON.parse(readFileSync(path, "utf-8"))
+    return { messages: data.messages ?? [], model: data.model, provider: data.provider }
+  } catch {
+    return null
+  }
+}
+
 export function deleteSession(id: string): boolean {
   let removed = false
 

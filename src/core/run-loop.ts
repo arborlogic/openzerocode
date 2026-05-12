@@ -6,6 +6,7 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { convertToolsToDefs, convertToolResult } from "./convert"
 
 export type LoopConfig = {
+  model: string
   systemPrompt?: string
   maxSteps?: number
   cwd: string
@@ -44,7 +45,7 @@ export function runLoop(
       const toolDefs = convertToolsToDefs(tools)
 
       const result: CompletionResult = yield* provider.complete({
-        model: "big-pickle",
+        model: config.model,
         messages: allMessages,
         tools: toolDefs.length > 0 ? toolDefs : undefined,
         stream: false,

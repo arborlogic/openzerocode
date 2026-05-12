@@ -4,12 +4,12 @@ import { Effect } from "effect"
 import { Provider } from "./types"
 import { layer } from "./big-pickle"
 
-const API_KEY = process.env.OPENCODE_API_KEY
-if (!API_KEY) throw new Error("OPENCODE_API_KEY env var required")
+const API_KEY = process.env.OPENCODE_API ?? process.env.OPENCODE_API_KEY
+if (!API_KEY) throw new Error("OPENCODE_API env var required")
 
 const testLayer = layer({ apiKey: API_KEY })
 
-describe("big-pickle provider", () => {
+describe("openapi provider", () => {
   it("models returns a list", async () => {
     const models = await Effect.runPromise(
       Effect.gen(function* () {
