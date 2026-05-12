@@ -10,13 +10,13 @@ import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message } from "../provider/types"
 import { renderMarkdown } from "./markdown"
-import { loadSession, saveSession } from "./session-state"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
+import { createSession, deleteSession, getCurrentSessionId, loadSession, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
 
 let currentProvider = autoDetectProvider() ?? "big-pickle"
 let currentModel = process.env.OPENZERO_MODEL ?? "big-pickle"
@@ -81,6 +81,10 @@ function stripAnsi(str: string) {
 function renderAssistantText(text: string) {
   const rendered = renderMarkdown(text).trim()
   return rendered || text
+}
+
+function isTransientPasteMarker(input: string) {
+  return /^\[Pasted ~.*$/.test(input.trim())
 }
 
 async function copyToClipboard(text: string) {
@@ -216,7 +220,18 @@ function App() {
   const dimensions = useTerminalDimensions()
   const sessionStart = new Date()
   const renderer = useRenderer()
-  const initialMessages = loadSession()
+
+  let initialMessages: Message[] = []
+  let sid = getCurrentSessionId()
+  if (sid) {
+    const loaded = loadSession(sid)
+    if (loaded) initialMessages = loaded
+  }
+  if (!sid) {
+    sid = createSession(currentModel, currentProvider).id
+  }
+  const [sessionId, setSessionId] = createSignal(sid)
+  const [sessionMeta, setSessionMeta] = createSignal(currentSessionMeta())
   const [messages, setMessages] = createSignal(initialMessages)
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
@@ -225,6 +240,10 @@ function App() {
   const [copyNotice, setCopyNotice] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename">("actions")
+  const [paletteInput, setPaletteInput] = createSignal("")
+  const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
+  const [sessionRevision, setSessionRevision] = createSignal(0)
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -243,15 +262,124 @@ function App() {
   let historyIndex = -1
   let historyDraft = ""
 
-  type PaletteItem = { label: string; hint?: string; onSelect: () => void }
+  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
 
-  const paletteItems = createMemo<PaletteItem[]>(() => [
-    { label: "model", hint: currentModel, onSelect: () => setShowPalette(false) },
-    { label: "provider", hint: currentProvider, onSelect: () => setShowPalette(false) },
-    { label: "mode", hint: mode(), onSelect: () => { setMode(m => m === "build" ? "plan" : "build"); setShowPalette(false) } },
-    { label: "clear session", onSelect: () => { setMessages([]); saveSession([]); setShowPalette(false) } },
-    { label: "exit", onSelect: () => { void exitApp(0) } },
-  ])
+  const isSelectablePaletteItem = (item: PaletteItem | undefined) => item?.kind !== "section"
+
+  const firstSelectablePaletteIndex = (items: PaletteItem[]) => {
+    const index = items.findIndex(isSelectablePaletteItem)
+    return index >= 0 ? index : 0
+  }
+
+  const movePaletteIndex = (delta: -1 | 1) => {
+    const items = paletteItems()
+    if (items.length === 0) return
+    let next = paletteIndex()
+    while (true) {
+      const candidate = Math.max(0, Math.min(items.length - 1, next + delta))
+      if (candidate === next) return
+      next = candidate
+      if (isSelectablePaletteItem(items[next])) {
+        setPaletteIndex(next)
+        return
+      }
+    }
+  }
+
+  const actionPaletteItems = createMemo<PaletteItem[]>(() => {
+    sessionRevision()
+    return [
+      {
+        label: "INPUT",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Focus input",
+        onSelect: () => { setShowPalette(false) },
+      },
+      {
+        label: "SESSION",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "New session",
+        onSelect: () => { doCreateNewSession(); setShowPalette(false) },
+      },
+      {
+        label: "Switch session",
+        onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setPaletteMode("sessions") },
+      },
+      {
+        label: "Rename session",
+        onSelect: () => {
+          setPaletteInput(sessionMeta()?.title ?? "")
+          setPaletteIndex(0)
+          setPaletteMode("rename")
+        },
+      },
+      {
+        label: "Share session",
+        onSelect: () => {
+          const sid = sessionId()
+          setNotices((prev) => [...prev, { kind: "system", text: `Session ID: ${sid}` }])
+          setShowPalette(false)
+          queueMicrotask(scrollBottom)
+        },
+      },
+      {
+        label: "Compact session",
+        onSelect: () => {
+          const msgs = messages()
+          if (msgs.length <= 3) {
+            setNotices((prev) => [...prev, { kind: "system", text: "Session too short to compact." }])
+            setShowPalette(false)
+            return
+          }
+          const kept = msgs.slice(0, 1).concat(msgs.slice(-Math.min(10, msgs.length - 1)))
+          setMessages(kept)
+          saveSession(sessionId(), kept, currentModel, currentProvider)
+          setNotices((prev) => [...prev, { kind: "tool", text: `Compacted: ${msgs.length} → ${kept.length} messages.` }])
+          setShowPalette(false)
+          queueMicrotask(scrollBottom)
+        },
+      },
+    ]
+  })
+
+  const sessionPaletteItems = createMemo<PaletteItem[]>(() => {
+    sessionRevision()
+    const sid = sessionId()
+    const sessions = listSessions()
+    const items: PaletteItem[] = []
+
+    for (const s of sessions) {
+      const isCurrent = s.id === sid
+      items.push({
+        label: (isCurrent ? ">" : " ") + " " + s.title.slice(0, 30),
+        hint: String(s.messageCount),
+        sessionId: s.id,
+        onSelect: () => {
+          if (!isCurrent) doSwitchSession(s.id)
+          setPalettePendingDelete(null)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => { setPalettePendingDelete(null); setPaletteMode("actions"); setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems())) },
+    })
+    return items
+  })
+
+  const paletteItems = createMemo<PaletteItem[]>(() =>
+    paletteMode() === "sessions" ? sessionPaletteItems() : actionPaletteItems(),
+  )
 
   const blocks = createMemo(() => {
     const result: DisplayBlock[] = []
@@ -311,6 +439,41 @@ function App() {
     setTimeout(() => setCopyNotice(false), 2000)
   }
 
+  const doSaveCurrent = () => {
+    const id = sessionId()
+    const msgs = messages()
+    if (msgs.length > 0) saveSession(id, msgs, currentModel, currentProvider)
+  }
+
+  const refreshSessions = () => {
+    setSessionMeta(currentSessionMeta())
+    setSessionRevision((v) => v + 1)
+  }
+
+  const doSwitchSession = (id: string) => {
+    doSaveCurrent()
+    const loaded = loadSession(id)
+    setMessages(loaded ?? [])
+    setNotices([])
+    setSessionId(id)
+    setCurrentSessionId(id)
+    refreshSessions()
+    setComposerText("")
+    setDraft("")
+  }
+
+  const doCreateNewSession = () => {
+    doSaveCurrent()
+    const meta = createSession(currentModel, currentProvider)
+    setSessionId(meta.id)
+    setSessionMeta(meta)
+    setSessionRevision((v) => v + 1)
+    setMessages([])
+    setNotices([])
+    setComposerText("")
+    setDraft("")
+  }
+
   const submit = async () => {
     if (running()) return
     if (autocompleteApi?.visible()) {
@@ -319,6 +482,10 @@ function App() {
     }
     const input = draft().trim()
     if (!input) return
+    if (isTransientPasteMarker(input)) {
+      setComposerText("")
+      return
+    }
 
     if (input.startsWith("/")) {
       const ctx: CommandContext = {
@@ -334,6 +501,15 @@ function App() {
         setNotices,
         exitApp,
         scrollBottom,
+        switchSession: doSwitchSession,
+        createNewSession: doCreateNewSession,
+        currentSessionId: sessionId,
+        openSessionList: () => {
+          setShowPalette(true)
+          setPalettePendingDelete(null)
+          setPaletteMode("sessions")
+          setPaletteIndex(0)
+        },
       }
       executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
@@ -377,7 +553,7 @@ function App() {
       })
 
       setMessages(next)
-      saveSession(next)
+      saveSession(sessionId(), next, currentModel, currentProvider)
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
@@ -395,28 +571,91 @@ function App() {
     }
     if (event.ctrl && event.name === "p") {
       setShowPalette((open) => !open)
-      setPaletteIndex(0)
+      setPalettePendingDelete(null)
+      setPaletteMode("actions")
+      setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
       event.preventDefault()
       return
     }
     if (showPalette()) {
+      if (paletteMode() === "rename") {
+        if (event.name === "escape") {
+          setPalettePendingDelete(null)
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else if (event.name === "return") {
+          const sid = sessionId()
+          updateSessionMeta(sid, { title: paletteInput() })
+          refreshSessions()
+          setShowPalette(false)
+          setPaletteMode("actions")
+        } else if (event.name === "backspace") {
+          setPaletteInput(prev => prev.slice(0, -1))
+        } else if (event.name === "space") {
+          setPaletteInput(prev => prev + " ")
+        } else if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
+          setPaletteInput(prev => prev + event.name)
+        }
+        event.preventDefault()
+        return
+      }
+      if (paletteMode() === "sessions" && event.ctrl && event.name === "d") {
+        const item = paletteItems()[paletteIndex()]
+        const targetId = item?.sessionId
+        if (!targetId) {
+          setComposerText("")
+          event.preventDefault()
+          return
+        }
+        if (targetId === sessionId()) {
+          setStatus("cannot delete current session")
+          setComposerText("")
+          event.preventDefault()
+          return
+        }
+        if (palettePendingDelete() === targetId) {
+          const ok = deleteSession(targetId)
+          setPalettePendingDelete(null)
+          if (ok) {
+            setStatus(`deleted session ${targetId}`)
+            refreshSessions()
+            const items = sessionPaletteItems()
+            setPaletteIndex(Math.min(paletteIndex(), Math.max(0, items.length - 1)))
+          }
+          setComposerText("")
+          event.preventDefault()
+          return
+        }
+        setPalettePendingDelete(targetId)
+        setStatus(`press ctrl+d again to delete ${targetId}`)
+        setComposerText("")
+        event.preventDefault()
+        return
+      }
       if (event.name === "escape") {
-        setShowPalette(false)
+        if (paletteMode() === "sessions") {
+          setPalettePendingDelete(null)
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else {
+            setShowPalette(false)
+          }
         event.preventDefault()
         return
       }
       if (event.name === "up") {
-        setPaletteIndex(i => Math.max(0, i - 1))
+        movePaletteIndex(-1)
         event.preventDefault()
         return
       }
       if (event.name === "down") {
-        setPaletteIndex(i => Math.min(paletteItems().length - 1, i + 1))
+        movePaletteIndex(1)
         event.preventDefault()
         return
       }
       if (event.name === "return") {
-        paletteItems()[paletteIndex()]?.onSelect()
+        const item = paletteItems()[paletteIndex()]
+        if (isSelectablePaletteItem(item)) item?.onSelect()
         event.preventDefault()
         return
       }
@@ -589,9 +828,11 @@ function App() {
 
       <Sidebar
         messages={messages}
-        sessionStart={sessionStart}
         theme={THEME}
         width={SIDEBAR_WIDTH}
+        model={currentModel}
+        provider={currentProvider}
+        sessionTitle={sessionMeta()?.title}
       />
       </box>
 
@@ -617,7 +858,7 @@ function App() {
       <Show when={showPalette()}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - paletteItems().length - 6) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : paletteItems().length + 6)) / 2)}
           left={Math.floor((dimensions().width - 2 - 52) / 2)}
           width={52}
           zIndex={100}
@@ -627,37 +868,74 @@ function App() {
           flexDirection="column"
         >
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-            <text style={{ fg: THEME.accent }}>Command Palette</text>
+            <text style={{ fg: THEME.accent }}>
+              {paletteMode() === "rename" ? "Rename Session" : paletteMode() === "sessions" ? "Switch Session" : "Command Palette"}
+            </text>
             <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <For each={paletteItems()}>
-              {(item, index) => (
+            {paletteMode() === "rename" ? (
+              <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
+                <text style={{ fg: THEME.muted }}>Enter new name:</text>
                 <box
-                  paddingLeft={2}
-                  paddingRight={2}
-                  paddingTop={0}
-                  paddingBottom={0}
-                  backgroundColor={index() === paletteIndex() ? THEME.accentDim : undefined}
-                  onMouseMove={() => setPaletteIndex(index())}
-                  onMouseDown={() => { setPaletteIndex(index()); item.onSelect() }}
+                  backgroundColor={THEME.background}
+                  border={["left", "right"]}
+                  borderColor={THEME.border}
+                  paddingLeft={1}
+                  paddingRight={1}
                   flexDirection="row"
-                  gap={2}
                 >
-                  <text style={{ fg: index() === paletteIndex() ? "#ffffff" : THEME.text }}>
-                    {item.label}
-                  </text>
-                  <Show when={item.hint}>
-                    <text style={{ fg: index() === paletteIndex() ? THEME.border : THEME.muted }}>
-                      {item.hint}
-                    </text>
-                  </Show>
+                  <text style={{ fg: THEME.text }}>{paletteInput()}</text>
+                  <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
-              )}
-            </For>
+              </box>
+            ) : (
+              <For each={paletteItems()}>
+                {(item, index) => (
+                  <box
+                    paddingLeft={2}
+                    paddingRight={2}
+                    paddingTop={0}
+                    paddingBottom={0}
+                    backgroundColor={item.kind !== "section"
+                      ? item.sessionId && palettePendingDelete() === item.sessionId
+                        ? "#3d1717"
+                        : index() === paletteIndex()
+                          ? THEME.accentDim
+                          : undefined
+                      : undefined}
+                    onMouseMove={() => {
+                      if (item.kind !== "section") setPaletteIndex(index())
+                    }}
+                    onMouseDown={() => {
+                      if (item.kind === "section") return
+                      setPaletteIndex(index())
+                      item.onSelect()
+                    }}
+                    flexDirection="row"
+                    gap={2}
+                  >
+                    <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
+                      {item.label}
+                    </text>
+                    <Show when={item.hint && item.kind !== "section"}>
+                      <text style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}>
+                        {item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint}
+                      </text>
+                    </Show>
+                  </box>
+                )}
+              </For>
+            )}
           </box>
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border}>
-            <text style={{ fg: THEME.muted }}>↑↓ navigate  •  Enter select  •  Esc close</text>
+            <text style={{ fg: THEME.muted }}>
+              {paletteMode() === "rename"
+                ? "Enter confirm  •  Esc cancel"
+                : paletteMode() === "sessions"
+                  ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  : "↑↓ navigate  •  Enter select  •  Esc close"}
+            </text>
           </box>
         </box>
       </Show>

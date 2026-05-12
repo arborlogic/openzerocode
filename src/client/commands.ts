@@ -1,7 +1,7 @@
 import type { Setter } from "solid-js"
 import type { DisplayBlock } from "./tui"
-import { saveSession } from "./session-state"
 import type { Message } from "../provider/types"
+import { deleteSession, updateSessionMeta } from "./sessions"
 
 export type SlashCommandDef = {
   name: string
@@ -22,9 +22,11 @@ export type CommandContext = {
   setNotices: Setter<DisplayBlock[]>
   exitApp: (code?: number) => Promise<void>
   scrollBottom: () => void
+  switchSession: (id: string) => void
+  createNewSession: () => void
+  currentSessionId: () => string | null
+  openSessionList: () => void
 }
-
-
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "help", description: "Show available commands" },
@@ -32,6 +34,8 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "info", description: "Show session info" },
   { name: "model", description: "Switch model: /model <name>" },
   { name: "mode", description: "Switch mode: /mode build|plan" },
+  { name: "sessions", description: "List all sessions", aliases: ["s"] },
+  { name: "session", description: "Manage sessions: /session new|delete|rename" },
   { name: "exit", description: "Exit program", aliases: ["quit"] },
 ]
 
@@ -39,6 +43,7 @@ export function executeCommand(input: string, ctx: CommandContext): boolean {
   const parts = input.slice(1).trim().split(/\s+/)
   const cmd = parts[0]?.toLowerCase()
   const arg = parts.slice(1).join(" ")
+  const args = parts.slice(1)
 
   if (cmd === "model") {
     if (arg) {
@@ -84,13 +89,47 @@ export function executeCommand(input: string, ctx: CommandContext): boolean {
   if (cmd === "clear" || cmd === "new") {
     ctx.setMessages([])
     ctx.setNotices([])
-    saveSession([])
     ctx.setDraft("")
     return true
   }
 
   if (cmd === "info") {
-    ctx.setNotices((prev) => [...prev, { kind: "system", text: `Messages: ${ctx.messages().length}` }])
+    const sid = ctx.currentSessionId()
+    ctx.setNotices((prev) => [...prev, { kind: "system", text: `Messages: ${ctx.messages().length}  Session: ${sid ?? "none"}` }])
+    return true
+  }
+
+  if (cmd === "sessions" || (cmd === "s" && !args[0])) {
+    ctx.openSessionList()
+    return true
+  }
+
+  if (cmd === "session") {
+    const sub = args[0]?.toLowerCase()
+
+    if (sub === "new") {
+      ctx.createNewSession()
+      return true
+    }
+
+    if (sub === "delete" && args[1]) {
+      const ok = deleteSession(args[1])
+      ctx.setNotices((prev) => [...prev, { kind: ok ? "tool" : "error", text: ok ? `Deleted session ${args[1]}` : `Session not found: ${args[1]}` }])
+      return true
+    }
+
+    if (sub === "open" && args[1]) {
+      ctx.switchSession(args[1])
+      return true
+    }
+
+    if (sub === "rename" && args[1] && args[2]) {
+      updateSessionMeta(args[1], { title: args.slice(2).join(" ") })
+      ctx.setNotices((prev) => [...prev, { kind: "tool", text: `Session renamed.` }])
+      return true
+    }
+
+    ctx.setNotices((prev) => [...prev, { kind: "error", text: "Usage: /session new|delete <id>|open <id>|rename <id> <title>" }])
     return true
   }
 

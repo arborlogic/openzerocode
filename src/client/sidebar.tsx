@@ -1,6 +1,7 @@
-import { createSignal, createEffect, For, Show } from "solid-js"
+import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
 import { execFileSync } from "node:child_process"
 import type { Message } from "../provider/types"
+import { getModelConfig, estimateTokens, estimateCost } from "../provider/models"
 
 type GitFile = {
   path: string
@@ -8,7 +9,12 @@ type GitFile = {
   deletions: number
 }
 
+let lastGitRead = 0
+
 function readGitDiff(): GitFile[] {
+  const now = Date.now()
+  if (now - lastGitRead < 2000) return []
+  lastGitRead = now
   try {
     const out = execFileSync("git", ["diff", "--numstat", "HEAD"], {
       encoding: "utf-8",
@@ -18,20 +24,31 @@ function readGitDiff(): GitFile[] {
     return out.trim().split("\n").filter(Boolean).map((line) => {
       const [add = "0", del = "0", ...rest] = line.split("\t")
       const path = rest.join("\t")
-      return {
-        path,
-        additions: parseInt(add) || 0,
-        deletions: parseInt(del) || 0,
-      }
+      return { path, additions: parseInt(add) || 0, deletions: parseInt(del) || 0 }
     })
   } catch {
     return []
   }
 }
 
+function truncatePath(path: string, maxLen: number): string {
+  if (path.length <= maxLen) return path
+  return "…" + path.slice(-(maxLen - 1))
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k"
+  return String(n)
+}
+
+function fmtCost(n: number): string {
+  if (n === 0) return "$0.00"
+  if (n < 0.01) return "$<0.01"
+  return "$" + n.toFixed(2)
+}
+
 export function Sidebar(props: {
   messages: () => Message[]
-  sessionStart: Date
   theme: {
     text: string
     muted: string
@@ -40,6 +57,9 @@ export function Sidebar(props: {
     accent: string
   }
   width: number
+  model: string
+  provider: string
+  sessionTitle?: string
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
 
@@ -48,13 +68,43 @@ export function Sidebar(props: {
     setGitFiles(readGitDiff())
   })
 
-  const sessionTime = () =>
-    props.sessionStart.toLocaleTimeString("en-US", {
-      hour12: false,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    })
+  const modelCfg = createMemo(() => getModelConfig(props.model))
+
+  const totalInputTokens = createMemo(() =>
+    estimateTokens(
+      props.messages()
+        .filter(m => m.role === "user" || m.role === "system")
+        .map(m => m.content ?? "")
+        .join("")
+    )
+  )
+
+  const totalOutputTokens = createMemo(() =>
+    estimateTokens(
+      props.messages()
+        .filter(m => m.role === "assistant")
+        .map(m => m.content ?? "")
+        .join("")
+    )
+  )
+
+  const totalTokens = createMemo(() => totalInputTokens() + totalOutputTokens())
+  const contextPercent = createMemo(() => {
+    const limit = modelCfg().contextLimit
+    if (!limit) return 0
+    return Math.round((totalTokens() / limit) * 100)
+  })
+  const sessionCost = createMemo(() => estimateCost(props.model, totalInputTokens(), totalOutputTokens()))
+
+  const totalAdditions = createMemo(() => gitFiles().reduce((sum, f) => sum + f.additions, 0))
+  const totalDeletions = createMemo(() => gitFiles().reduce((sum, f) => sum + f.deletions, 0))
+
+  const percentColor = () => {
+    const pct = contextPercent()
+    if (pct >= 90) return "#f85149"
+    if (pct >= 70) return "#d29922"
+    return props.theme.muted
+  }
 
   return (
     <scrollbox
@@ -72,32 +122,37 @@ export function Sidebar(props: {
     >
       <box flexDirection="column" gap={1}>
         <box flexDirection="column">
-          <text style={{ fg: props.theme.accent }}>Session</text>
-          <text style={{ fg: props.theme.muted }}>{sessionTime()}</text>
-          <text style={{ fg: props.theme.muted }}>{props.messages().length} messages</text>
+          <Show when={props.sessionTitle}>
+            <text style={{ fg: props.theme.accent }}>Session</text>
+            <text style={{ fg: props.theme.muted }}>{props.sessionTitle}</text>
+          </Show>
         </box>
 
         <box flexDirection="column">
           <text style={{ fg: props.theme.accent }}>Context</text>
           <text style={{ fg: props.theme.muted }}>
-            {props.messages().filter(m => m.role === "user").length} user
+            {fmtTokens(totalTokens())} / {fmtTokens(modelCfg().contextLimit)} tokens
           </text>
-          <text style={{ fg: props.theme.muted }}>
-            {props.messages().filter(m => m.role === "assistant").length} assistant
-          </text>
-          <text style={{ fg: props.theme.muted }}>
-            {props.messages().filter(m => m.role === "tool").length} tool
-          </text>
+          <Show when={contextPercent() > 0}>
+            <text style={{ fg: percentColor() }}>{contextPercent()}% used</text>
+          </Show>
+          <Show when={sessionCost() > 0}>
+            <text style={{ fg: props.theme.muted }}>{fmtCost(sessionCost())} spent</text>
+          </Show>
         </box>
 
         <Show when={gitFiles().length > 0}>
           <box flexDirection="column">
-            <text style={{ fg: props.theme.accent }}>Modified Files</text>
+            <box flexDirection="row" gap={1}>
+              <text style={{ fg: props.theme.accent }}>Modified Files</text>
+              <text style={{ fg: "#7ee787" }}>+{totalAdditions()}</text>
+              <text style={{ fg: "#f85149" }}>-{totalDeletions()}</text>
+            </box>
             <For each={gitFiles()}>
               {(file) => (
                 <box flexDirection="row" justifyContent="space-between">
                   <text style={{ fg: props.theme.muted }} wrapMode="none" flexShrink={1}>
-                    {file.path}
+                    {truncatePath(file.path, props.width - 8)}
                   </text>
                   <box flexDirection="row" flexShrink={0} gap={1}>
                     <Show when={file.additions > 0}>
