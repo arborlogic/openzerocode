@@ -59,7 +59,7 @@ const MODE_OPTIONS = [
 ]
 
 type DisplayBlock = {
-  kind: "user" | "assistant" | "reasoning" | "tool" | "error" | "system"
+  kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
   text: string
   title?: string
 }
@@ -133,14 +133,14 @@ function systemPrompt(mode: RunMode) {
 
 function messageToBlocks(msg: Message): DisplayBlock[] {
   if (msg.parts && msg.parts.length > 0) {
-    return msg.parts
-      .filter((p) => p.type !== "tool-call")
-      .map((part): DisplayBlock => {
+    return msg.parts.map((part): DisplayBlock => {
         switch (part.type) {
           case "text":
-            return { kind: "assistant", text: part.text }
+            return { kind: "assistant", text: renderAssistantText(part.text) }
           case "reasoning":
             return { kind: "reasoning", text: part.text, title: "Thinking" }
+          case "tool-call":
+            return { kind: "tool-call", text: part.input, title: part.tool }
           case "tool-result":
             return { kind: "tool", text: part.output, title: part.tool }
           default:
@@ -153,7 +153,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
     case "assistant": {
       const result: DisplayBlock[] = []
       if (msg.reasoning_content) result.push({ kind: "reasoning", text: msg.reasoning_content, title: "Thinking" })
-      if (msg.content) result.push({ kind: "assistant", text: msg.content })
+      if (msg.content) result.push({ kind: "assistant", text: renderAssistantText(msg.content) })
       return result
     }
     case "user":
@@ -459,7 +459,7 @@ function App() {
                 ? THEME.user
                 : entry.kind === "reasoning"
                   ? THEME.accent
-                : entry.kind === "tool"
+                : entry.kind === "tool" || entry.kind === "tool-call"
                   ? THEME.tool
                   : entry.kind === "error"
                     ? THEME.error
@@ -498,8 +498,8 @@ function App() {
                   }
                 >
                   <>
-                    <text style={{ fg: entry.kind === "tool" ? THEME.tool : THEME.accent }}>
-                      {entry.kind === "tool" ? "tool" : "thinking"}  {entry.title}
+                    <text style={{ fg: entry.kind === "tool" || entry.kind === "tool-call" ? THEME.tool : THEME.accent }}>
+                      {entry.kind === "tool" ? "tool" : entry.kind === "tool-call" ? "tool call" : "thinking"}  {entry.title}
                     </text>
                     <box marginTop={1} paddingLeft={1} border={["left"]} borderColor={THEME.border}>
                       <text style={{ fg: entry.kind === "reasoning" ? THEME.muted : THEME.text }}>{entry.text}</text>
