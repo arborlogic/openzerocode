@@ -2,6 +2,7 @@ import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
 import { execFileSync } from "node:child_process"
 import type { Message } from "../provider/types"
 import { getModelConfig, estimateTokens, estimateCost } from "../provider/models"
+import { isCompactSummaryMessage } from "./session-compact"
 
 type GitFile = {
   path: string
@@ -98,6 +99,7 @@ export function Sidebar(props: {
 
   const totalAdditions = createMemo(() => gitFiles().reduce((sum, f) => sum + f.additions, 0))
   const totalDeletions = createMemo(() => gitFiles().reduce((sum, f) => sum + f.deletions, 0))
+  const compacted = createMemo(() => props.messages().some(isCompactSummaryMessage))
 
   const percentColor = () => {
     const pct = contextPercent()
@@ -125,6 +127,9 @@ export function Sidebar(props: {
           <Show when={props.sessionTitle}>
             <text style={{ fg: props.theme.accent }}>Session</text>
             <text style={{ fg: props.theme.muted }}>{props.sessionTitle}</text>
+            <Show when={compacted()}>
+              <text style={{ fg: props.theme.accent }}>Compacted</text>
+            </Show>
           </Show>
         </box>
 

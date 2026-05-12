@@ -17,6 +17,8 @@ import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSession, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
+import { getModelConfig } from "../provider/models"
+import { buildCompactionTranscript, createCompactSummaryMessage, selectCompactionTail } from "./session-compact"
 
 let currentProvider = autoDetectProvider() ?? "big-pickle"
 let currentModel = process.env.OPENZERO_MODEL ?? "big-pickle"
@@ -320,30 +322,8 @@ function App() {
         },
       },
       {
-        label: "Share session",
-        onSelect: () => {
-          const sid = sessionId()
-          setNotices((prev) => [...prev, { kind: "system", text: `Session ID: ${sid}` }])
-          setShowPalette(false)
-          queueMicrotask(scrollBottom)
-        },
-      },
-      {
         label: "Compact session",
-        onSelect: () => {
-          const msgs = messages()
-          if (msgs.length <= 3) {
-            setNotices((prev) => [...prev, { kind: "system", text: "Session too short to compact." }])
-            setShowPalette(false)
-            return
-          }
-          const kept = msgs.slice(0, 1).concat(msgs.slice(-Math.min(10, msgs.length - 1)))
-          setMessages(kept)
-          saveSession(sessionId(), kept, currentModel, currentProvider)
-          setNotices((prev) => [...prev, { kind: "tool", text: `Compacted: ${msgs.length} → ${kept.length} messages.` }])
-          setShowPalette(false)
-          queueMicrotask(scrollBottom)
-        },
+        onSelect: () => { void compactCurrentSession() },
       },
     ]
   })
@@ -472,6 +452,62 @@ function App() {
     setNotices([])
     setComposerText("")
     setDraft("")
+  }
+
+  const compactCurrentSession = async () => {
+    const currentMessages = messages()
+    const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
+    if (head.length === 0) {
+      setStatus("session too short to compact")
+      return
+    }
+
+    setPalettePendingDelete(null)
+    setShowPalette(false)
+    setStatus("compacting session...")
+
+    const transcript = buildCompactionTranscript(head)
+    const prompt = [
+      "You are compacting a coding assistant session for future continuation.",
+      "Summarize only the provided history.",
+      "Produce concise bullet points.",
+      "Capture these sections when present: goals, current state, files changed, code decisions, tools used, constraints, remaining work, risks, and next steps.",
+      "For files changed, list concrete paths when available.",
+      "For tools used, mention only meaningful tool usage that affects continuation.",
+      "For remaining work, emphasize what still needs to be implemented, verified, or decided.",
+      "Do not invent facts.",
+      "Do not include filler prose.",
+    ].join("\n")
+
+    try {
+      const result = await runSync(Effect.gen(function* () {
+        const provider = yield* Provider
+        return yield* provider.complete({
+          model: currentModel,
+          stream: false,
+          max_tokens: 1200,
+          temperature: 0,
+          messages: [
+            { role: "system", content: prompt },
+            { role: "user", content: `Summarize this earlier session history for compaction:\n\n${transcript}` },
+          ],
+        })
+      }))
+
+      const summary = result.message.content?.trim()
+      if (!summary) {
+        setStatus("compaction failed")
+        return
+      }
+
+      const compacted = [createCompactSummaryMessage(summary), ...tail]
+      setMessages(compacted)
+      saveSession(sessionId(), compacted, currentModel, currentProvider)
+      refreshSessions()
+      setStatus("session compacted")
+    } catch {
+      setStatus("compaction failed")
+    }
   }
 
   const submit = async () => {
