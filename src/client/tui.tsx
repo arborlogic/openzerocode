@@ -227,6 +227,13 @@ function App() {
   const [paletteIndex, setPaletteIndex] = createSignal(0)
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
+  const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  const [spinnerFrame, setSpinnerFrame] = createSignal(0)
+  createEffect(() => {
+    if (!running()) return
+    const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
+    return () => clearInterval(id)
+  })
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
   let autocompleteApi: AutocompleteApi | undefined
@@ -563,7 +570,15 @@ function App() {
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{currentModel}</text>
-              <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
+              <Show when={running()} fallback={
+                <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
+              }>
+                <box flexDirection="row">
+                  <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
+                  <text style={{ fg: THEME.muted }}>{`${status()}  •  `}</text>
+                  <text style={{ fg: "#f85149" }}>Esc interrupt</text>
+                </box>
+              </Show>
             </box>
           </box>
         <box height={1} border={["left"]} borderColor={THEME.border}>
