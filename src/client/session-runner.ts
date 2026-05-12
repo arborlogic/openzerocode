@@ -154,7 +154,7 @@ export async function runSession(
       const def = tools.find((tool) => tool.id === name)
       if (!def) {
         ui.append("error", `unknown tool: ${name}`)
-        allMessages.push(createToolMessage({ tool_call_id: call.id, output: `Unknown tool: ${name}`, error: true }))
+        allMessages.push(createToolMessage({ tool_call_id: call.id, tool: name, output: `Unknown tool: ${name}`, error: true }))
         continue
       }
 
@@ -172,7 +172,7 @@ export async function runSession(
       const text = convertToolResult(result)
       ui.append("tool", text.trim() || "(no output)", name)
       ui.scrollBottom()
-      allMessages.push(createToolMessage({ tool_call_id: call.id, output: text }))
+      allMessages.push(createToolMessage({ tool_call_id: call.id, tool: name, output: text }))
     }
 
     ui.setStatus("thinking...")

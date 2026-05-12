@@ -39,6 +39,7 @@ export function createAssistantMessage(input: {
 
 export function createToolMessage(input: {
   tool_call_id?: string
+  tool?: string
   output: string
   error?: boolean
 }): Message {
@@ -46,6 +47,6 @@ export function createToolMessage(input: {
     role: "tool",
     tool_call_id: input.tool_call_id,
     content: input.output,
-    parts: [{ type: "tool-result", id: input.tool_call_id, output: input.output, error: input.error }],
+    parts: [{ type: "tool-result", id: input.tool_call_id, tool: input.tool, output: input.output, error: input.error }],
   }
 }

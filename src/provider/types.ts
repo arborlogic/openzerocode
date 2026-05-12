@@ -13,7 +13,7 @@ export type Part =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "tool-call"; id: string; tool: string; input: string }
-  | { type: "tool-result"; id?: string; output: string; error?: boolean }
+  | { type: "tool-result"; id?: string; tool?: string; output: string; error?: boolean }
 
 export type Message = {
   role: Role

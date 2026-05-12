@@ -69,6 +69,7 @@ export function runLoop(
         if (!def) {
           allMessages.push(createToolMessage({
             tool_call_id: call.id,
+            tool: call.function.name,
             output: `Unknown tool: ${call.function.name}`,
             error: true,
           }))
@@ -93,6 +94,7 @@ export function runLoop(
 
         allMessages.push(createToolMessage({
           tool_call_id: call.id,
+          tool: def.id,
           output: convertToolResult(toolResult),
         }))
       }
