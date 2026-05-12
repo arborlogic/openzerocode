@@ -159,6 +159,63 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
 
 const SIDEBAR_WIDTH = 34
 
+function BlockEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
+  const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
+  const [collapsed, setCollapsed] = createSignal(collapsible())
+
+  const label = () => props.entry.kind === "assistant" ? "assistant"
+    : props.entry.kind === "user" ? "you"
+    : props.entry.kind === "reasoning" ? "think"
+    : props.entry.kind === "error" ? "error"
+    : props.entry.kind === "tool" ? "tool"
+    : props.entry.kind === "tool-call" ? "call"
+    : "system"
+
+  const labelColor = () => props.entry.kind === "user" ? THEME.user
+    : props.entry.kind === "reasoning" ? THEME.accent
+    : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
+    : props.entry.kind === "error" ? THEME.error
+    : THEME.muted
+
+  const borderColor = () => props.entry.kind === "user" ? THEME.user
+    : props.entry.kind === "reasoning" ? THEME.accent
+    : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
+    : props.entry.kind === "error" ? THEME.error
+    : THEME.border
+
+  const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
+
+  return (
+    <box
+      marginTop={props.isFirst ? 0 : 1}
+      paddingLeft={2}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+      border={["left"]}
+      borderColor={borderColor()}
+    >
+      <box flexDirection="column" gap={1}>
+        <box
+          flexDirection="row"
+          gap={1}
+          onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+        >
+          <Show when={collapsible()}>
+            <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
+          </Show>
+          <text style={{ fg: labelColor() }}>
+            {label()}{props.entry.title ? ` ${props.entry.title}` : ""}
+          </text>
+        </box>
+        <Show when={!collapsed()}>
+          <text style={{ fg: textColor() }}>{props.entry.text}</text>
+        </Show>
+      </box>
+    </box>
+  )
+}
+
 function App() {
   const dimensions = useTerminalDimensions()
   const sessionStart = new Date()
@@ -460,24 +517,7 @@ function App() {
         void copySelection()
       }}
     >
-      <box flexShrink={0} flexDirection="column" backgroundColor={THEME.headerBg} border={["bottom"]} borderColor={THEME.headerBorder}>
-        <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} justifyContent="space-between" flexDirection="row">
-          <text style={{ fg: THEME.accent }}>OpenZeroCode</text>
-          <box flexDirection="row" gap={2}>
-            <text style={{ fg: THEME.muted }}>{currentModel}</text>
-            <Show when={copyNotice()}>
-              <text style={{ fg: THEME.muted }}>copied</text>
-            </Show>
-          </box>
-        </box>
-        <box paddingLeft={2} paddingRight={2} paddingBottom={1}>
-          <text style={{ fg: THEME.muted }}>
-            {status()}  •  {messages().length} messages  •  mode: {mode()}
-          </text>
-        </box>
-      </box>
-
-      <box flexDirection="row" flexGrow={1} minHeight={0}>
+<box flexDirection="row" flexGrow={1} minHeight={0}>
       <box flexDirection="column" flexGrow={1} minHeight={0}>
       <scrollbox
         ref={(node) => (scroll = node)}
@@ -485,8 +525,6 @@ function App() {
         minHeight={0}
         stickyScroll={true}
         stickyStart="bottom"
-        border={["left"]}
-        borderColor={THEME.border}
         paddingLeft={2}
         paddingRight={2}
         paddingTop={1}
@@ -494,45 +532,7 @@ function App() {
         scrollY={true}
       >
         <For each={blocks()}>
-          {(entry, index) => {
-            const label = entry.kind === "assistant" ? "assistant"
-              : entry.kind === "user" ? "you"
-              : entry.kind === "reasoning" ? "think"
-              : entry.kind === "error" ? "error"
-              : entry.kind === "tool" ? "tool"
-              : entry.kind === "tool-call" ? "call"
-              : "system"
-            const labelColor = entry.kind === "user" ? THEME.user
-              : entry.kind === "reasoning" ? THEME.accent
-              : entry.kind === "tool" || entry.kind === "tool-call" ? THEME.tool
-              : entry.kind === "error" ? THEME.error
-              : THEME.muted
-            const borderColor = entry.kind === "user" ? THEME.user
-              : entry.kind === "reasoning" ? THEME.accent
-              : entry.kind === "tool" || entry.kind === "tool-call" ? THEME.tool
-              : entry.kind === "error" ? THEME.error
-              : THEME.border
-            return (
-              <box
-                marginTop={index() === 0 ? 0 : 1}
-                paddingLeft={2}
-                paddingRight={1}
-                paddingTop={1}
-                paddingBottom={1}
-                border={["left"]}
-                borderColor={borderColor}
-              >
-                <box flexDirection="column" gap={1}>
-                  <text style={{ fg: labelColor }}>
-                    {label}{entry.title ? ` ${entry.title}` : ""}
-                  </text>
-                  <text style={{ fg: entry.kind === "reasoning" || entry.kind === "system" ? THEME.muted : THEME.text }}>
-                    {entry.text}
-                  </text>
-                </box>
-              </box>
-            )
-          }}
+          {(entry, index) => <BlockEntry entry={entry} isFirst={index() === 0} />}
         </For>
       </scrollbox>
 

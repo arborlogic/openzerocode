@@ -4,7 +4,6 @@ import type { Message } from "../provider/types"
 
 type GitFile = {
   path: string
-  name: string
   additions: number
   deletions: number
 }
@@ -21,7 +20,6 @@ function readGitDiff(): GitFile[] {
       const path = rest.join("\t")
       return {
         path,
-        name: path.split("/").pop() ?? path,
         additions: parseInt(add) || 0,
         deletions: parseInt(del) || 0,
       }
@@ -79,21 +77,34 @@ export function Sidebar(props: {
           <text style={{ fg: props.theme.muted }}>{props.messages().length} messages</text>
         </box>
 
+        <box flexDirection="column">
+          <text style={{ fg: props.theme.accent }}>Context</text>
+          <text style={{ fg: props.theme.muted }}>
+            {props.messages().filter(m => m.role === "user").length} user
+          </text>
+          <text style={{ fg: props.theme.muted }}>
+            {props.messages().filter(m => m.role === "assistant").length} assistant
+          </text>
+          <text style={{ fg: props.theme.muted }}>
+            {props.messages().filter(m => m.role === "tool").length} tool
+          </text>
+        </box>
+
         <Show when={gitFiles().length > 0}>
           <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Modified Files</text>
             <For each={gitFiles()}>
               {(file) => (
                 <box flexDirection="row" justifyContent="space-between">
-                  <text style={{ fg: props.theme.muted }} wrapMode="none" flexGrow={1}>
-                    {file.name}
+                  <text style={{ fg: props.theme.muted }} wrapMode="none" flexShrink={1}>
+                    {file.path}
                   </text>
-                  <box flexDirection="row" flexShrink={0}>
+                  <box flexDirection="row" flexShrink={0} gap={1}>
                     <Show when={file.additions > 0}>
-                      <text style={{ fg: "#7ee787" }}> +{file.additions}</text>
+                      <text style={{ fg: "#7ee787" }}>+{file.additions}</text>
                     </Show>
                     <Show when={file.deletions > 0}>
-                      <text style={{ fg: "#f85149" }}> -{file.deletions}</text>
+                      <text style={{ fg: "#f85149" }}>-{file.deletions}</text>
                     </Show>
                   </box>
                 </box>
