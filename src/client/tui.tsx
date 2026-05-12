@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { ScrollBoxRenderable, TabSelectRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
+import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { platform } from "os"
@@ -47,17 +47,13 @@ const THEME = {
   headerBorder: "#21262d",
 }
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
-const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  Wheel scrolls response only  •  PgUp/PgDn Ctrl+B/F Home/End"
+const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P palette"
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
   { name: "return", ctrl: true, action: "newline" },
   { name: "return", meta: true, action: "newline" },
   { name: "j", ctrl: true, action: "newline" },
-]
-const MODE_OPTIONS = [
-  { name: "Build", description: "Write code and use tools", value: "build" as const },
-  { name: "Plan", description: "Discuss approach without coding", value: "plan" as const },
 ]
 
 export type DisplayBlock = {
@@ -234,7 +230,6 @@ function App() {
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
   let autocompleteApi: AutocompleteApi | undefined
-  let modeTabs: TabSelectRenderable | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
   let history: string[] = []
@@ -308,10 +303,6 @@ function App() {
     setCopyNotice(true)
     setTimeout(() => setCopyNotice(false), 2000)
   }
-
-  createEffect(() => {
-    modeTabs?.setSelectedIndex(mode() === "build" ? 0 : 1)
-  })
 
   const submit = async () => {
     if (running()) return
@@ -559,28 +550,13 @@ function App() {
                 onSubmit={() => { void submit() }}
               />
             </box>
-            <box paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-              <tab_select
-                ref={(node) => {
-                  modeTabs = node
-                }}
-                options={MODE_OPTIONS}
-                showDescription={false}
-                showUnderline={true}
-                wrapSelection={false}
-                backgroundColor={THEME.surface}
-                textColor={THEME.muted}
-                focusedBackgroundColor={THEME.surface}
-                focusedTextColor={THEME.text}
-                selectedBackgroundColor={THEME.panel}
-                selectedTextColor={THEME.text}
-                selectedDescriptionColor={THEME.text}
-                onChange={(_index, option) => {
-                  const next = option?.value
-                  if (next === "build" || next === "plan") setMode(next)
-                }}
-              />
-              <text style={{ fg: THEME.muted }}>{currentModel}  •  mode: {mode()}  •  {SCROLL_HINT}</text>
+            <box paddingTop={1} paddingBottom={1} flexDirection="row">
+              <text style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}>
+                {mode() === "build" ? "Build" : "Plan"}
+              </text>
+              <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+              <text style={{ fg: THEME.text }}>{currentModel}</text>
+              <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
             </box>
           </box>
         <box height={1} border={["left"]} borderColor={THEME.border}>
