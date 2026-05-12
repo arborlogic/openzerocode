@@ -20,10 +20,27 @@ function renderInline(tokens: any[] | undefined): string {
 
 function renderCodeBlock(lang: string | undefined, code: string): string {
   const cols = process.stdout.columns || 80
-  const line = chalk.hex("#4B5563")("─".repeat(Math.min(cols - 10, 60)))
-  const header = lang ? `${chalk.hex("#4B5563")("┌")}${line} ${chalk.hex("#93A3B8")(lang)}` : `${chalk.hex("#4B5563")("┌")}${line}`
-  const footer = `${chalk.hex("#4B5563")("└")}${line}`
-  const body = code.split("\n").map((l) => chalk.hex("#4B5563")("│ ") + chalk.bgHex("#111827").hex("#E5E7EB")(l)).join("\n")
+  // width of the box (not counting ┌ and ┐); leave room for role prefix + outer indent (~6 chars)
+  const w = Math.max(24, Math.min(cols - 8, 96))
+  const border = "#30363D"
+  const langColor = "#8B949E"
+  const codeColor = "#E6EDF3"
+
+  let header: string
+  if (lang) {
+    const dashLen = Math.max(2, w - lang.length - 2)
+    header =
+      chalk.hex(border)("┌") +
+      chalk.hex(border)("─".repeat(dashLen)) +
+      " " + chalk.hex(langColor)(lang) + " " +
+      chalk.hex(border)("┐")
+  } else {
+    header = chalk.hex(border)(`┌${"─".repeat(w)}┐`)
+  }
+  const footer = chalk.hex(border)(`└${"─".repeat(w)}┘`)
+  const body = code.trimEnd().split("\n").map((l) =>
+    chalk.hex(border)("│") + " " + chalk.hex(codeColor)(l),
+  ).join("\n")
   return `\n${header}\n${body}\n${footer}\n`
 }
 
@@ -39,14 +56,11 @@ export function renderMarkdown(text: string): string {
 
       case "paragraph":
         lines.push(renderInline(t.tokens))
-        lines.push("")
         break
 
       case "heading":
         const content = renderInline(t.tokens)
-        lines.push("")
-        lines.push(t.depth <= 2 ? chalk.hex("#E6EDF3").bold.underline(content) : chalk.hex("#E6EDF3").bold(content))
-        lines.push("")
+        lines.push(t.depth <= 2 ? chalk.bold.underline(content) : chalk.bold(content))
         break
 
       case "code":
@@ -54,28 +68,23 @@ export function renderMarkdown(text: string): string {
         break
 
       case "list":
-        lines.push("")
         for (let i = 0; i < t.items.length; i++) {
           const item = t.items[i]
           const bullet = t.ordered ? `${(t.start ?? 1) + i}.` : "•"
-          lines.push(`  ${chalk.hex("#7AA2F7")(bullet)} ${renderInline(item.tokens ?? [])}`)
+          lines.push(`  ${chalk.dim(bullet)} ${renderInline(item.tokens ?? [])}`)
         }
-        lines.push("")
         break
 
       case "blockquote":
-        lines.push("")
         for (const bt of t.tokens ?? []) {
           if (bt.type === "paragraph") {
-            lines.push(chalk.hex("#7D8796")("│ ") + chalk.hex("#C9D1D9")(renderInline(bt.tokens)))
+            lines.push(chalk.dim("│ ") + renderInline(bt.tokens))
           }
         }
-        lines.push("")
         break
 
       case "hr":
-        lines.push(chalk.hex("#4B5563")("─".repeat(Math.min(56, (process.stdout.columns || 80) - 10))))
-        lines.push("")
+        lines.push(chalk.dim("─".repeat(Math.min(40, (process.stdout.columns || 80) - 10))))
         break
 
       case "table":
@@ -94,11 +103,5 @@ export function renderMarkdown(text: string): string {
     }
   }
 
-  while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
-  const normalized: string[] = []
-  for (const line of lines) {
-    if (line === "" && normalized[normalized.length - 1] === "") continue
-    normalized.push(line)
-  }
-  return normalized.join("\n")
+  return lines.join("\n")
 }

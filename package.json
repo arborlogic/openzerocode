@@ -5,10 +5,9 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "dev": "tsx watch src/client/cli.ts",
-    "start": "tsx src/client/cli.ts",
-    "start:tui": "node --import tsx --experimental-loader ./scripts/opentui-file-loader.mjs src/client/tui.tsx",
-    "start:cli": "tsx src/client/cli.ts",
+    "dev": "bun run --watch --preload @opentui/solid/preload src/client/tui.tsx",
+    "start": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
+    "start:tui": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
     "test": "tsx --test"
   },
   "dependencies": {
