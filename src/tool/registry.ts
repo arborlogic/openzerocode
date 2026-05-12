@@ -1,4 +1,4 @@
-import { Effect, Context, Layer, Schema } from "effect"
+import { Effect, Context, Layer } from "effect"
 import { Def } from "./types"
 import { ReadTool } from "./read"
 import { WriteTool } from "./write"

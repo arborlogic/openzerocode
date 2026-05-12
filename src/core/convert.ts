@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Def, Context, Result } from "../tool/tool"
+import { Def, Result } from "../tool/tool"
 import type { ToolDef } from "../provider/types"
 
 export function convertToolToDef(def: Def): ToolDef {

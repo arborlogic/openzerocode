@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { Def, Context, Result } from "./types"
+import { Def, Result } from "./types"
 import { readFile, stat } from "fs/promises"
 
 const Parameters = Schema.Struct({

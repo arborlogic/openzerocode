@@ -1,5 +1,5 @@
 import { Effect, Schema } from "effect"
-import { Def, Context, Result } from "./types"
+import { Def, Result } from "./types"
 
 const Parameters = Schema.Struct({
   url: Schema.String,

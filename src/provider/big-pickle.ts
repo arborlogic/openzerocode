@@ -1,6 +1,7 @@
 import { Effect, Layer } from "effect"
-import { Provider, type CompletionRequest, type CompletionResult, type Chunk, type ToolCall } from "./types"
+import { Provider, type CompletionRequest, type CompletionResult, type Chunk } from "./types"
 import { createAssistantMessage } from "./message-parts"
+import type { ProviderDef } from "./registry"
 
 function parseSSE(text: string): { data: string; event?: string }[] {
   const messages: { data: string; event?: string }[] = []
@@ -134,3 +135,10 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       return { complete, stream, models }
     }).pipe(Effect.orDie),
   )
+
+export const def: ProviderDef = {
+  id: "big-pickle",
+  name: "Big Pickle",
+  env: { apiKey: "OPENCODE_API_KEY", baseURL: "OPENCODE_BASE_URL" },
+  factory: (cfg) => layer({ apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model }),
+}

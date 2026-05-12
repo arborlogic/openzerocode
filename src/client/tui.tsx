@@ -1,28 +1,26 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { KeyBinding, ScrollBoxRenderable, TabSelectRenderable, TextareaRenderable } from "@opentui/core"
+import type { ScrollBoxRenderable, TabSelectRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { platform } from "os"
-import { bigPickleLayer } from "../provider/index"
+import { buildLayer, autoDetectProvider, PROVIDERS } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message } from "../provider/types"
 import { renderMarkdown } from "./markdown"
-import { loadSession, saveSession, SESSION_FILE } from "./session-state"
+import { loadSession, saveSession } from "./session-state"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
+import { SlashAutocomplete } from "./autocomplete"
+import type { AutocompleteApi } from "./autocomplete"
+import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
+import { Sidebar } from "./sidebar"
 
+let currentProvider = autoDetectProvider() ?? "big-pickle"
 let currentModel = process.env.OPENZERO_MODEL ?? "big-pickle"
-
-const appLayer = Layer.merge(
-  bigPickleLayer({
-    apiKey: process.env.OPENCODE_API_KEY ?? "",
-    model: currentModel,
-  }),
-  toolLayer,
-)
+let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 
 const SYSTEM_PROMPT = [
   "You are OpenZeroCode, an AI coding assistant.",
@@ -33,16 +31,20 @@ const SYSTEM_PROMPT = [
 ].join("\n")
 
 const THEME = {
-  background: "#101010",
-  surface: "#151515",
-  panel: "#111111",
-  border: "#2a2a2a",
-  text: "#eeeeee",
-  muted: "#8f8f8f",
+  background: "#0d1117",
+  surface: "#161b22",
+  panel: "#0d1117",
+  border: "#30363d",
+  text: "#e6edf3",
+  muted: "#8b949e",
   accent: "#58a6ff",
-  user: "#7cc7ff",
-  tool: "#bc8cff",
+  accentDim: "#1f6feb",
+  user: "#7ee787",
+  tool: "#d2a8ff",
   error: "#f85149",
+  warning: "#d29922",
+  headerBg: "#161b22",
+  headerBorder: "#21262d",
 }
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  Wheel scrolls response only  •  PgUp/PgDn Ctrl+B/F Home/End"
@@ -58,14 +60,18 @@ const MODE_OPTIONS = [
   { name: "Plan", description: "Discuss approach without coding", value: "plan" as const },
 ]
 
-type DisplayBlock = {
+export type DisplayBlock = {
   kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
   text: string
   title?: string
 }
 
+function rebuildLayer() {
+  currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
+}
+
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
-  return Effect.runPromise(effect.pipe(Effect.provide(appLayer)))
+  return Effect.runPromise(effect.pipe(Effect.provide(currentLayer)))
 }
 
 function tryParseJSON(raw: string): Record<string, unknown> {
@@ -74,22 +80,6 @@ function tryParseJSON(raw: string): Record<string, unknown> {
 
 function stripAnsi(str: string) {
   return str.replace(/\x1b\[[0-9;]*m/g, "")
-}
-
-function helpLines() {
-  return [
-    "Commands:",
-    "  /help          show this help",
-    "  /clear         clear conversation history",
-    "  /info          show session info",
-    "  /model <name>  switch model",
-    "  /mode <name>   switch build/plan mode",
-    "  /exit          exit program",
-    "Scroll:",
-    "  mouse wheel scrolls the response area only",
-    "  PgUp/PgDn scroll response",
-    "  Home/End jump to top/bottom",
-  ]
 }
 
 function renderAssistantText(text: string) {
@@ -167,27 +157,42 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
   }
 }
 
+const SIDEBAR_WIDTH = 34
+
 function App() {
   const dimensions = useTerminalDimensions()
+  const sessionStart = new Date()
   const renderer = useRenderer()
   const initialMessages = loadSession()
   const [messages, setMessages] = createSignal(initialMessages)
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
-  const [sessionCount, setSessionCount] = createSignal(initialMessages.length)
   const [mode, setMode] = createSignal<RunMode>("build")
   const [copyNotice, setCopyNotice] = createSignal(false)
+  const [showPalette, setShowPalette] = createSignal(false)
+  const [paletteIndex, setPaletteIndex] = createSignal(0)
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
+  let autocompleteApi: AutocompleteApi | undefined
   let modeTabs: TabSelectRenderable | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+
+  type PaletteItem = { label: string; hint?: string; onSelect: () => void }
+
+  const paletteItems = createMemo<PaletteItem[]>(() => [
+    { label: "model", hint: currentModel, onSelect: () => setShowPalette(false) },
+    { label: "provider", hint: currentProvider, onSelect: () => setShowPalette(false) },
+    { label: "mode", hint: mode(), onSelect: () => { setMode(m => m === "build" ? "plan" : "build"); setShowPalette(false) } },
+    { label: "clear session", onSelect: () => { setMessages([]); saveSession([]); setShowPalette(false) } },
+    { label: "exit", onSelect: () => { void exitApp(0) } },
+  ])
 
   const blocks = createMemo(() => {
     const result: DisplayBlock[] = []
@@ -257,42 +262,25 @@ function App() {
     if (!input) return
 
     if (input.startsWith("/")) {
-      if (input.startsWith("/model")) {
-        const arg = input.slice(6).trim()
-        if (arg) {
-          currentModel = arg
-          setNotices((prev) => [...prev, { kind: "tool", text: `model -> ${currentModel}` }])
-        } else {
-          setNotices((prev) => [...prev, { kind: "system", text: `Current model: ${currentModel}` }])
-        }
-      } else if (input.startsWith("/mode")) {
-        const arg = input.slice(5).trim().toLowerCase()
-        if (arg === "build" || arg === "plan") {
-          setMode(arg)
-          setNotices((prev) => [...prev, { kind: "system", text: `Mode switched to ${arg}.` }])
-        } else if (!arg) {
-          setNotices((prev) => [...prev, { kind: "system", text: `Current mode: ${mode()}` }])
-        } else {
-          setNotices((prev) => [...prev, { kind: "error", text: "Usage: /mode build|plan" }])
-        }
-      } else if (input === "/help") {
-        for (const line of helpLines()) setNotices((prev) => [...prev, { kind: "system", text: line }])
-      } else if (input === "/clear") {
-        setMessages([])
-        setNotices([])
-        setSessionCount(0)
-        saveSession([])
-        setComposerText("")
-      } else if (input === "/info") {
-        setNotices((prev) => [...prev, { kind: "system", text: `Messages: ${messages().length}, Session: ${SESSION_FILE}` }])
-      } else if (input === "/exit" || input === "/quit") {
-        await exitApp(0)
-        return
-      } else {
-        setNotices((prev) => [...prev, { kind: "error", text: `Unknown command: ${input}. Type /help` }])
+      const ctx: CommandContext = {
+        currentProvider,
+        setCurrentProvider: (id) => { currentProvider = id; rebuildLayer() },
+        currentModel,
+        setCurrentModel: (name) => { currentModel = name; rebuildLayer() },
+        mode: mode(),
+        setMode,
+        messages,
+        setMessages,
+        setDraft: setComposerText,
+        setNotices,
+        exitApp,
+        scrollBottom,
       }
-      setComposerText("")
-      queueMicrotask(scrollBottom)
+      executeCommand(input, ctx)
+      if (input !== "/exit" && input !== "/quit") {
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+      }
       return
     }
 
@@ -330,7 +318,6 @@ function App() {
       })
 
       setMessages(next)
-      setSessionCount(next.length)
       saveSession(next)
       setComposerText("")
       setStatus("waiting for input")
@@ -347,7 +334,42 @@ function App() {
       event.preventDefault()
       return
     }
+    if (event.ctrl && event.name === "p") {
+      setShowPalette((open) => !open)
+      setPaletteIndex(0)
+      event.preventDefault()
+      return
+    }
+    if (showPalette()) {
+      if (event.name === "escape") {
+        setShowPalette(false)
+        event.preventDefault()
+        return
+      }
+      if (event.name === "up") {
+        setPaletteIndex(i => Math.max(0, i - 1))
+        event.preventDefault()
+        return
+      }
+      if (event.name === "down") {
+        setPaletteIndex(i => Math.min(paletteItems().length - 1, i + 1))
+        event.preventDefault()
+        return
+      }
+      if (event.name === "return") {
+        paletteItems()[paletteIndex()]?.onSelect()
+        event.preventDefault()
+        return
+      }
+      event.preventDefault()
+      return
+    }
     if (event.name === "escape") {
+      if (autocompleteApi?.visible()) {
+        setComposerText("")
+        event.preventDefault()
+        return
+      }
       if (draft()) {
         historyIndex = -1
         historyDraft = ""
@@ -362,18 +384,37 @@ function App() {
         return
       }
     }
-    if (composer && !running() && event.name === "up" && composer.cursorOffset === 0 && history.length > 0) {
-      if (historyIndex === -1) historyDraft = composer.plainText
-      historyIndex = Math.min(historyIndex + 1, history.length - 1)
-      setComposerText(history[historyIndex] ?? "")
+    if (event.name === "tab" && autocompleteApi?.visible()) {
+      autocompleteApi.select()
       event.preventDefault()
       return
     }
-    if (composer && !running() && event.name === "down" && historyIndex >= 0 && composer.cursorOffset === composer.plainText.length) {
-      historyIndex--
-      setComposerText(historyIndex >= 0 ? (history[historyIndex] ?? "") : historyDraft)
-      event.preventDefault()
-      return
+    if (composer && !running() && event.name === "up") {
+      if (autocompleteApi?.visible()) {
+        autocompleteApi.move(-1)
+        event.preventDefault()
+        return
+      }
+      if (composer.cursorOffset === 0 && history.length > 0) {
+        if (historyIndex === -1) historyDraft = composer.plainText
+        historyIndex = Math.min(historyIndex + 1, history.length - 1)
+        setComposerText(history[historyIndex] ?? "")
+        event.preventDefault()
+        return
+      }
+    }
+    if (composer && !running() && event.name === "down") {
+      if (autocompleteApi?.visible()) {
+        autocompleteApi.move(1)
+        event.preventDefault()
+        return
+      }
+      if (historyIndex >= 0 && composer.cursorOffset === composer.plainText.length) {
+        historyIndex--
+        setComposerText(historyIndex >= 0 ? (history[historyIndex] ?? "") : historyDraft)
+        event.preventDefault()
+        return
+      }
     }
     if (!scroll) return
     if (event.name === "pageup") {
@@ -419,122 +460,105 @@ function App() {
         void copySelection()
       }}
     >
-      <box flexShrink={0} flexDirection="column" paddingTop={1} paddingBottom={1} backgroundColor={THEME.surface}>
-        <box paddingLeft={1} paddingRight={1} justifyContent="space-between" flexDirection="row">
-          <text style={{ fg: THEME.text }}>OpenZeroCode</text>
-          <Show when={copyNotice()}>
-            <text style={{ fg: THEME.muted }}>Copy</text>
-          </Show>
+      <box flexShrink={0} flexDirection="column" backgroundColor={THEME.headerBg} border={["bottom"]} borderColor={THEME.headerBorder}>
+        <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} justifyContent="space-between" flexDirection="row">
+          <text style={{ fg: THEME.accent }}>OpenZeroCode</text>
+          <box flexDirection="row" gap={2}>
+            <text style={{ fg: THEME.muted }}>{currentModel}</text>
+            <Show when={copyNotice()}>
+              <text style={{ fg: THEME.muted }}>copied</text>
+            </Show>
+          </box>
         </box>
-        <box paddingLeft={1} paddingRight={1}>
-          <text style={{ fg: THEME.muted }}>model: {currentModel}  •  status: {status()}  •  messages: {sessionCount()}</text>
+        <box paddingLeft={2} paddingRight={2} paddingBottom={1}>
+          <text style={{ fg: THEME.muted }}>
+            {status()}  •  {messages().length} messages  •  mode: {mode()}
+          </text>
         </box>
       </box>
 
+      <box flexDirection="row" flexGrow={1} minHeight={0}>
+      <box flexDirection="column" flexGrow={1} minHeight={0}>
       <scrollbox
         ref={(node) => (scroll = node)}
         flexGrow={1}
         minHeight={0}
         stickyScroll={true}
         stickyStart="bottom"
-        border={true}
+        border={["left"]}
         borderColor={THEME.border}
-        paddingLeft={1}
-        paddingRight={1}
+        paddingLeft={2}
+        paddingRight={2}
         paddingTop={1}
         paddingBottom={1}
         scrollY={true}
       >
         <For each={blocks()}>
-          {(entry, index) => (
-            <box
-              marginTop={index() === 0 ? 0 : 1}
-              paddingLeft={entry.kind === "assistant" ? 2 : 1}
-              paddingRight={1}
-              paddingTop={1}
-              paddingBottom={1}
-              backgroundColor={entry.kind === "assistant" ? THEME.background : THEME.panel}
-              border={entry.kind === "assistant" ? undefined : ["left"]}
-              borderColor={entry.kind === "user"
-                ? THEME.user
-                : entry.kind === "reasoning"
-                  ? THEME.accent
-                : entry.kind === "tool" || entry.kind === "tool-call"
-                  ? THEME.tool
-                  : entry.kind === "error"
-                    ? THEME.error
-                    : THEME.border}
-            >
-              <box flexDirection="column">
-                <Show
-                  when={entry.title}
-                  fallback={
-                    <>
-                      <text
-                        style={{
-                          fg: entry.kind === "user"
-                            ? THEME.user
-                            : entry.kind === "reasoning"
-                              ? THEME.accent
-                            : entry.kind === "assistant"
-                              ? THEME.accent
-                              : entry.kind === "error"
-                                ? THEME.error
-                                : THEME.muted,
-                        }}
-                      >
-                        {entry.kind === "assistant"
-                          ? "assistant"
-                          : entry.kind === "user"
-                            ? "you"
-                            : entry.kind === "reasoning"
-                              ? "thinking"
-                            : entry.kind === "error"
-                              ? "error"
-                              : "system"}
-                      </text>
-                      <text style={{ fg: entry.kind === "system" ? THEME.muted : THEME.text }}>{entry.text}</text>
-                    </>
-                  }
-                >
-                  <>
-                    <text style={{ fg: entry.kind === "tool" || entry.kind === "tool-call" ? THEME.tool : THEME.accent }}>
-                      {entry.kind === "tool" ? "tool" : entry.kind === "tool-call" ? "tool call" : "thinking"}  {entry.title}
-                    </text>
-                    <box marginTop={1} paddingLeft={1} border={["left"]} borderColor={THEME.border}>
-                      <text style={{ fg: entry.kind === "reasoning" ? THEME.muted : THEME.text }}>{entry.text}</text>
-                    </box>
-                  </>
-                </Show>
+          {(entry, index) => {
+            const label = entry.kind === "assistant" ? "assistant"
+              : entry.kind === "user" ? "you"
+              : entry.kind === "reasoning" ? "think"
+              : entry.kind === "error" ? "error"
+              : entry.kind === "tool" ? "tool"
+              : entry.kind === "tool-call" ? "call"
+              : "system"
+            const labelColor = entry.kind === "user" ? THEME.user
+              : entry.kind === "reasoning" ? THEME.accent
+              : entry.kind === "tool" || entry.kind === "tool-call" ? THEME.tool
+              : entry.kind === "error" ? THEME.error
+              : THEME.muted
+            const borderColor = entry.kind === "user" ? THEME.user
+              : entry.kind === "reasoning" ? THEME.accent
+              : entry.kind === "tool" || entry.kind === "tool-call" ? THEME.tool
+              : entry.kind === "error" ? THEME.error
+              : THEME.border
+            return (
+              <box
+                marginTop={index() === 0 ? 0 : 1}
+                paddingLeft={2}
+                paddingRight={1}
+                paddingTop={1}
+                paddingBottom={1}
+                border={["left"]}
+                borderColor={borderColor}
+              >
+                <box flexDirection="column" gap={1}>
+                  <text style={{ fg: labelColor }}>
+                    {label}{entry.title ? ` ${entry.title}` : ""}
+                  </text>
+                  <text style={{ fg: entry.kind === "reasoning" || entry.kind === "system" ? THEME.muted : THEME.text }}>
+                    {entry.text}
+                  </text>
+                </box>
               </box>
-            </box>
-          )}
+            )
+          }}
         </For>
       </scrollbox>
 
-      <box flexShrink={0} flexDirection="column" paddingTop={1}>
-        <box border={["left"]} borderColor={THEME.accent}>
-          <box flexDirection="column" backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
-            <textarea
-              initialValue={draft()}
-              placeholder="Ask anything..."
-              placeholderColor={THEME.muted}
-              textColor={THEME.text}
-              focusedTextColor={THEME.text}
-              focusedBackgroundColor={THEME.surface}
-              backgroundColor={THEME.surface}
-              cursorColor={THEME.text}
-              keyBindings={PROMPT_KEY_BINDINGS}
-              minHeight={1}
-              maxHeight={6}
-              width="100%"
-              focused={true}
-              ref={(node) => {
-                composer = node
-              }}
-              onContentChange={() => setDraft(composer?.plainText ?? "")}
-              onSubmit={() => { void submit() }}
-            />
+      <box flexShrink={0} flexDirection="column" border={["left"]} borderColor={THEME.border}>
+        <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
+            <box flexDirection="column">
+              <textarea
+                placeholder="Ask anything..."
+                placeholderColor={THEME.muted}
+                textColor={THEME.text}
+                focusedTextColor={THEME.text}
+                focusedBackgroundColor={THEME.surface}
+                backgroundColor={THEME.surface}
+                cursorColor={THEME.text}
+                keyBindings={PROMPT_KEY_BINDINGS}
+                minHeight={1}
+                maxHeight={6}
+                width="100%"
+                focused={!showPalette()}
+                ref={(node) => {
+                  composer = node
+                }}
+                onContentChange={() => setDraft(composer?.plainText ?? "")}
+                onSubmit={() => { void submit() }}
+              />
+            </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
               <tab_select
                 ref={(node) => {
@@ -559,11 +583,87 @@ function App() {
               <text style={{ fg: THEME.muted }}>{currentModel}  •  mode: {mode()}  •  {SCROLL_HINT}</text>
             </box>
           </box>
-        </box>
-        <box height={1} border={["left"]} borderColor={THEME.accent}>
+        <box height={1} border={["left"]} borderColor={THEME.border}>
           <box width="100%" border={["bottom"]} borderColor={THEME.surface} />
         </box>
       </box>
+      </box>
+
+      <Sidebar
+        messages={messages}
+        sessionStart={sessionStart}
+        theme={THEME}
+        width={SIDEBAR_WIDTH}
+      />
+      </box>
+
+      <SlashAutocomplete
+        commands={BUILTIN_COMMANDS}
+        draft={draft}
+        ref={(api) => { autocompleteApi = api }}
+        onCommand={(name) => {
+          const noArgs = new Set(["help", "clear", "info", "exit", "quit"])
+          if (noArgs.has(name)) {
+            setComposerText("/" + name)
+            queueMicrotask(() => { void submit() })
+          } else {
+            setComposerText("/" + name + " ")
+          }
+        }}
+        onHide={() => {}}
+        bottom={8}
+        left={3}
+        width={dimensions().width - 8}
+      />
+
+      <Show when={showPalette()}>
+        <box
+          position="absolute"
+          top={Math.floor((dimensions().height - paletteItems().length - 6) / 2)}
+          left={Math.floor((dimensions().width - 2 - 52) / 2)}
+          width={52}
+          zIndex={100}
+          backgroundColor={THEME.surface}
+          border={["top", "left", "right", "bottom"]}
+          borderColor={THEME.accent}
+          flexDirection="column"
+        >
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
+            <text style={{ fg: THEME.accent }}>Command Palette</text>
+            <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
+          </box>
+          <box border={["top"]} borderColor={THEME.border} flexDirection="column">
+            <For each={paletteItems()}>
+              {(item, index) => (
+                <box
+                  paddingLeft={2}
+                  paddingRight={2}
+                  paddingTop={0}
+                  paddingBottom={0}
+                  backgroundColor={index() === paletteIndex() ? THEME.accentDim : undefined}
+                  onMouseMove={() => setPaletteIndex(index())}
+                  onMouseDown={() => { setPaletteIndex(index()); item.onSelect() }}
+                  flexDirection="row"
+                  gap={2}
+                >
+                  <text style={{ fg: index() === paletteIndex() ? "#ffffff" : THEME.text }}>
+                    {item.label}
+                  </text>
+                  <Show when={item.hint}>
+                    <text style={{ fg: index() === paletteIndex() ? THEME.border : THEME.muted }}>
+                      {item.hint}
+                    </text>
+                  </Show>
+                </box>
+              )}
+            </For>
+          </box>
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border}>
+            <text style={{ fg: THEME.muted }}>↑↓ navigate  •  Enter select  •  Esc close</text>
+          </box>
+        </box>
+      </Show>
+
     </box>
   )
 }

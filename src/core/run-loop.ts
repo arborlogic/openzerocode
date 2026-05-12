@@ -1,7 +1,7 @@
 import { Effect } from "effect"
-import { Def, Context, Result } from "../tool/tool"
+import { Context, Result } from "../tool/tool"
 import { ToolRegistry } from "../tool/registry"
-import { Provider, type Message, type ToolCall, type CompletionResult } from "../provider/types"
+import { Provider, type Message, type CompletionResult } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { convertToolsToDefs, convertToolResult } from "./convert"
 
