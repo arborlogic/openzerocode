@@ -142,7 +142,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
           case "tool-call":
             return { kind: "tool-call", text: part.input, title: part.tool }
           case "tool-result":
-            return { kind: "tool", text: part.output, title: part.tool }
+            return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool }
           default:
             return { kind: "system", text: "" }
         }
