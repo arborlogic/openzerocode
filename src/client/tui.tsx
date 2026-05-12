@@ -3,18 +3,17 @@ import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentu
 import type { KeyBinding, ScrollBoxRenderable, TabSelectRenderable, TextareaRenderable } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
-import { join } from "path"
-import { homedir, platform } from "os"
+import { platform } from "os"
 import { bigPickleLayer } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
-import type { Message, ToolCall } from "../provider/types"
-import { Context, Result } from "../tool/tool"
-import { convertToolsToDefs, convertToolResult } from "../core/convert"
-import { delay, formatProviderError, isRateLimitError } from "./errors"
+import type { Message } from "../provider/types"
 import { renderMarkdown } from "./markdown"
+import type { LogEntry } from "./log-entry"
+import { initialLogs, loadSession, saveSession, SESSION_FILE } from "./session-state"
+import { createStreamState } from "./stream-state"
+import { runSession, type RunMode } from "./session-runner"
 
 let currentModel = process.env.OPENZERO_MODEL ?? "big-pickle"
 
@@ -34,8 +33,6 @@ const SYSTEM_PROMPT = [
   "Be concise and helpful.",
 ].join("\n")
 
-const SESSION_DIR = join(homedir(), ".openzerocode", "sessions")
-const SESSION_FILE = join(SESSION_DIR, "last.json")
 const THEME = {
   background: "#101010",
   surface: "#151515",
@@ -61,62 +58,6 @@ const MODE_OPTIONS = [
   { name: "Build", description: "Write code and use tools", value: "build" as const },
   { name: "Plan", description: "Discuss approach without coding", value: "plan" as const },
 ]
-
-type LogEntry = {
-  role: "system" | "user" | "assistant" | "tool" | "error" | "reasoning"
-  text: string
-  title?: string
-}
-
-type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
-type RunMode = "build" | "plan"
-
-function ensureSessionDir() {
-  if (!existsSync(SESSION_DIR)) mkdirSync(SESSION_DIR, { recursive: true })
-}
-
-function saveSession(messages: Message[]) {
-  ensureSessionDir()
-  writeFileSync(SESSION_FILE, JSON.stringify({ messages, updatedAt: Date.now() }), "utf-8")
-}
-
-function sanitizeMessages(messages: Message[]): Message[] {
-  const out: Message[] = []
-  let i = 0
-  while (i < messages.length) {
-    const msg = messages[i]
-    if (msg?.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
-      const requiredIds = new Set(msg.tool_calls.map((tc) => tc.id))
-      const toolMsgs: Message[] = []
-      let j = i + 1
-      while (j < messages.length && messages[j]?.role === "tool") {
-        toolMsgs.push(messages[j]!)
-        j++
-      }
-      const foundIds = new Set(toolMsgs.map((m) => m.tool_call_id).filter(Boolean))
-      if ([...requiredIds].every((id) => foundIds.has(id))) {
-        out.push(msg)
-        for (const tm of toolMsgs) out.push(tm)
-      }
-      i = j
-      continue
-    }
-    if (msg) out.push(msg)
-    i++
-  }
-  return out
-}
-
-function loadSession(): Message[] {
-  try {
-    if (!existsSync(SESSION_FILE)) return []
-    const data = readFileSync(SESSION_FILE, "utf-8")
-    const raw: Message[] = JSON.parse(data).messages ?? []
-    return sanitizeMessages(raw)
-  } catch {
-    return []
-  }
-}
 
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(appLayer)))
@@ -162,13 +103,6 @@ function renderAssistantText(text: string) {
   return rendered || text
 }
 
-function initialLogs(messages: Message[]) {
-  if (messages.length > 0) {
-    return [{ role: "system", text: `Resumed session with ${messages.length} message(s). /clear to reset.` } satisfies LogEntry]
-  }
-  return [{ role: "system", text: EMPTY_STATE_MESSAGE } satisfies LogEntry]
-}
-
 async function copyToClipboard(text: string) {
   if (!text) return
   if (process.stdout.isTTY) {
@@ -207,7 +141,7 @@ function App() {
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
   const initialMessages = loadSession()
-  const [logs, setLogs] = createSignal<LogEntry[]>(initialLogs(initialMessages))
+  const [logs, setLogs] = createSignal<LogEntry[]>(initialLogs(initialMessages, EMPTY_STATE_MESSAGE))
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [messages, setMessages] = createSignal(initialMessages)
@@ -223,109 +157,17 @@ function App() {
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
-  let reasoningStreamIndex: number | undefined
-  let streamingIndex: number | undefined
 
   const append = (role: LogEntry["role"], text: string, title?: string) => {
     appendLogEntry(setLogs, role, text, title)
   }
 
-  const streamReasoningChunk = (text: string) => {
-    setLogs((prev) => {
-      if (reasoningStreamIndex === undefined) {
-        const insertAt = streamingIndex !== undefined ? streamingIndex : prev.length
-        const next = [...prev]
-        next.splice(insertAt, 0, { role: "reasoning", text, title: "Thinking" } satisfies LogEntry)
-        reasoningStreamIndex = insertAt
-        if (streamingIndex !== undefined && streamingIndex >= insertAt) {
-          streamingIndex += 1
-        }
-        return next
-      }
-
-      const next = [...prev]
-      const current = next[reasoningStreamIndex]
-      if (!current) return prev
-      next[reasoningStreamIndex] = { ...current, text: current.text + text }
-      return next
-    })
-  }
-
-  const finalizeReasoningStream = (text: string) => {
-    const finalText = stripAnsi(text).trim()
-    setLogs((prev) => {
-      if (reasoningStreamIndex === undefined) {
-        if (!finalText) return prev
-        const insertAt = streamingIndex !== undefined ? streamingIndex : prev.length
-        const next = [...prev]
-        next.splice(insertAt, 0, { role: "reasoning", text: finalText, title: "Thinking" })
-        if (streamingIndex !== undefined && streamingIndex >= insertAt) {
-          streamingIndex += 1
-        }
-        return next
-      }
-
-      const next = [...prev]
-      if (!finalText) {
-        next.splice(reasoningStreamIndex, 1)
-        if (streamingIndex !== undefined && streamingIndex > reasoningStreamIndex) {
-          streamingIndex -= 1
-        }
-        reasoningStreamIndex = undefined
-        return next
-      }
-
-      const current = next[reasoningStreamIndex]
-      if (!current) {
-        reasoningStreamIndex = undefined
-        return prev
-      }
-
-      next[reasoningStreamIndex] = { ...current, text: finalText, title: "Thinking" }
-      reasoningStreamIndex = undefined
-      return next
-    })
-  }
-
-  const streamAssistantChunk = (text: string) => {
-    setLogs((prev) => {
-      if (streamingIndex === undefined) {
-        const insertAt = reasoningStreamIndex !== undefined ? reasoningStreamIndex + 1 : prev.length
-        const next = [...prev]
-        next.splice(insertAt, 0, { role: "assistant", text })
-        streamingIndex = insertAt
-        return next
-      }
-      const next = [...prev]
-      const current = next[streamingIndex]
-      if (!current) return prev
-      next[streamingIndex] = { ...current, text: current.text + text }
-      return next
-    })
-  }
-
-  const finalizeAssistantStream = (text: string) => {
-    const finalText = renderAssistantText(text)
-    setLogs((prev) => {
-      if (streamingIndex === undefined) {
-        return finalText ? [...prev, { role: "assistant", text: finalText }] : prev
-      }
-      const next = [...prev]
-      if (!finalText) {
-        next.splice(streamingIndex, 1)
-        streamingIndex = undefined
-        return next
-      }
-      const current = next[streamingIndex]
-      if (!current) {
-        streamingIndex = undefined
-        return prev
-      }
-      next[streamingIndex] = { ...current, text: finalText }
-      streamingIndex = undefined
-      return next
-    })
-  }
+  const {
+    streamReasoningChunk,
+    finalizeReasoningStream,
+    streamAssistantChunk,
+    finalizeAssistantStream,
+  } = createStreamState(setLogs, renderAssistantText, stripAnsi)
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
 
@@ -431,6 +273,10 @@ function App() {
         scrollBottom,
         model: currentModel,
         mode: mode(),
+      }, {
+        runSync,
+        systemPrompt,
+        parseJson: tryParseJSON,
       })
 
       setMessages(next)
@@ -670,167 +516,6 @@ function App() {
       </box>
     </box>
   )
-}
-
-async function runSession(
-  userInput: string,
-  history: Message[],
-  ui: {
-    abort: AbortSignal
-    append: (role: LogEntry["role"], text: string, title?: string) => void
-    streamReasoningChunk: (text: string) => void
-    finalizeReasoningStream: (text: string) => void
-    streamAssistantChunk: (text: string) => void
-    finalizeAssistantStream: (text: string) => void
-    setStatus: (text: string) => void
-    scrollBottom: () => void
-    model: string
-    mode: RunMode
-  },
-): Promise<Message[]> {
-  const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
-  const retrySchedule = [2000, 5000, 10000]
-  const systemMessage: Message = { role: "system", content: systemPrompt(ui.mode) }
-  const userMessage: Message = { role: "user", content: userInput }
-  const allMessages: Message[] = [systemMessage, ...history, userMessage]
-  const resultHistory: Message[] = [...history, userMessage]
-
-  for (let step = 0; step < 50; step++) {
-    const tools = await runSync(Effect.gen(function* () {
-      const r = yield* ToolRegistry
-      return yield* r.all()
-    }))
-    const toolDefs = ui.mode === "plan" ? [] : convertToolsToDefs(tools)
-    ui.setStatus("thinking...")
-    let stream: ReadableStream<any> | undefined
-    let lastError: unknown
-
-    for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
-      stream = await runSync(Effect.gen(function* () {
-        const p = yield* Provider
-        return yield* p.stream({
-          model: ui.model,
-          messages: allMessages,
-          tools: toolDefs.length > 0 ? toolDefs : undefined,
-          stream: true,
-        })
-      })).catch((error) => {
-        lastError = error
-        return undefined
-      })
-      if (stream) break
-      if (!retry429 || !isRateLimitError(lastError) || attempt >= retrySchedule.length) break
-      const wait = retrySchedule[attempt]
-      ui.setStatus(`rate limited, retry in ${Math.round(wait / 1000)}s...`)
-      ui.append("tool", `rate limited, retrying in ${Math.round(wait / 1000)}s`)
-      await delay(wait)
-    }
-
-    if (!stream) {
-      ui.setStatus("waiting for input")
-      ui.append("error", formatProviderError(lastError))
-      return resultHistory
-    }
-
-    let content = ""
-    let reasoning = ""
-    const acc = new Map<number, AccToolCall>()
-    const reader = stream.getReader()
-    while (true) {
-      if (ui.abort.aborted) break
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value.delta.content) {
-        content += value.delta.content
-        ui.streamAssistantChunk(value.delta.content)
-        ui.setStatus("generating...")
-        ui.scrollBottom()
-      }
-      if (value.delta.reasoning_content) {
-        reasoning += value.delta.reasoning_content
-        ui.streamReasoningChunk(value.delta.reasoning_content)
-        ui.setStatus("reasoning...")
-        ui.scrollBottom()
-      }
-      for (const tc of value.tool_calls ?? []) {
-        const next = acc.get(tc.index ?? 0) ?? { name: "", arguments: "" }
-        if (tc.id) next.id = tc.id
-        if (tc.function?.name) next.name = tc.function.name
-        if (tc.function?.arguments) next.arguments += tc.function.arguments
-        if (tc.index !== undefined) next.index = tc.index
-        acc.set(tc.index ?? 0, next)
-      }
-    }
-
-    ui.finalizeReasoningStream(reasoning)
-    ui.finalizeAssistantStream(content)
-
-    if (ui.abort.aborted) {
-      ui.setStatus("waiting for input")
-      return resultHistory
-    }
-
-    const toolCalls: ToolCall[] | undefined = acc.size > 0
-      ? [...acc.values()].map((a) => ({
-          id: a.id ?? `call_${a.index ?? 0}`,
-          type: "function" as const,
-          function: { name: a.name, arguments: a.arguments },
-        }))
-      : undefined
-
-    const assistantMessage: Message = {
-      role: "assistant",
-      content: content || undefined,
-      reasoning_content: reasoning || undefined,
-      tool_calls: toolCalls,
-    }
-    allMessages.push(assistantMessage)
-    resultHistory.push(assistantMessage)
-
-    if (!toolCalls) {
-      ui.setStatus("waiting for input")
-      return resultHistory
-    }
-
-    if (ui.abort.aborted) {
-      ui.setStatus("waiting for input")
-      return resultHistory
-    }
-
-    for (const call of toolCalls) {
-      if (ui.abort.aborted) {
-        ui.setStatus("waiting for input")
-        return resultHistory
-      }
-      const name = call.function.name ?? "unknown"
-      const def = tools.find((tool) => tool.id === name)
-      if (!def) {
-        ui.append("error", `unknown tool: ${name}`)
-        allMessages.push({ role: "tool", tool_call_id: call.id, content: `Unknown tool: ${name}` })
-        continue
-      }
-
-      ui.setStatus(`running tool: ${name}`)
-      const result = await Effect.runPromise(
-        def.execute(tryParseJSON(call.function.arguments ?? "{}"), new Context({
-          abort: ui.abort,
-          cwd: process.cwd(),
-          root: process.cwd(),
-          ask: () => Effect.void,
-          metadata: () => Effect.void,
-        })).pipe(Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` })))),
-      )
-
-      const text = convertToolResult(result)
-      ui.append("tool", text.trim() || "(no output)", name)
-      ui.scrollBottom()
-      allMessages.push({ role: "tool", tool_call_id: call.id, content: text })
-    }
-
-    ui.setStatus("thinking...")
-  }
-
-  return resultHistory
 }
 
 render(() => <App />).catch((error) => {

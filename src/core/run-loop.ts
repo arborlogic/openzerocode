@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { Def, Context, Result } from "../tool/tool"
 import { ToolRegistry } from "../tool/registry"
 import { Provider, type Message, type ToolCall, type CompletionResult } from "../provider/types"
+import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { convertToolsToDefs, convertToolResult } from "./convert"
 
 export type LoopConfig = {
@@ -50,12 +51,11 @@ export function runLoop(
       })
 
       const toolCalls = result.message.tool_calls
-      const reply: Message = {
-        role: "assistant",
+      const reply: Message = createAssistantMessage({
         content: result.message.content ?? undefined,
         reasoning_content: result.message.reasoning_content ?? undefined,
         tool_calls: toolCalls,
-      }
+      })
       allMessages.push(reply)
       history.push(reply)
 
@@ -67,11 +67,11 @@ export function runLoop(
         const args = parseToolArgs(call.function.arguments ?? "{}")
         const def = tools.find((t) => t.id === (call.function.name ?? ""))
         if (!def) {
-          allMessages.push({
-            role: "tool",
+          allMessages.push(createToolMessage({
             tool_call_id: call.id,
-            content: `Unknown tool: ${call.function.name}`,
-          })
+            output: `Unknown tool: ${call.function.name}`,
+            error: true,
+          }))
           continue
         }
 
@@ -91,11 +91,10 @@ export function runLoop(
           ),
         )
 
-        allMessages.push({
-          role: "tool",
+        allMessages.push(createToolMessage({
           tool_call_id: call.id,
-          content: convertToolResult(toolResult),
-        })
+          output: convertToolResult(toolResult),
+        }))
       }
     }
 

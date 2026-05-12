@@ -1,5 +1,6 @@
 import { Effect, Layer } from "effect"
 import { Provider, type CompletionRequest, type CompletionResult, type Chunk, type ToolCall } from "./types"
+import { createAssistantMessage } from "./message-parts"
 
 function parseSSE(text: string): { data: string; event?: string }[] {
   const messages: { data: string; event?: string }[] = []
@@ -72,12 +73,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
           return {
             id: json.id,
             model: json.model,
-            message: {
-              role: "assistant" as const,
+            message: createAssistantMessage({
               content: choice?.message?.content ?? undefined,
               reasoning_content: choice?.message?.reasoning_content ?? undefined,
               tool_calls: choice?.message?.tool_calls,
-            },
+            }),
             usage: json.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
           } satisfies CompletionResult
         }).pipe(Effect.orDie)
