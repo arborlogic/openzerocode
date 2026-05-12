@@ -306,6 +306,10 @@ function App() {
 
   const submit = async () => {
     if (running()) return
+    if (autocompleteApi?.visible()) {
+      autocompleteApi.select()
+      return
+    }
     const input = draft().trim()
     if (!input) return
 
@@ -511,7 +515,10 @@ function App() {
 <box flexDirection="row" flexGrow={1} minHeight={0}>
       <box flexDirection="column" flexGrow={1} minHeight={0}>
       <scrollbox
-        ref={(node) => (scroll = node)}
+        ref={(node) => {
+          scroll = node
+          node.verticalScrollBar.visible = false
+        }}
         flexGrow={1}
         minHeight={0}
         stickyScroll={true}
