@@ -64,6 +64,12 @@ export type DisplayBlock = {
   title?: string
 }
 
+type DisplayTurn = {
+  user?: DisplayBlock
+  entries: DisplayBlock[]
+  footer?: string
+}
+
 function rebuildLayer() {
   currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 }
@@ -161,9 +167,14 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
 
 const SIDEBAR_WIDTH = 34
 
-function BlockEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
+function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(collapsible())
+  const showHeader = () => props.entry.kind === "reasoning"
+    || props.entry.kind === "tool-call"
+    || props.entry.kind === "tool"
+    || props.entry.kind === "error"
+    || !!props.entry.title
 
   const label = () => props.entry.kind === "assistant" ? "assistant"
     : props.entry.kind === "user" ? "you"
@@ -187,10 +198,18 @@ function BlockEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
 
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
+  if (props.entry.kind === "assistant" || props.entry.kind === "system") {
+    return (
+      <box marginTop={props.isFirst ? 0 : 1}>
+        <text style={{ fg: textColor() }}>{props.entry.text}</text>
+      </box>
+    )
+  }
+
   return (
     <box
       marginTop={props.isFirst ? 0 : 1}
-      paddingLeft={2}
+      paddingLeft={1}
       paddingRight={1}
       paddingTop={1}
       paddingBottom={1}
@@ -198,22 +217,64 @@ function BlockEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
       borderColor={borderColor()}
     >
       <box flexDirection="column" gap={1}>
-        <box
-          flexDirection="row"
-          gap={1}
-          onMouseDown={() => collapsible() && setCollapsed(c => !c)}
-        >
-          <Show when={collapsible()}>
-            <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
-          </Show>
-          <text style={{ fg: labelColor() }}>
-            {label()}{props.entry.title ? ` ${props.entry.title}` : ""}
-          </text>
-        </box>
+        <Show when={showHeader()}>
+          <box
+            flexDirection="row"
+            gap={1}
+            onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+          >
+            <Show when={collapsible()}>
+              <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
+            </Show>
+            <text style={{ fg: labelColor() }}>
+              {label()}{props.entry.title ? ` ${props.entry.title}` : ""}
+            </text>
+          </box>
+        </Show>
         <Show when={!collapsed()}>
           <text style={{ fg: textColor() }}>{props.entry.text}</text>
         </Show>
       </box>
+    </box>
+  )
+}
+
+function TurnEntry(props: { turn: DisplayTurn; isFirst: boolean }) {
+  return (
+    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1}>
+      <Show when={props.turn.user}>
+        <box
+          paddingLeft={2}
+          paddingRight={1}
+          paddingTop={1}
+          paddingBottom={1}
+          border={["left"]}
+          borderColor={THEME.user}
+        >
+          <text style={{ fg: THEME.text }}>{props.turn.user?.text ?? ""}</text>
+        </box>
+      </Show>
+
+      <Show when={props.turn.entries.length > 0}>
+        <box
+          flexDirection="column"
+          paddingLeft={2}
+          paddingRight={1}
+          paddingTop={1}
+          paddingBottom={1}
+          border={["left"]}
+          borderColor={THEME.accentDim}
+        >
+          <For each={props.turn.entries}>
+            {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
+          </For>
+          <Show when={props.turn.footer}>
+            <box marginTop={1}>
+              <text style={{ fg: THEME.muted }}>{props.turn.footer}</text>
+            </box>
+          </Show>
+        </box>
+      </Show>
     </box>
   )
 }
@@ -542,28 +603,66 @@ function App() {
           : actionPaletteItems(),
   )
 
-  const blocks = createMemo(() => {
-    const result: DisplayBlock[] = []
+  const turns = createMemo(() => {
+    selectionRevision()
+    const result: DisplayTurn[] = []
+    const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
+
+    const ensureTurn = () => {
+      const existing = result[result.length - 1]
+      if (existing) return existing
+      const created: DisplayTurn = { entries: [] }
+      result.push(created)
+      return created
+    }
+
     for (const msg of messages()) {
-      result.push(...messageToBlocks(msg))
+      if (msg.role === "user" && msg.content) {
+        result.push({
+          user: { kind: "user", text: msg.content },
+          entries: [],
+        })
+        continue
+      }
+
+      const entries = messageToBlocks(msg)
+      if (entries.length === 0) continue
+      ensureTurn().entries.push(...entries)
     }
+
     for (const n of notices()) {
-      result.push(n)
+      result.push({ entries: [n] })
     }
+
     if (running()) {
+      const turn = ensureTurn()
       for (const part of streamState.parts()) {
         if (part.type === "reasoning") {
           const text = stripAnsi(part.text).trim()
-          if (text) result.push({ kind: "reasoning", text, title: "Thinking" })
+          if (text) turn.entries.push({ kind: "reasoning", text, title: "Thinking" })
         } else if (part.type === "text") {
           const rendered = renderAssistantText(part.text)
-          result.push({ kind: "assistant", text: rendered })
+          turn.entries.push({ kind: "assistant", text: rendered })
         }
       }
     }
-    if (result.length === 0) {
-      result.push({ kind: "system", text: EMPTY_STATE_MESSAGE })
+
+    for (const turn of result) {
+      if (turn.entries.some((entry) =>
+        entry.kind === "assistant"
+        || entry.kind === "reasoning"
+        || entry.kind === "tool"
+        || entry.kind === "tool-call"
+        || entry.kind === "error",
+      )) {
+        turn.footer = assistantFooter()
+      }
     }
+
+    if (result.length === 0) {
+      result.push({ entries: [{ kind: "system", text: EMPTY_STATE_MESSAGE }] })
+    }
+
     return result
   })
 
@@ -1028,8 +1127,8 @@ function App() {
         paddingBottom={1}
         scrollY={true}
       >
-        <For each={blocks()}>
-          {(entry, index) => <BlockEntry entry={entry} isFirst={index() === 0} />}
+        <For each={turns()}>
+          {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
         </For>
       </scrollbox>
 

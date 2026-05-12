@@ -9,13 +9,18 @@
 - Active client entry: `src/client/tui.tsx`
 - Runtime: Bun with `@opentui/solid/preload`
 - Old readline client files已移除，不再是 active code path
-- Session persistence 目前只存 `~/.openzerocode/sessions/last.json`
-- Provider 目前仍以 `bigPickleLayer` 為單一入口
-- Message model 仍為扁平結構：
+- Session persistence 已是 multi-session 結構：
+  - `~/.openzerocode/sessions/index.json`
+  - `~/.openzerocode/sessions/<session-id>.json`
+- Provider 已經是 registry 結構：
+  - `openapi` / `big-pickle`
+  - `cloudflare`
+- Message model 已支援 part-based message：
   - `role`
   - `content`
   - `reasoning_content`
   - `tool_calls`
+  - `parts`
 - Tool execution 目前會直接執行：
   - `abort` 已串進 context
   - `ask()` / `metadata()` 仍是 stub
@@ -25,24 +30,29 @@
 
 - assistant response 會即時串流到 transcript
 - `reasoning_content` 會以獨立 `Thinking` 區塊即時顯示
-- 若 reasoning 比 answer 晚到，UI 會把 `Thinking` 插回 answer 前面
+- response 區塊目前已改為 turn-oriented group
+- 純 `user` / `assistant` / `system` 文字不再顯示冗餘 header
+- assistant response 目前已有簡易 footer：
+  - `provider/model`
+  - copy hint
 - selection copy 已實作：
   - `onMouseUp`
   - 取 renderer selection
   - 寫入 clipboard
-  - 右上角顯示 `Copy`
 - Build / Plan mode 已實作
   - Plan mode 會傳空的 `toolDefs`
+- command palette / provider / model switching 已實作
+- session list / rename / delete / compaction 已實作
+- sidebar 已顯示 context、token/cost estimate、git diff summary
 
 ## Short Backlog
 
-- Message / UI model 改成 part-based 結構
 - Tool output truncation
 - Permission / approval model
-- Multi-session persistence
-- Provider registry
-- Tool block collapse
+- Per-message provider/model metadata
+- Richer tool-specific rendering
 - Diff view
+- Response-scoped change summary
 - Smart auto-follow
 - Paced streaming
 
