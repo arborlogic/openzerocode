@@ -6,18 +6,16 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { Context, Result } from "../tool/tool"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
-import type { LogEntry } from "./log-entry"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build" | "plan"
 
 type SessionUi = {
   abort: AbortSignal
-  append: (role: LogEntry["role"], text: string, title?: string) => void
   streamReasoningChunk: (text: string) => void
-  finalizeReasoningStream: (text: string) => void
   streamAssistantChunk: (text: string) => void
-  finalizeAssistantStream: (text: string) => void
+  addMessage: (msg: Message) => void
+  notify: (text: string, kind: string) => void
   setStatus: (text: string) => void
   scrollBottom: () => void
   model: string
@@ -42,6 +40,7 @@ export async function runSession(
   const userMessage: Message = { role: "user", content: userInput }
   const allMessages: Message[] = [systemMessage, ...history, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
+  ui.addMessage(userMessage)
 
   const tools = await runtime.runSync(Effect.gen(function* () {
     const r = yield* ToolRegistry
@@ -71,13 +70,13 @@ export async function runSession(
       if (!retry429 || !isRateLimitError(lastError) || attempt >= retrySchedule.length) break
       const wait = retrySchedule[attempt]
       ui.setStatus(`rate limited, retry in ${Math.round(wait / 1000)}s...`)
-      ui.append("tool", `rate limited, retrying in ${Math.round(wait / 1000)}s`)
+      ui.notify(`rate limited, retrying in ${Math.round(wait / 1000)}s`, "system")
       await delay(wait)
     }
 
     if (!stream) {
       ui.setStatus("waiting for input")
-      ui.append("error", formatProviderError(lastError))
+      ui.notify(formatProviderError(lastError), "error")
       return resultHistory
     }
 
@@ -111,9 +110,6 @@ export async function runSession(
       }
     }
 
-    ui.finalizeReasoningStream(reasoning)
-    ui.finalizeAssistantStream(content)
-
     if (ui.abort.aborted) {
       ui.setStatus("waiting for input")
       return resultHistory
@@ -134,6 +130,7 @@ export async function runSession(
     })
     allMessages.push(assistantMessage)
     resultHistory.push(assistantMessage)
+    ui.addMessage(assistantMessage)
 
     if (!toolCalls) {
       ui.setStatus("waiting for input")
@@ -153,8 +150,10 @@ export async function runSession(
       const name = call.function.name ?? "unknown"
       const def = tools.find((tool) => tool.id === name)
       if (!def) {
-        ui.append("error", `unknown tool: ${name}`)
-        allMessages.push(createToolMessage({ tool_call_id: call.id, tool: name, output: `Unknown tool: ${name}`, error: true }))
+        const errorMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: `Unknown tool: ${name}`, error: true })
+        allMessages.push(errorMsg)
+        resultHistory.push(errorMsg)
+        ui.addMessage(errorMsg)
         continue
       }
 
@@ -170,9 +169,11 @@ export async function runSession(
       )
 
       const text = convertToolResult(result)
-      ui.append("tool", text.trim() || "(no output)", name)
+      const toolMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: text })
+      allMessages.push(toolMsg)
+      resultHistory.push(toolMsg)
+      ui.addMessage(toolMsg)
       ui.scrollBottom()
-      allMessages.push(createToolMessage({ tool_call_id: call.id, tool: name, output: text }))
     }
 
     ui.setStatus("thinking...")

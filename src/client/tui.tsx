@@ -10,8 +10,7 @@ import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message } from "../provider/types"
 import { renderMarkdown } from "./markdown"
-import type { LogEntry } from "./log-entry"
-import { initialLogs, loadSession, saveSession, SESSION_FILE } from "./session-state"
+import { loadSession, saveSession, SESSION_FILE } from "./session-state"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 
@@ -59,6 +58,12 @@ const MODE_OPTIONS = [
   { name: "Plan", description: "Discuss approach without coding", value: "plan" as const },
 ]
 
+type DisplayBlock = {
+  kind: "user" | "assistant" | "reasoning" | "tool" | "error" | "system"
+  text: string
+  title?: string
+}
+
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(appLayer)))
 }
@@ -85,17 +90,6 @@ function helpLines() {
     "  PgUp/PgDn scroll response",
     "  Home/End jump to top/bottom",
   ]
-}
-
-function appendLogEntry(
-  setLogs: (value: (prev: LogEntry[]) => LogEntry[]) => void,
-  role: LogEntry["role"],
-  text: string,
-  title?: string,
-) {
-  const value = stripAnsi(text).trimEnd()
-  if (!value) return
-  setLogs((prev) => [...prev, { role, text: value, title }])
 }
 
 function renderAssistantText(text: string) {
@@ -137,18 +131,55 @@ function systemPrompt(mode: RunMode) {
   return SYSTEM_PROMPT
 }
 
+function messageToBlocks(msg: Message): DisplayBlock[] {
+  if (msg.parts && msg.parts.length > 0) {
+    return msg.parts
+      .filter((p) => p.type !== "tool-call")
+      .map((part): DisplayBlock => {
+        switch (part.type) {
+          case "text":
+            return { kind: "assistant", text: part.text }
+          case "reasoning":
+            return { kind: "reasoning", text: part.text, title: "Thinking" }
+          case "tool-result":
+            return { kind: "tool", text: part.output, title: part.tool }
+          default:
+            return { kind: "system", text: "" }
+        }
+      })
+  }
+
+  switch (msg.role) {
+    case "assistant": {
+      const result: DisplayBlock[] = []
+      if (msg.reasoning_content) result.push({ kind: "reasoning", text: msg.reasoning_content, title: "Thinking" })
+      if (msg.content) result.push({ kind: "assistant", text: msg.content })
+      return result
+    }
+    case "user":
+      return msg.content ? [{ kind: "user", text: msg.content }] : []
+    case "tool":
+      return msg.content ? [{ kind: "tool", text: msg.content }] : []
+    case "system":
+      return msg.content ? [{ kind: "system", text: msg.content }] : []
+    default:
+      return []
+  }
+}
+
 function App() {
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
   const initialMessages = loadSession()
-  const [logs, setLogs] = createSignal<LogEntry[]>(initialLogs(initialMessages, EMPTY_STATE_MESSAGE))
+  const [messages, setMessages] = createSignal(initialMessages)
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
-  const [messages, setMessages] = createSignal(initialMessages)
   const [running, setRunning] = createSignal(false)
   const [sessionCount, setSessionCount] = createSignal(initialMessages.length)
   const [mode, setMode] = createSignal<RunMode>("build")
   const [copyNotice, setCopyNotice] = createSignal(false)
+  const streamState = createStreamState()
+  const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
   let modeTabs: TabSelectRenderable | undefined
@@ -158,16 +189,30 @@ function App() {
   let historyIndex = -1
   let historyDraft = ""
 
-  const append = (role: LogEntry["role"], text: string, title?: string) => {
-    appendLogEntry(setLogs, role, text, title)
-  }
-
-  const {
-    streamReasoningChunk,
-    finalizeReasoningStream,
-    streamAssistantChunk,
-    finalizeAssistantStream,
-  } = createStreamState(setLogs, renderAssistantText, stripAnsi)
+  const blocks = createMemo(() => {
+    const result: DisplayBlock[] = []
+    for (const msg of messages()) {
+      result.push(...messageToBlocks(msg))
+    }
+    for (const n of notices()) {
+      result.push(n)
+    }
+    if (running()) {
+      for (const part of streamState.parts()) {
+        if (part.type === "reasoning") {
+          const text = stripAnsi(part.text).trim()
+          if (text) result.push({ kind: "reasoning", text, title: "Thinking" })
+        } else if (part.type === "text") {
+          const rendered = renderAssistantText(part.text)
+          result.push({ kind: "assistant", text: rendered })
+        }
+      }
+    }
+    if (result.length === 0) {
+      result.push({ kind: "system", text: EMPTY_STATE_MESSAGE })
+    }
+    return result
+  })
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
 
@@ -216,35 +261,35 @@ function App() {
         const arg = input.slice(6).trim()
         if (arg) {
           currentModel = arg
-          append("tool", `model -> ${currentModel}`)
+          setNotices((prev) => [...prev, { kind: "tool", text: `model -> ${currentModel}` }])
         } else {
-          append("system", `Current model: ${currentModel}`)
+          setNotices((prev) => [...prev, { kind: "system", text: `Current model: ${currentModel}` }])
         }
       } else if (input.startsWith("/mode")) {
         const arg = input.slice(5).trim().toLowerCase()
         if (arg === "build" || arg === "plan") {
           setMode(arg)
-          append("system", `Mode switched to ${arg}.`)
+          setNotices((prev) => [...prev, { kind: "system", text: `Mode switched to ${arg}.` }])
         } else if (!arg) {
-          append("system", `Current mode: ${mode()}`)
+          setNotices((prev) => [...prev, { kind: "system", text: `Current mode: ${mode()}` }])
         } else {
-          append("error", "Usage: /mode build|plan")
+          setNotices((prev) => [...prev, { kind: "error", text: "Usage: /mode build|plan" }])
         }
       } else if (input === "/help") {
-        for (const line of helpLines()) append("system", line)
+        for (const line of helpLines()) setNotices((prev) => [...prev, { kind: "system", text: line }])
       } else if (input === "/clear") {
-        setLogs([{ role: "system", text: "History cleared." }])
         setMessages([])
+        setNotices([])
         setSessionCount(0)
         saveSession([])
         setComposerText("")
       } else if (input === "/info") {
-        append("system", `Messages: ${messages().length}, Session: ${SESSION_FILE}`)
+        setNotices((prev) => [...prev, { kind: "system", text: `Messages: ${messages().length}, Session: ${SESSION_FILE}` }])
       } else if (input === "/exit" || input === "/quit") {
         await exitApp(0)
         return
       } else {
-        append("error", `Unknown command: ${input}. Type /help`)
+        setNotices((prev) => [...prev, { kind: "error", text: `Unknown command: ${input}. Type /help` }])
       }
       setComposerText("")
       queueMicrotask(scrollBottom)
@@ -255,20 +300,25 @@ function App() {
     historyIndex = -1
     historyDraft = ""
 
+    queueMicrotask(scrollBottom)
+
     runAbort = new AbortController()
+    streamState.reset()
     setRunning(true)
     setStatus("thinking...")
-    append("user", input)
-    queueMicrotask(scrollBottom)
 
     try {
       const next = await runSession(input, messages(), {
         abort: runAbort.signal,
-        append,
-        streamReasoningChunk,
-        finalizeReasoningStream,
-        streamAssistantChunk,
-        finalizeAssistantStream,
+        streamReasoningChunk: (text) => streamState.streamReasoningChunk(text),
+        streamAssistantChunk: (text) => streamState.streamAssistantChunk(text),
+        addMessage: (msg) => {
+          if (msg.role === "assistant") streamState.reset()
+          setMessages((prev) => [...prev, msg])
+        },
+        notify: (text, kind) => {
+          setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
+        },
         setStatus,
         scrollBottom,
         model: currentModel,
@@ -395,23 +445,23 @@ function App() {
         paddingBottom={1}
         scrollY={true}
       >
-        <For each={logs()}>
+        <For each={blocks()}>
           {(entry, index) => (
             <box
               marginTop={index() === 0 ? 0 : 1}
-              paddingLeft={entry.role === "assistant" ? 2 : 1}
+              paddingLeft={entry.kind === "assistant" ? 2 : 1}
               paddingRight={1}
               paddingTop={1}
               paddingBottom={1}
-              backgroundColor={entry.role === "assistant" ? THEME.background : THEME.panel}
-              border={entry.role === "assistant" ? undefined : ["left"]}
-              borderColor={entry.role === "user"
+              backgroundColor={entry.kind === "assistant" ? THEME.background : THEME.panel}
+              border={entry.kind === "assistant" ? undefined : ["left"]}
+              borderColor={entry.kind === "user"
                 ? THEME.user
-                : entry.role === "reasoning"
+                : entry.kind === "reasoning"
                   ? THEME.accent
-                : entry.role === "tool"
+                : entry.kind === "tool"
                   ? THEME.tool
-                  : entry.role === "error"
+                  : entry.kind === "error"
                     ? THEME.error
                     : THEME.border}
             >
@@ -422,37 +472,37 @@ function App() {
                     <>
                       <text
                         style={{
-                          fg: entry.role === "user"
+                          fg: entry.kind === "user"
                             ? THEME.user
-                            : entry.role === "reasoning"
+                            : entry.kind === "reasoning"
                               ? THEME.accent
-                            : entry.role === "assistant"
+                            : entry.kind === "assistant"
                               ? THEME.accent
-                              : entry.role === "error"
+                              : entry.kind === "error"
                                 ? THEME.error
                                 : THEME.muted,
                         }}
                       >
-                        {entry.role === "assistant"
+                        {entry.kind === "assistant"
                           ? "assistant"
-                          : entry.role === "user"
+                          : entry.kind === "user"
                             ? "you"
-                            : entry.role === "reasoning"
+                            : entry.kind === "reasoning"
                               ? "thinking"
-                            : entry.role === "error"
+                            : entry.kind === "error"
                               ? "error"
                               : "system"}
                       </text>
-                      <text style={{ fg: entry.role === "system" ? THEME.muted : THEME.text }}>{entry.text}</text>
+                      <text style={{ fg: entry.kind === "system" ? THEME.muted : THEME.text }}>{entry.text}</text>
                     </>
                   }
                 >
                   <>
-                    <text style={{ fg: entry.role === "tool" ? THEME.tool : THEME.accent }}>
-                      {entry.role === "tool" ? "tool" : "thinking"}  {entry.title}
+                    <text style={{ fg: entry.kind === "tool" ? THEME.tool : THEME.accent }}>
+                      {entry.kind === "tool" ? "tool" : "thinking"}  {entry.title}
                     </text>
                     <box marginTop={1} paddingLeft={1} border={["left"]} borderColor={THEME.border}>
-                      <text style={{ fg: entry.role === "reasoning" ? THEME.muted : THEME.text }}>{entry.text}</text>
+                      <text style={{ fg: entry.kind === "reasoning" ? THEME.muted : THEME.text }}>{entry.text}</text>
                     </box>
                   </>
                 </Show>
