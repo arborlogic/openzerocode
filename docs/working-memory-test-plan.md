@@ -382,9 +382,9 @@ This section records actual test runs, providing baselines for future regression
 
 **Artifacts:**
 
-- [README.md](/Users/masato/Dev/ai-util/openzerocode/README.md:1)
-- [AGENTS.md](/Users/masato/Dev/ai-util/openzerocode/AGENTS.md:1)
-- [SESSION_SUMMARY.md](/Users/masato/Dev/ai-util/openzerocode/SESSION_SUMMARY.md:1)
+- [README.md](./README.md:1)
+- [AGENTS.md](./AGENTS.md:1)
+- [SESSION_SUMMARY.md](./SESSION_SUMMARY.md:1)
 
 **Rubric Score:**
 
@@ -425,10 +425,10 @@ This section records actual test runs, providing baselines for future regression
 
 **Artifacts:**
 
-- [SESSION_SUMMARY.md](/Users/masato/Dev/ai-util/openzerocode/SESSION_SUMMARY.md:1)
-- [README.md](/Users/masato/Dev/ai-util/openzerocode/README.md:1)
-- [docs/current-ui-notes.md](/Users/masato/Dev/ai-util/openzerocode/docs/current-ui-notes.md:1)
-- [AGENTS.md](/Users/masato/Dev/ai-util/openzerocode/AGENTS.md:1)
+- [SESSION_SUMMARY.md](./SESSION_SUMMARY.md:1)
+- [README.md](./README.md:1)
+- [docs/current-ui-notes.md](./docs/current-ui-notes.md:1)
+- [AGENTS.md](./AGENTS.md:1)
 
 **Rubric Score:**
 
