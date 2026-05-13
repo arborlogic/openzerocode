@@ -354,6 +354,7 @@ function App() {
   const renderer = useRenderer()
 
   let initialMessages: Message[] = []
+  let initialMode: RunMode = "build"
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -362,6 +363,7 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
+      if (loaded.mode === "plan") initialMode = "plan"
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -382,7 +384,7 @@ function App() {
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
-  const [mode, setMode] = createSignal<RunMode>("build")
+  const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [copyNotice, setCopyNotice] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
@@ -466,7 +468,7 @@ function App() {
       currentProvider = nextProvider
       currentModel = nextModel
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider)
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode())
       refreshSessions()
       return true
     } catch (error) {
@@ -933,7 +935,7 @@ function App() {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    saveSession(id, msgs, currentModel, currentProvider)
+    saveSession(id, msgs, currentModel, currentProvider, mode())
   }
 
   const generateSessionSummary = async (nextMessages: Message[]) => {
@@ -980,6 +982,7 @@ function App() {
     const loaded = loadSessionState(id)
     if (loaded?.provider && loaded.model) applyProviderModel(loaded.provider, loaded.model)
     setMessages(loaded?.messages ?? [])
+    setMode(loaded?.mode === "plan" ? "plan" : "build")
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -1048,7 +1051,7 @@ function App() {
 
       const compacted = [createCompactSummaryMessage(summary), ...tail]
       setMessages(compacted)
-      saveSession(sessionId(), compacted, currentModel, currentProvider)
+      saveSession(sessionId(), compacted, currentModel, currentProvider, mode())
       refreshSessions()
       setStatus("session compacted")
     } catch {
@@ -1191,7 +1194,7 @@ function App() {
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider)
+      saveSession(sessionId(), next, currentModel, currentProvider, mode())
       await generateSessionSummary(next)
       setComposerText("")
       setStatus("waiting for input")

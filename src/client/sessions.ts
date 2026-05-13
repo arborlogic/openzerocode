@@ -100,7 +100,7 @@ export function createSession(model: string, provider: string, messages?: Messag
   return meta
 }
 
-export function saveSession(id: string, messages: Message[], model: string, provider: string) {
+export function saveSession(id: string, messages: Message[], model: string, provider: string, mode?: string) {
   ensureDir()
   const now = Date.now()
   const index = readIndex()
@@ -111,6 +111,7 @@ export function saveSession(id: string, messages: Message[], model: string, prov
     messages,
     model,
     provider,
+    mode,
     createdAt,
     updatedAt: now,
   }, null, 2), "utf-8")
@@ -147,12 +148,12 @@ export function loadSession(id: string): Message[] | null {
   }
 }
 
-export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string } | null {
+export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string } | null {
   try {
     const path = sessionPath(id)
     if (!existsSync(path)) return null
     const data = JSON.parse(readFileSync(path, "utf-8"))
-    return { messages: data.messages ?? [], model: data.model, provider: data.provider }
+    return { messages: data.messages ?? [], model: data.model, provider: data.provider, mode: data.mode }
   } catch {
     return null
   }
