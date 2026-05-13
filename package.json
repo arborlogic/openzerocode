@@ -3,7 +3,6 @@
   "version": "0.2.0",
   "type": "module",
   "license": "MIT",
-  "private": true,
   "description": "AI coding assistant in the terminal",
   "bin": {
     "openzerocode": "./bin/openzerocode.cjs"
