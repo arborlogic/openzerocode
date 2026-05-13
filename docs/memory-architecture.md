@@ -4,6 +4,7 @@
 
 - `submodules/opencode` 的現況
 - `../zero-api` 的現況
+- sqlite 是否應該在這個階段導入，參考 [sqlite-adoption-checklist.md](/Users/masato/Dev/ai-util/openzerocode/docs/sqlite-adoption-checklist.md:1)
 
 目標不是只描述「記憶要存在哪裡」，而是明確區分：
 
@@ -59,6 +60,27 @@ default memory 應該永遠貼近當前 workspace 本身：
 
 > OpenZeroCode solves the workspace.  
 > Zero learns the operator.
+
+還有一條同樣重要的互動原則：
+
+> memory 是 OpenZeroCode 的持續理解底層，不是主要互動介面。
+
+這代表：
+
+- memory 應該默默幫助 agent 理解 workspace、延續脈絡、吸收修正
+- 使用者平常不應該被迫頻繁操作 memory command
+- command 只應該保留給 debug、review、或 power-user 控制
+- 真正的主流程應該是自然的 workspace interaction，而不是一套獨立 memory command system
+
+還有一條 phase boundary 需要先固定：
+
+> 這個階段只做 workspace-level working memory；long-term promotion 先不在 OpenZeroCode 內處理。
+
+也就是：
+
+- `AGENTS.md` 視為外部提供的穩定 instruction source
+- `SESSION_SUMMARY.md` 視為 OpenZeroCode 自動維護的 latest handoff
+- 是否把經驗升成長期規則，之後交給 zero
 
 ## The Three Levels
 
@@ -239,9 +261,40 @@ Always use pnpm.
 - 沒有 zero 時，OpenZeroCode 仍然是一個完整可用的 coding agent
 - 有 zero 時，補上的不是基礎能力，而是 operator-level 的長期歸納能力
 
-## Data Flow
+## Current Phase
 
-建議的完整資料流：
+目前階段建議收斂成這條最小 loop：
+
+```txt
+session start
+↓
+load AGENTS.md
+↓
+load SESSION_SUMMARY.md
+↓
+inject workspace context
+↓
+run task
+↓
+rewrite SESSION_SUMMARY.md
+```
+
+這一層的責任只有：
+
+- 讓 agent 進入 repo 時知道穩定規則
+- 讓 agent 能延續上一輪工作狀態
+- 讓最新的 working handoff 持續存在本地
+
+這一層不負責：
+
+- 自動把經驗升成長期規則
+- suggestion lifecycle
+- local long-term memory promotion
+- candidate staging
+
+## Deferred Data Flow
+
+以下資料流保留給 zero phase：
 
 ```txt
 workspace session
@@ -268,9 +321,7 @@ agent 執行任務
 ↓
 產生 session trace
 ↓
-使用者修正或 approve
-↓
-更新 AGENTS.md / SESSION_SUMMARY.md
+更新 SESSION_SUMMARY.md
 ↓
 zero 定期萃取
 ↓
@@ -422,10 +473,11 @@ chat 前的流程是：
 如果只看目前這個階段，最小且最穩的落點是：
 
 1. 沿用 `opencode` 的 instruction-first 做法
-2. 先以 `AGENTS.md` 作為主要 workspace memory 載體
+2. 先以 `AGENTS.md` 作為主要 workspace instruction source
 3. 再加一份 `SESSION_SUMMARY.md` 作為最近工作延續摘要
-4. 暫時不要為 zero 發明特殊目錄或特殊檔名
-5. 等內容真的長出來，再考慮拆成：
+4. 暫時不要在 OpenZeroCode 內處理 long-term promotion
+5. 暫時不要為 zero 發明特殊目錄或特殊檔名
+6. 等內容真的長出來，再考慮拆成：
    - `WORKSPACE_MEMORY.md`
    - `WORKSPACE_PROCEDURES.md`
 
@@ -478,38 +530,20 @@ session 開始時：
 ## Critical Context
 - The agent initially used npm, but this repo uses pnpm.
 
-## Suggested Workspace Memory
-- This repo uses pnpm. Do not use npm.
-
-## Suggested Workspace Procedure
-- Before running commands, inspect lockfile to determine package manager.
 ```
 
 ### Step 4
 
-讓使用者可以選擇：
+long-term promotion 這一階段先 defer。
 
-- Accept into `AGENTS.md`
-- Ignore
+如果未來需要：
 
-### Step 5
+- candidate extraction
+- accepted / rejected state
+- procedure promotion
+- export-to-zero pipeline
 
-只有在 local workflow 穩定後，才考慮 export 給 zero。
-
-例如未來的 export payload 可以是：
-
-```txt
-zero_candidates
-- source_workspace
-- source_trace
-- candidate_type
-- content
-- confidence
-- accepted_count
-- rejected_count
-```
-
-這些不是 v1 必做項目。
+則歸到 zero phase，而不是在目前 local working memory phase 擴張。
 
 ## Product Definition
 
@@ -527,7 +561,7 @@ zero_candidates
 
 1. 定義 `AGENTS.md` / `SESSION_SUMMARY.md` 的 workspace memory 結構
 2. 把 session summary 轉成 workspace-level handoff
-3. 定義 suggested memory / procedure schema
+3. 把 `SESSION_SUMMARY.md` 穩定成高品質 handoff artifact
 4. 之後再接到 `zero-api` 的 typed memory / promotion runtime
 
 這樣責任會很清楚：

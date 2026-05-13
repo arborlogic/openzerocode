@@ -19,10 +19,13 @@ import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
 import { getModelConfig } from "../provider/models"
 import { buildCompactionTranscript, createCompactSummaryMessage, selectCompactionTail } from "./session-compact"
+import { loadWorkspaceMemory } from "./workspace-memory"
+import { buildSessionSummaryPrompt, writeSessionSummary } from "./workspace-summary"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
+let workspaceMemory = loadWorkspaceMemory(process.cwd())
 
 const SYSTEM_PROMPT = [
   "You are OpenZeroCode, an AI coding assistant.",
@@ -118,15 +121,25 @@ async function copyToClipboard(text: string) {
 }
 
 function systemPrompt(mode: RunMode) {
+  const parts = [SYSTEM_PROMPT]
+
   if (mode === "plan") {
-    return [
-      SYSTEM_PROMPT,
+    parts.push(
       "You are currently in Plan mode.",
       "Do not write code, do not call tools, and do not make changes.",
       "Explain the approach, risks, and step-by-step plan only.",
-    ].join("\n")
+    )
   }
-  return SYSTEM_PROMPT
+
+  if (workspaceMemory.contextBlock) {
+    parts.push(workspaceMemory.contextBlock)
+  }
+
+  return parts.join("\n\n")
+}
+
+function refreshWorkspaceMemory() {
+  workspaceMemory = loadWorkspaceMemory(process.cwd())
 }
 
 function messageToBlocks(msg: Message): DisplayBlock[] {
@@ -705,6 +718,40 @@ function App() {
     saveSession(id, msgs, currentModel, currentProvider)
   }
 
+  const generateSessionSummary = async (nextMessages: Message[]) => {
+    const last = nextMessages[nextMessages.length - 1]
+    if (!last || last.role === "user") return
+
+    const { system, user } = buildSessionSummaryPrompt(nextMessages)
+
+    try {
+      const result = await runSync(Effect.gen(function* () {
+        const provider = yield* Provider
+        return yield* provider.complete({
+          model: currentModel,
+          stream: false,
+          max_tokens: 1400,
+          temperature: 0,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+        })
+      }))
+
+      const summary = result.message.content?.trim()
+      if (!summary) return
+
+      const path = writeSessionSummary(summary, process.cwd())
+      refreshWorkspaceMemory()
+      if (path) {
+        setNotices((prev) => [...prev, { kind: "system", text: `Updated ${path}` }])
+      }
+    } catch {
+      setNotices((prev) => [...prev, { kind: "error", text: "Failed to update SESSION_SUMMARY.md" }])
+    }
+  }
+
   const refreshSessions = () => {
     setSessionMeta(currentSessionMeta())
     setSessionRevision((v) => v + 1)
@@ -875,6 +922,7 @@ function App() {
 
     runAbort = new AbortController()
     streamState.reset()
+    refreshWorkspaceMemory()
     setRunning(true)
     setStatus("thinking...")
 
@@ -902,6 +950,7 @@ function App() {
 
       setMessages(next)
       saveSession(sessionId(), next, currentModel, currentProvider)
+      await generateSessionSummary(next)
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)

@@ -10,6 +10,7 @@
 
 - `memory-architecture.md` 定義理念與分層
 - 本文件定義 **怎麼從現在的 OpenZeroCode 實際長成那個架構**
+- sqlite 是否應該現在導入，參考 [sqlite-adoption-checklist.md](/Users/masato/Dev/ai-util/openzerocode/docs/sqlite-adoption-checklist.md:1)
 
 ---
 
@@ -35,6 +36,21 @@
 
 - OpenZeroCode 負責 workspace-level execution
 - zero 負責 operator-level learning
+
+再補一條互動層原則：
+
+> memory 應該是持續理解底層，而不是需要頻繁手動操作的 command system。
+
+所以在產品體驗上：
+
+- `AGENTS.md` / `SESSION_SUMMARY.md` 是底層 artifact
+- summary 應該自動產生
+- `/memory ...` 這類 command 只適合作為暫時 debug surface
+- 這個階段先不把 long-term rule promotion 當主線
+
+更明確地說：
+
+> OpenZeroCode 目前只負責 working memory；是否形成長期規則，先 defer 給 zero。
 
 ## Why Start From Opencode
 
@@ -277,6 +293,40 @@ workspace memory 的內容只應該寫：
 
 ### Suggested Rule
 
+## Interaction Model
+
+目前這一階段，memory 的主要互動其實應該很少。
+
+第一版即使有 `/memory show`、`/memory apply` 這類 command，它們的定位也應該很明確：
+
+- 用於 debug
+- 用於 review
+- 用於 power-user 控制
+
+而不是：
+
+- 當成主要互動入口
+- 要求一般使用者每次都手動管理 memory
+
+比較理想的演進路徑是：
+
+### Stage 1 — Background working memory
+
+- 自動生成 `SESSION_SUMMARY.md`
+- 自動讀取 `AGENTS.md`
+- 自動把 workspace context 注入 runtime
+- 不要求使用者頻繁操作 memory command
+
+### Stage 2 — Background capability
+
+- memory 大部分時間在背景運作
+- 使用者只在需要 review 或修正時才顯式碰它
+- command 保留作為 fallback 與 debug surface
+
+一句話：
+
+> command 是過渡期工具；memory 本身才是產品能力。
+
 每一行都應該回答：
 
 > 如果沒有這行，agent 很可能會做錯、漏掉、或浪費時間嗎？
@@ -321,12 +371,6 @@ workspace memory 的內容只應該寫：
 
 ## Relevant Files
 - [path: why it matters]
-
-## Suggested Workspace Memory
-- [candidate fact for AGENTS.md]
-
-## Suggested Workspace Procedure
-- [candidate step sequence, optional in v1]
 ```
 
 和 opencode 差別是：
@@ -336,6 +380,8 @@ workspace memory 的內容只應該寫：
 
 第一版不需要額外出現：
 
+- `Suggested Workspace Memory`
+- `Suggested Workspace Procedure`
 - `Suggested Zero Candidate`
 
 ## Progressive Rollout
@@ -389,23 +435,7 @@ workspace memory 的內容只應該寫：
 - summary writing policy
 - future archive strategy if summary becomes too large
 
-## Stage 2 — Suggested Memory / Procedure
-
-目標：
-
-- 從 session summary 中產生：
-  - Suggested Workspace Memory
-  - Suggested Workspace Procedure
-- 讓使用者決定是否接受
-
-這一階段仍然是 local-first，不直接推 zero。
-
-### Accept Paths
-
-- Accept into `AGENTS.md`
-- Ignore
-
-## Stage 3 — Zero Candidate Export
+## Stage 2 — Zero Candidate Export
 
 目標：
 
@@ -430,7 +460,7 @@ workspace memory 的內容只應該寫：
 }
 ```
 
-## Stage 4 — Zero Promotion
+## Stage 3 — Zero Promotion
 
 目標：
 
@@ -514,19 +544,9 @@ future zero evolution layer
 
 ### Step 3
 
-在 session 完成或 compact 時，產出一份固定格式 summary，附上：
-
-- Suggested update to `AGENTS.md`
-- Optional future split hints for facts / procedures
+在 session 完成或 compact 時，產出一份固定格式 summary。
 
 ### Step 4
-
-加入簡單 acceptance flow：
-
-- append to `AGENTS.md`
-- ignore
-
-### Step 5
 
 最後才設計：
 

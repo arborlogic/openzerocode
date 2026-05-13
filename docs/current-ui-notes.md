@@ -43,6 +43,7 @@
 - `stickyScroll` 目前只能算部分解法，不能視為完整 auto-follow。
 - 資料模型已支援 `parts`，但 tool / response meta 還沒有完整細分到 per-message UI。
 - selection copy 已可用，但文案與視覺反饋仍可再調整。
+- `memory` 目前已有 command-level control surface，但這應視為過渡期做法，不應成為長期主互動模型。
 
 ## Next Recommended UI Work
 

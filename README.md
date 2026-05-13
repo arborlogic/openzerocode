@@ -31,6 +31,12 @@ This repo is actively implemented. Current capabilities include:
 npm run start
 ```
 
+Alternative entrypoint:
+
+```bash
+npm run start:tui
+```
+
 Development watch mode:
 
 ```bash
@@ -41,6 +47,12 @@ Typecheck:
 
 ```bash
 npm run typecheck
+```
+
+Targeted tests:
+
+```bash
+npx tsx --test <file>
 ```
 
 ## Architecture
