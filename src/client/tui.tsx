@@ -76,6 +76,7 @@ export type DisplayBlock = {
   kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
   text: string
   title?: string
+  streaming?: boolean
 }
 
 type DisplayTurn = {
@@ -260,7 +261,7 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
           syntaxStyle={MARKDOWN_SYNTAX}
           fg={THEME.text}
           bg={THEME.background}
-          streaming={false}
+          streaming={props.entry.streaming ?? false}
         />
       </box>
     )
@@ -861,17 +862,6 @@ function App() {
       result.push({ entries: [n] })
     }
 
-    if (running()) {
-      const turn = ensureTurn()
-      for (const part of streamState.parts()) {
-        if (part.type === "reasoning") {
-          const text = stripAnsi(part.text).trim()
-          if (text) turn.entries.push({ kind: "reasoning", text, title: "Thinking" })
-        } else if (part.type === "text") {
-          turn.entries.push({ kind: "assistant", text: part.text })
-        }
-      }
-    }
 
     for (const turn of result) {
       if (turn.entries.some((entry) =>
@@ -893,6 +883,21 @@ function App() {
   })
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
+
+  const streamingText = createMemo(() =>
+    streamState.parts()
+      .filter(p => p.type === "text")
+      .map(p => p.text)
+      .join("")
+  )
+
+  const streamingReasoning = createMemo(() =>
+    streamState.parts()
+      .filter(p => p.type === "reasoning")
+      .map(p => stripAnsi(p.text))
+      .join("")
+      .trim()
+  )
 
   const scrollBottom = () => {
     if (!scroll) return
@@ -1429,6 +1434,25 @@ function App() {
         <For each={turns()}>
           {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
         </For>
+        <Show when={running()}>
+          <box marginTop={1} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accentDim}>
+            <Show when={streamingReasoning()}>
+              <box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accent} marginBottom={1}>
+                <text style={{ fg: THEME.muted }}>think  Thinking</text>
+                <text style={{ fg: THEME.muted }}>{streamingReasoning()}</text>
+              </box>
+            </Show>
+            <Show when={streamingText()}>
+              <markdown
+                content={streamingText()}
+                syntaxStyle={MARKDOWN_SYNTAX}
+                fg={THEME.text}
+                bg={THEME.background}
+                streaming={true}
+              />
+            </Show>
+          </box>
+        </Show>
       </scrollbox>
 
       <box flexShrink={0} flexDirection="column" border={["left"]} borderColor={THEME.border}>
