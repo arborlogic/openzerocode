@@ -4,6 +4,7 @@ import { Provider } from "../provider/types"
 import type { Message, ToolCall } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { Context, Result } from "../tool/tool"
+import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
 
@@ -26,6 +27,8 @@ type SessionRuntime = {
   runSync: <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>) => Promise<A>
   systemPrompt: (mode: RunMode) => string
   parseJson: (raw: string) => Record<string, unknown>
+  compactionSummary?: string
+  ask: (request: Omit<PermissionRequest, "id">) => Promise<void>
 }
 
 export async function runSession(
@@ -38,7 +41,10 @@ export async function runSession(
   const retrySchedule = [2000, 5000, 10000]
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(ui.mode) }
   const userMessage: Message = { role: "user", content: userInput }
-  const allMessages: Message[] = [systemMessage, ...history, userMessage]
+  const compactionMessage: Message[] = runtime.compactionSummary
+    ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
+    : []
+  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...history, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
   ui.addMessage(userMessage)
 
@@ -163,7 +169,10 @@ export async function runSession(
           abort: ui.abort,
           cwd: process.cwd(),
           root: process.cwd(),
-          ask: () => Effect.void,
+          ask: (req) => Effect.tryPromise({
+            try: () => runtime.ask(req),
+            catch: (e) => new Error(String(e)),
+          }) as Effect.Effect<void>,
           metadata: () => Effect.void,
         })).pipe(Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` })))),
       )

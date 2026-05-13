@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect"
 import { Provider, type CompletionRequest, type CompletionResult, type Chunk } from "./types"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
+import { resolveConfiguredProviderApiKey } from "./config"
 
 const ANONYMOUS_MODELS = [
   "big-pickle",
@@ -12,7 +13,7 @@ const ANONYMOUS_MODELS = [
 ]
 
 export function hasBigPickleApiKey() {
-  return Boolean(process.env.OPENCODE_API || process.env.OPENCODE_API_KEY)
+  return Boolean(resolveConfiguredProviderApiKey("openapi"))
 }
 
 export function filterBigPickleModels(models: string[]) {
@@ -161,6 +162,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
 export const def: ProviderDef = {
   id: "openapi",
   name: "OpenAPI",
-  env: { apiKey: ["OPENCODE_API", "OPENCODE_API_KEY"], baseURL: "OPENCODE_BASE_URL", authOptional: true },
+  defaultModel: "big-pickle",
+  authOptional: true,
   factory: (cfg) => layer({ apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model }),
 }

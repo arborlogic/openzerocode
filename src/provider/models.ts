@@ -40,6 +40,29 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     contextLimit: 200_000,
     pricing: { input: 0.8, output: 4 },
   },
+  "inclusionai/ring-2.6-1t:free": {
+    contextLimit: 262_144,
+    pricing: { input: 0, output: 0 },
+  },
+  "baidu/cobuddy:free": {
+    contextLimit: 131_072,
+    pricing: { input: 0, output: 0 },
+  },
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+    contextLimit: 256_000,
+    pricing: { input: 0, output: 0 },
+  },
+  "poolside/laguna-xs.2:free": {
+    contextLimit: 131_072,
+    pricing: { input: 0, output: 0 },
+  },
+  "openrouter/auto": {
+    contextLimit: 2_000_000,
+  },
+}
+
+export function getKnownModelConfig(model: string): ModelConfig | undefined {
+  return MODEL_CONFIGS[model]
 }
 
 export function getModelConfig(model: string): ModelConfig {

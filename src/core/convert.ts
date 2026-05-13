@@ -1,6 +1,7 @@
 import { Schema } from "effect"
 import { Def, Result } from "../tool/tool"
 import type { ToolDef } from "../provider/types"
+import { truncateToolOutput } from "../tool/truncate"
 
 export function convertToolToDef(def: Def): ToolDef {
   const doc = Schema.toJsonSchemaDocument(def.parameters)
@@ -20,5 +21,5 @@ export function convertToolsToDefs(defs: readonly Def[]): ToolDef[] {
 }
 
 export function convertToolResult(result: Result): string {
-  return [result.title, "---", result.output].join("\n")
+  return [result.title, "---", truncateToolOutput(result.output)].join("\n")
 }

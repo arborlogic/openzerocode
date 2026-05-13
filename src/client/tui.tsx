@@ -1,28 +1,32 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
+import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { platform } from "os"
-import { buildLayer, autoDetectProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
+import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message } from "../provider/types"
-import { renderMarkdown } from "./markdown"
+import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
-import { getModelConfig } from "../provider/models"
-import { buildCompactionTranscript, createCompactSummaryMessage, selectCompactionTail } from "./session-compact"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, type CompactionInfo } from "./sessions"
+import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
+import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
+import { loadAgentsInstruction } from "./workspace-memory"
+import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
-let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
+let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
+let agentsInstruction = loadAgentsInstruction(process.cwd())
 
 const SYSTEM_PROMPT = [
   "You are OpenZeroCode, an AI coding assistant.",
@@ -48,6 +52,16 @@ const THEME = {
   headerBg: "#161b22",
   headerBorder: "#21262d",
 }
+const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
+  { scope: ["default"], style: { foreground: THEME.text } },
+  { scope: ["comment"], style: { foreground: THEME.muted, italic: true } },
+  { scope: ["string"], style: { foreground: "#a5d6ff" } },
+  { scope: ["keyword"], style: { foreground: THEME.accent, bold: true } },
+  { scope: ["number"], style: { foreground: "#79c0ff" } },
+  { scope: ["function"], style: { foreground: "#d2a8ff" } },
+  { scope: ["type"], style: { foreground: "#ffa657" } },
+])
+
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P palette"
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
@@ -62,6 +76,7 @@ export type DisplayBlock = {
   kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
   text: string
   title?: string
+  streaming?: boolean
 }
 
 type DisplayTurn = {
@@ -72,6 +87,11 @@ type DisplayTurn = {
 
 function rebuildLayer() {
   currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
+}
+
+function defaultModelForCurrentProvider(providerId: string) {
+  const configured = process.env.OPENZERO_MODEL ?? defaultModelForProvider(providerId)
+  return providerId === "openapi" ? normalizeBigPickleModel(configured) : configured
 }
 
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
@@ -86,9 +106,34 @@ function stripAnsi(str: string) {
   return str.replace(/\x1b\[[0-9;]*m/g, "")
 }
 
-function renderAssistantText(text: string) {
-  const rendered = renderMarkdown(text).trim()
-  return rendered || text
+
+function truncateText(text: string, max: number) {
+  if (max <= 0) return ""
+  if (text.length <= max) return text
+  if (max <= 1) return "…"
+  return text.slice(0, max - 1) + "…"
+}
+
+function fmtContextLimit(limit: number) {
+  if (limit >= 1_000_000) {
+    const millions = limit / 1_000_000
+    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}m`
+  }
+  return `${Math.round(limit / 1000)}k`
+}
+
+function fmtPrice(value: number) {
+  if (value === 0) return "free"
+  if (value >= 1) return `$${value}`
+  return `$${value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`
+}
+
+function modelHint(model: string) {
+  const cfg = getKnownModelConfig(model)
+  if (!cfg) return ""
+  if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
+  if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
+  return `${fmtContextLimit(cfg.contextLimit)} • ${fmtPrice(cfg.pricing.input)}/${fmtPrice(cfg.pricing.output)}`
 }
 
 function isTransientPasteMarker(input: string) {
@@ -118,15 +163,25 @@ async function copyToClipboard(text: string) {
 }
 
 function systemPrompt(mode: RunMode) {
+  const parts = [SYSTEM_PROMPT]
+
   if (mode === "plan") {
-    return [
-      SYSTEM_PROMPT,
+    parts.push(
       "You are currently in Plan mode.",
       "Do not write code, do not call tools, and do not make changes.",
       "Explain the approach, risks, and step-by-step plan only.",
-    ].join("\n")
+    )
   }
-  return SYSTEM_PROMPT
+
+  if (agentsInstruction) {
+    parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)
+  }
+
+  return parts.join("\n\n")
+}
+
+function refreshAgentsInstruction() {
+  agentsInstruction = loadAgentsInstruction(process.cwd())
 }
 
 function messageToBlocks(msg: Message): DisplayBlock[] {
@@ -134,7 +189,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
     return msg.parts.map((part): DisplayBlock => {
         switch (part.type) {
           case "text":
-            return { kind: "assistant", text: renderAssistantText(part.text) }
+            return { kind: "assistant", text: part.text }
           case "reasoning":
             return { kind: "reasoning", text: part.text, title: "Thinking" }
           case "tool-call":
@@ -151,7 +206,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
     case "assistant": {
       const result: DisplayBlock[] = []
       if (msg.reasoning_content) result.push({ kind: "reasoning", text: msg.reasoning_content, title: "Thinking" })
-      if (msg.content) result.push({ kind: "assistant", text: renderAssistantText(msg.content) })
+      if (msg.content) result.push({ kind: "assistant", text: msg.content })
       return result
     }
     case "user":
@@ -198,7 +253,21 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
 
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
-  if (props.entry.kind === "assistant" || props.entry.kind === "system") {
+  if (props.entry.kind === "assistant") {
+    return (
+      <box marginTop={props.isFirst ? 0 : 1}>
+        <markdown
+          content={props.entry.text}
+          syntaxStyle={MARKDOWN_SYNTAX}
+          fg={THEME.text}
+          bg={THEME.background}
+          streaming={props.entry.streaming ?? false}
+        />
+      </box>
+    )
+  }
+
+  if (props.entry.kind === "system") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
         <text style={{ fg: textColor() }}>{props.entry.text}</text>
@@ -285,6 +354,8 @@ function App() {
   const renderer = useRenderer()
 
   let initialMessages: Message[] = []
+  let initialMode: RunMode = "build"
+  let initialCompaction: CompactionInfo | undefined
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -293,6 +364,8 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
+      if (loaded.mode === "plan") initialMode = "plan"
+      initialCompaction = loaded.compaction
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -300,7 +373,7 @@ function App() {
       rebuildLayer()
     } catch {
       currentProvider = autoDetectProvider() ?? "openapi"
-      currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
+      currentModel = defaultModelForCurrentProvider(currentProvider)
       rebuildLayer()
     }
   }
@@ -313,17 +386,22 @@ function App() {
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
-  const [mode, setMode] = createSignal<RunMode>("build")
+  const [mode, setMode] = createSignal<RunMode>(initialMode)
+  const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
+  type PendingApproval = { request: PermissionRequest; resolve: () => void; reject: (e: Error) => void }
+  const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
+  const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
+  const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
@@ -344,6 +422,9 @@ function App() {
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+  const PALETTE_WIDTH = 52
+  const PALETTE_LABEL_MAX = 34
+  const PALETTE_HINT_MAX = 12
 
   type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
 
@@ -379,6 +460,11 @@ function App() {
     return currentModel
   })
 
+  const activeProviderKeyLabel = createMemo(() => {
+    providerConfigRevision()
+    return getActiveConfiguredProviderKeyName(currentProvider) ?? "none"
+  })
+
   const applyProviderModel = (providerId: string, model: string, persist = false) => {
     try {
       const nextProvider = providerId
@@ -387,7 +473,7 @@ function App() {
       currentProvider = nextProvider
       currentModel = nextModel
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider)
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction())
       refreshSessions()
       return true
     } catch (error) {
@@ -429,9 +515,17 @@ function App() {
     setPalettePendingDelete(null)
     setPaletteProviderTarget(providerId)
     setPaletteModelBackMode(backMode)
+    setPaletteInput("")
     setPaletteMode("models")
     setPaletteIndex(0)
     void loadModelsForProvider(providerId)
+  }
+
+  const openProviderKeyPalette = (providerId: string) => {
+    setPalettePendingDelete(null)
+    setPaletteProviderKeyTarget(providerId)
+    setPaletteMode("providerKeys")
+    setPaletteIndex(0)
   }
 
   const actionPaletteItems = createMemo<PaletteItem[]>(() => {
@@ -488,8 +582,17 @@ function App() {
       },
       {
         label: "Switch model",
-        hint: modelLabel(),
+        hint: truncateText(modelLabel(), PALETTE_HINT_MAX),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
+      },
+      {
+        label: "Provider keys",
+        hint: truncateText(`${providerLabel()} • ${activeProviderKeyLabel()}`, PALETTE_HINT_MAX),
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteMode("providerKeyProviders")
+          setPaletteIndex(0)
+        },
       },
     ]
   })
@@ -532,7 +635,7 @@ function App() {
       return true
     }).map<PaletteItem>((provider) => ({
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
-      hint: provider.id,
+      hint: truncateText(provider.id, PALETTE_HINT_MAX),
       onSelect: () => openModelsPalette(provider.id, "providers"),
     }))
 
@@ -553,6 +656,11 @@ function App() {
     const loading = providerModelsLoading() === providerId
     const error = providerModelsError()[providerId]
     const models = providerModels()[providerId] ?? []
+    const filter = paletteInput().trim().toLowerCase()
+    const filteredModels = !filter
+      ? models
+      : models.filter((model) => model.toLowerCase().includes(filter))
+    const visibleModels = filteredModels.slice(0, 10)
     const items: PaletteItem[] = []
 
     if (loading) {
@@ -567,11 +675,35 @@ function App() {
       items.push({ label: "No models available", kind: "section", onSelect: () => {} })
     }
 
-    for (const model of models) {
+    if (!loading && models.length > 0) {
+      items.push({
+        label: filter
+          ? `Showing ${visibleModels.length} / ${filteredModels.length} match(es)`
+          : `Showing ${visibleModels.length} / ${models.length} model(s)`,
+        kind: "section",
+        onSelect: () => {},
+      })
+      if (filteredModels.length > 10) {
+        items.push({
+          label: "Type to narrow results",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+      if (filter && filteredModels.length === 0) {
+        items.push({
+          label: "No models match current filter",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+    }
+
+    for (const model of visibleModels) {
       const isCurrent = providerId === providerLabel() && model === modelLabel()
       items.push({
         label: `${isCurrent ? ">" : " "} ${model}`,
-        hint: providerId,
+        hint: truncateText(modelHint(model), PALETTE_HINT_MAX),
         onSelect: () => {
           if (!applyProviderModel(providerId, model, true)) return
           setStatus(`provider/model -> ${providerId}/${model}`)
@@ -593,6 +725,97 @@ function App() {
     return items
   })
 
+  const providerKeyProviderPaletteItems = createMemo<PaletteItem[]>(() => {
+    selectionRevision()
+    providerConfigRevision()
+    const seen = new Set<string>()
+    const items = Object.values(PROVIDERS).filter((provider) => {
+      if (seen.has(provider.id)) return false
+      seen.add(provider.id)
+      return true
+    }).map<PaletteItem>((provider) => {
+      const active = getActiveConfiguredProviderKeyName(provider.id) ?? "env"
+      const resolved = getActiveConfiguredProviderKeyName(provider.id) ?? "none"
+      const isCurrent = provider.id === providerLabel()
+      return {
+        label: `${isCurrent ? ">" : " "} ${provider.name}`,
+        hint: truncateText(`${provider.id} • ${resolved}`, PALETTE_HINT_MAX),
+        onSelect: () => openProviderKeyPalette(provider.id),
+      }
+    })
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("actions")
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+      },
+    })
+    return items
+  })
+
+  const providerKeyPaletteItems = createMemo<PaletteItem[]>(() => {
+    providerConfigRevision()
+    const providerId = paletteProviderKeyTarget()
+    const active = getActiveConfiguredProviderKeyName(providerId)
+    const keys = listConfiguredProviderKeys(providerId)
+    const items: PaletteItem[] = []
+
+    items.push({
+      label: `Config: ${getProviderConfigPath()}`,
+      kind: "section",
+      onSelect: () => {},
+    })
+
+    if (keys.length === 0) {
+      items.push({
+        label: "No configured keys",
+        kind: "section",
+        onSelect: () => {},
+      })
+    }
+
+    for (const key of keys) {
+      items.push({
+        label: `${key === active ? ">" : " "} ${key}`,
+        hint: truncateText(providerId, PALETTE_HINT_MAX),
+        onSelect: () => {
+          const result = setActiveConfiguredProviderKey(providerId, key)
+          if (!result.ok) {
+            setStatus(result.message)
+            return
+          }
+          setProviderConfigRevision((value) => value + 1)
+          setProviderModels((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          setProviderModelsError((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          if (providerId === currentProvider) rebuildLayer()
+          setStatus(result.message)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("providerKeyProviders")
+        setPaletteIndex(firstSelectablePaletteIndex(providerKeyProviderPaletteItems()))
+      },
+    })
+    return items
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
@@ -600,13 +823,25 @@ function App() {
         ? providerPaletteItems()
         : paletteMode() === "models"
           ? modelPaletteItems()
+          : paletteMode() === "providerKeyProviders"
+            ? providerKeyProviderPaletteItems()
+            : paletteMode() === "providerKeys"
+              ? providerKeyPaletteItems()
           : actionPaletteItems(),
   )
+
+  createEffect(() => {
+    if (!showPalette()) return
+    if (paletteMode() !== "models") return
+    paletteInput()
+    setPaletteIndex(firstSelectablePaletteIndex(paletteItems()))
+  })
 
   const turns = createMemo(() => {
     selectionRevision()
     const result: DisplayTurn[] = []
     const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
+    const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy`
 
     const ensureTurn = () => {
       const existing = result[result.length - 1]
@@ -634,18 +869,6 @@ function App() {
       result.push({ entries: [n] })
     }
 
-    if (running()) {
-      const turn = ensureTurn()
-      for (const part of streamState.parts()) {
-        if (part.type === "reasoning") {
-          const text = stripAnsi(part.text).trim()
-          if (text) turn.entries.push({ kind: "reasoning", text, title: "Thinking" })
-        } else if (part.type === "text") {
-          const rendered = renderAssistantText(part.text)
-          turn.entries.push({ kind: "assistant", text: rendered })
-        }
-      }
-    }
 
     for (const turn of result) {
       if (turn.entries.some((entry) =>
@@ -655,7 +878,7 @@ function App() {
         || entry.kind === "tool-call"
         || entry.kind === "error",
       )) {
-        turn.footer = assistantFooter()
+        turn.footer = footerText()
       }
     }
 
@@ -667,6 +890,21 @@ function App() {
   })
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
+
+  const streamingText = createMemo(() =>
+    streamState.parts()
+      .filter(p => p.type === "text")
+      .map(p => p.text)
+      .join("")
+  )
+
+  const streamingReasoning = createMemo(() =>
+    streamState.parts()
+      .filter(p => p.type === "reasoning")
+      .map(p => stripAnsi(p.text))
+      .join("")
+      .trim()
+  )
 
   const scrollBottom = () => {
     if (!scroll) return
@@ -702,7 +940,7 @@ function App() {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    saveSession(id, msgs, currentModel, currentProvider)
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction())
   }
 
   const refreshSessions = () => {
@@ -715,6 +953,8 @@ function App() {
     const loaded = loadSessionState(id)
     if (loaded?.provider && loaded.model) applyProviderModel(loaded.provider, loaded.model)
     setMessages(loaded?.messages ?? [])
+    setMode(loaded?.mode === "plan" ? "plan" : "build")
+    setCompaction(loaded?.compaction)
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -781,9 +1021,14 @@ function App() {
         return
       }
 
-      const compacted = [createCompactSummaryMessage(summary), ...tail]
-      setMessages(compacted)
-      saveSession(sessionId(), compacted, currentModel, currentProvider)
+      const newCompaction: CompactionInfo = {
+        summary,
+        createdAt: new Date().toISOString(),
+        sourceMessageCount: head.length,
+      }
+      setMessages(tail)
+      setCompaction(newCompaction)
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction)
       refreshSessions()
       setStatus("session compacted")
     } catch {
@@ -811,10 +1056,34 @@ function App() {
           const provider = PROVIDERS[id]
           if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
           const models = await ensureModelsForProvider(id)
-          const nextModel = models.includes(currentModel) ? currentModel : models[0]
+          const fallbackModel = defaultModelForCurrentProvider(id)
+          const nextModel = models.includes(currentModel)
+            ? currentModel
+            : models[0] ?? fallbackModel
           if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
           if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
           return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
+        },
+        currentProviderKeyName: (providerId) => getActiveConfiguredProviderKeyName(providerId ?? currentProvider),
+        listProviderKeys: (providerId) => listConfiguredProviderKeys(providerId),
+        getProviderKeyConfigPath: () => getProviderConfigPath(),
+        setProviderKey: async (providerId, keyName) => {
+          const result = setActiveConfiguredProviderKey(providerId, keyName)
+          if (!result.ok) return result
+          setProviderModels((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          setProviderModelsError((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          if (providerId === currentProvider) {
+            rebuildLayer()
+          }
+          return result
         },
         currentModel,
         setCurrentModel: async (name) => {
@@ -873,8 +1142,18 @@ function App() {
 
     queueMicrotask(scrollBottom)
 
+    // Auto-compact if context is near limit (> 80%)
+    {
+      const cfg = getModelConfig(currentModel)
+      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
+      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
+        await compactCurrentSession()
+      }
+    }
+
     runAbort = new AbortController()
     streamState.reset()
+    refreshAgentsInstruction()
     setRunning(true)
     setStatus("thinking...")
 
@@ -898,10 +1177,16 @@ function App() {
         runSync,
         systemPrompt,
         parseJson: tryParseJSON,
+        compactionSummary: compaction()?.summary,
+        ask: (req) => new Promise<void>((resolve, reject) => {
+          const SAFE = ["read", "grep", "glob", "web-fetch"]
+          if (SAFE.includes(req.permission)) { resolve(); return }
+          setPendingApproval({ request: { ...req, id: `perm_${Date.now()}` }, resolve, reject })
+        }),
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider)
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction())
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
@@ -912,6 +1197,18 @@ function App() {
   }
 
   useKeyboard((event) => {
+    const approval = pendingApproval()
+    if (approval) {
+      if (event.name === "y" || event.name === "return") {
+        setPendingApproval(undefined)
+        approval.resolve()
+      } else if (event.name === "n" || event.name === "escape" || event.name === "q") {
+        setPendingApproval(undefined)
+        approval.reject(new Error("denied by user"))
+      }
+      event.preventDefault()
+      return
+    }
     if (event.ctrl && event.name === "c") {
       void exitApp(0)
       event.preventDefault()
@@ -926,17 +1223,29 @@ function App() {
       return
     }
     if (showPalette()) {
-      if (paletteMode() === "rename") {
+      if (paletteMode() === "rename" || paletteMode() === "models") {
         if (event.name === "escape") {
-          setPalettePendingDelete(null)
-          setPaletteMode("actions")
-          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          if (paletteMode() === "rename") {
+            setPalettePendingDelete(null)
+            setPaletteMode("actions")
+            setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          } else {
+            const backMode = paletteModelBackMode()
+            setPaletteInput("")
+            setPaletteMode(backMode)
+            setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+          }
         } else if (event.name === "return") {
-          const sid = sessionId()
-          updateSessionMeta(sid, { title: paletteInput() })
-          refreshSessions()
-          setShowPalette(false)
-          setPaletteMode("actions")
+          if (paletteMode() === "rename") {
+            const sid = sessionId()
+            updateSessionMeta(sid, { title: paletteInput() })
+            refreshSessions()
+            setShowPalette(false)
+            setPaletteMode("actions")
+          } else {
+            const item = paletteItems()[paletteIndex()]
+            if (isSelectablePaletteItem(item)) item?.onSelect()
+          }
         } else if (event.name === "backspace") {
           setPaletteInput(prev => prev.slice(0, -1))
         } else if (event.name === "space") {
@@ -987,6 +1296,7 @@ function App() {
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "models") {
           const backMode = paletteModelBackMode()
+          setPaletteInput("")
           setPaletteMode(backMode)
           setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
         } else {
@@ -1130,7 +1440,36 @@ function App() {
         <For each={turns()}>
           {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
         </For>
+        <Show when={running()}>
+          <box marginTop={1} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accentDim}>
+            <Show when={streamingReasoning()}>
+              <box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accent} marginBottom={1}>
+                <text style={{ fg: THEME.muted }}>think  Thinking</text>
+                <text style={{ fg: THEME.muted }}>{streamingReasoning()}</text>
+              </box>
+            </Show>
+            <Show when={streamingText()}>
+              <markdown
+                content={streamingText()}
+                syntaxStyle={MARKDOWN_SYNTAX}
+                fg={THEME.text}
+                bg={THEME.background}
+                streaming={true}
+              />
+            </Show>
+          </box>
+        </Show>
       </scrollbox>
+
+      <Show when={pendingApproval()}>
+        {(approval: () => PendingApproval) => (
+          <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#f85149" backgroundColor={THEME.surface}>
+            <text style={{ fg: "#f85149" }}>PERMISSION REQUIRED</text>
+            <text style={{ fg: THEME.text }}>{`${approval().request.permission}: ${approval().request.patterns.join("  ")}`}</text>
+            <text style={{ fg: THEME.muted }}>{"y / Enter = allow   n / Escape = deny"}</text>
+          </box>
+        )}
+      </Show>
 
       <box flexShrink={0} flexDirection="column" border={["left"]} borderColor={THEME.border}>
         <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
@@ -1160,7 +1499,7 @@ function App() {
                 {mode() === "build" ? "Build" : "Plan"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-              <text style={{ fg: THEME.text }}>{modelLabel()}</text>
+              <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
               <Show when={running()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
               }>
@@ -1212,7 +1551,7 @@ function App() {
           position="absolute"
           top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : paletteItems().length + 6)) / 2)}
           left={Math.floor((dimensions().width - 2 - 52) / 2)}
-          width={52}
+          width={PALETTE_WIDTH}
           zIndex={100}
           backgroundColor={THEME.surface}
           border={["top", "left", "right", "bottom"]}
@@ -1229,14 +1568,20 @@ function App() {
                     ? "Switch Provider"
                     : paletteMode() === "models"
                       ? `Switch Model · ${paletteProviderTarget()}`
+                      : paletteMode() === "providerKeyProviders"
+                        ? "Provider Keys"
+                        : paletteMode() === "providerKeys"
+                          ? `Provider Keys · ${paletteProviderKeyTarget()}`
                       : "Command Palette"}
             </text>
             <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            {paletteMode() === "rename" ? (
+            <Show when={paletteMode() === "rename" || paletteMode() === "models"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-                <text style={{ fg: THEME.muted }}>Enter new name:</text>
+                <text style={{ fg: THEME.muted }}>
+                  {paletteMode() === "rename" ? "Enter new name:" : "Filter models:"}
+                </text>
                 <box
                   backgroundColor={THEME.background}
                   border={["left", "right"]}
@@ -1249,7 +1594,8 @@ function App() {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            ) : (
+            </Show>
+            <Show when={paletteMode() !== "rename"}>
               <For each={paletteItems()}>
                 {(item, index) => (
                   <box
@@ -1276,27 +1622,32 @@ function App() {
                     gap={2}
                   >
                     <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
-                      {item.label}
+                      {truncateText(item.label, PALETTE_LABEL_MAX)}
                     </text>
                     <Show when={item.hint && item.kind !== "section"}>
-                      <text style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}>
-                        {item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint}
+                      <text
+                        style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
+                        wrapMode="none"
+                      >
+                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX)}
                       </text>
                     </Show>
                   </box>
                 )}
               </For>
-            )}
+            </Show>
           </box>
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border}>
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
-                : paletteMode() === "sessions"
+                  : paletteMode() === "sessions"
                   ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
-                  : paletteMode() === "providers" || paletteMode() === "models"
-                    ? "↑↓ navigate  •  Enter select  •  Esc back"
-                  : "↑↓ navigate  •  Enter select  •  Esc close"}
+                  : paletteMode() === "models"
+                    ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
+                    : paletteMode() === "providers"
+                      ? "↑↓ navigate  •  Enter select  •  Esc back"
+                    : "↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>
         </box>

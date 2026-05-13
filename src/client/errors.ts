@@ -4,7 +4,7 @@ export function formatProviderError(error: unknown): string {
     return "Provider rate limit reached (free tier). Please wait a bit and try again, or switch to another provider/model."
   }
   if (text.includes("401") || text.includes("AuthError") || text.includes("Invalid API key")) {
-    return "Provider authentication failed. Check OPENCODE_API."
+    return "Provider authentication failed. Check your provider key configuration."
   }
   if (text.includes("fetch failed") || text.includes("SSL") || text.includes("socket")) {
     return "Network error while contacting provider. Please retry."

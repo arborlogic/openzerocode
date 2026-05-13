@@ -12,9 +12,15 @@
 - Session persistence 已是 multi-session 結構：
   - `~/.openzerocode/sessions/index.json`
   - `~/.openzerocode/sessions/<session-id>.json`
+  - session JSON 儲存：messages、model、provider、mode
+- Memory policy（v1）：
+  - 只讀 `AGENTS.md` 作為 workspace instruction
+  - `SESSION_SUMMARY.md` 不進入自動 loop（不自動讀、不自動寫）
+  - compaction summary 存 session JSON，不寫 repo 檔案
+  - 參考：[memory-architecture.md](memory-architecture.md)
 - Provider 已經是 registry 結構：
   - `openapi` / `big-pickle`
-  - `cloudflare`
+  - `openrouter`
 - Message model 已支援 part-based message：
   - `role`
   - `content`
