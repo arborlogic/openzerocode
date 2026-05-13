@@ -14,7 +14,7 @@
   - `~/.openzerocode/sessions/<session-id>.json`
 - Provider 已經是 registry 結構：
   - `openapi` / `big-pickle`
-  - `cloudflare`
+  - `openrouter`
 - Message model 已支援 part-based message：
   - `role`
   - `content`

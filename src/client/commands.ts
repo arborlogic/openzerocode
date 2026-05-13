@@ -12,6 +12,10 @@ export type SlashCommandDef = {
 export type CommandContext = {
   currentProvider: string
   setCurrentProvider: (id: string) => Promise<{ ok: boolean; message: string }>
+  currentProviderKeyName: (providerId?: string) => string | undefined
+  listProviderKeys: (providerId: string) => string[]
+  getProviderKeyConfigPath: () => string
+  setProviderKey: (providerId: string, keyName: string) => Promise<{ ok: boolean; message: string }>
   currentModel: string
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
   mode: "build" | "plan"
@@ -36,6 +40,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "clear", description: "Clear conversation history", aliases: ["new"] },
   { name: "info", description: "Show session info" },
   { name: "provider", description: "Switch provider: /provider <id>" },
+  { name: "provider-key", description: "Provider key config: /provider-key path|list [provider]|use <provider> <key-name>" },
   { name: "model", description: "Switch model: /model <name> or /model <provider>/<name>" },
   { name: "mode", description: "Switch mode: /mode build|plan" },
   { name: "sessions", description: "Open session list", aliases: ["s"] },
@@ -74,6 +79,41 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     }
     const result = await ctx.setCurrentModel(arg)
     ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+    return true
+  }
+
+  if (cmd === "provider-key") {
+    const sub = args[0]?.toLowerCase()
+    if (!sub) {
+      const providerId = ctx.currentProvider
+      const active = ctx.currentProviderKeyName(providerId) ?? "none"
+      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Provider key (${providerId}): ${active}` }])
+      return true
+    }
+    if (sub === "path") {
+      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Provider config: ${ctx.getProviderKeyConfigPath()}` }])
+      return true
+    }
+    if (sub === "list") {
+      const providerId = args[1] ?? ctx.currentProvider
+      const keys = ctx.listProviderKeys(providerId)
+      const active = ctx.currentProviderKeyName(providerId)
+      if (keys.length === 0) {
+        ctx.setNotices((prev) => [...prev, { kind: "system", text: `No configured keys for ${providerId}. Edit ${ctx.getProviderKeyConfigPath()}.` }])
+        return true
+      }
+      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Configured keys for ${providerId}:` }])
+      for (const key of keys) {
+        ctx.setNotices((prev) => [...prev, { kind: "system", text: `  ${key === active ? "*" : "-"} ${key}` }])
+      }
+      return true
+    }
+    if (sub === "use" && args[1] && args[2]) {
+      const result = await ctx.setProviderKey(args[1], args[2])
+      ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+      return true
+    }
+    ctx.setNotices((prev) => [...prev, { kind: "error", text: "Usage: /provider-key path | /provider-key list [provider] | /provider-key use <provider> <key-name>" }])
     return true
   }
 

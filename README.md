@@ -55,6 +55,40 @@ Targeted tests:
 npx tsx --test <file>
 ```
 
+## Provider Keys
+
+Provider credentials can be set in a local config file:
+
+```text
+~/.openzerocode/providers.json
+```
+
+Shape:
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "activeKey": "default",
+      "keys": {
+        "default": "sk-or-...",
+        "backup": "sk-or-..."
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- Each provider can have multiple named keys.
+- `activeKey` selects which key the runtime uses for that provider.
+- Config file values are used before environment variables.
+- You can inspect and switch configured keys in the TUI with:
+  - `/provider-key path`
+  - `/provider-key list <provider>`
+  - `/provider-key use <provider> <key-name>`
+
 ## Architecture
 
 ```text
@@ -69,7 +103,7 @@ npx tsx --test <file>
          │
          ├─ provider layer
          │  - openapi / big-pickle
-         │  - cloudflare
+         │  - openrouter
          │
          └─ tool layer
             - read / write / grep / glob

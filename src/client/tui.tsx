@@ -4,7 +4,7 @@ import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opent
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { platform } from "os"
-import { buildLayer, autoDetectProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
+import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
@@ -17,13 +17,14 @@ import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
-import { getModelConfig } from "../provider/models"
+import { getKnownModelConfig, getModelConfig } from "../provider/models"
 import { buildCompactionTranscript, createCompactSummaryMessage, selectCompactionTail } from "./session-compact"
 import { loadWorkspaceMemory } from "./workspace-memory"
 import { buildSessionSummaryPrompt, writeSessionSummary } from "./workspace-summary"
+import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
-let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
+let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let workspaceMemory = loadWorkspaceMemory(process.cwd())
 
@@ -77,6 +78,11 @@ function rebuildLayer() {
   currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 }
 
+function defaultModelForCurrentProvider(providerId: string) {
+  const configured = process.env.OPENZERO_MODEL ?? defaultModelForProvider(providerId)
+  return providerId === "openapi" ? normalizeBigPickleModel(configured) : configured
+}
+
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(currentLayer)))
 }
@@ -92,6 +98,35 @@ function stripAnsi(str: string) {
 function renderAssistantText(text: string) {
   const rendered = renderMarkdown(text).trim()
   return rendered || text
+}
+
+function truncateText(text: string, max: number) {
+  if (max <= 0) return ""
+  if (text.length <= max) return text
+  if (max <= 1) return "…"
+  return text.slice(0, max - 1) + "…"
+}
+
+function fmtContextLimit(limit: number) {
+  if (limit >= 1_000_000) {
+    const millions = limit / 1_000_000
+    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}m`
+  }
+  return `${Math.round(limit / 1000)}k`
+}
+
+function fmtPrice(value: number) {
+  if (value === 0) return "free"
+  if (value >= 1) return `$${value}`
+  return `$${value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`
+}
+
+function modelHint(model: string) {
+  const cfg = getKnownModelConfig(model)
+  if (!cfg) return ""
+  if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
+  if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
+  return `${fmtContextLimit(cfg.contextLimit)} • ${fmtPrice(cfg.pricing.input)}/${fmtPrice(cfg.pricing.output)}`
 }
 
 function isTransientPasteMarker(input: string) {
@@ -313,7 +348,7 @@ function App() {
       rebuildLayer()
     } catch {
       currentProvider = autoDetectProvider() ?? "openapi"
-      currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? "big-pickle")
+      currentModel = defaultModelForCurrentProvider(currentProvider)
       rebuildLayer()
     }
   }
@@ -330,13 +365,15 @@ function App() {
   const [copyNotice, setCopyNotice] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
+  const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
+  const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
@@ -357,6 +394,9 @@ function App() {
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+  const PALETTE_WIDTH = 52
+  const PALETTE_LABEL_MAX = 34
+  const PALETTE_HINT_MAX = 12
 
   type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
 
@@ -390,6 +430,11 @@ function App() {
   const modelLabel = createMemo(() => {
     selectionRevision()
     return currentModel
+  })
+
+  const activeProviderKeyLabel = createMemo(() => {
+    providerConfigRevision()
+    return getActiveConfiguredProviderKeyName(currentProvider) ?? "none"
   })
 
   const applyProviderModel = (providerId: string, model: string, persist = false) => {
@@ -442,9 +487,17 @@ function App() {
     setPalettePendingDelete(null)
     setPaletteProviderTarget(providerId)
     setPaletteModelBackMode(backMode)
+    setPaletteInput("")
     setPaletteMode("models")
     setPaletteIndex(0)
     void loadModelsForProvider(providerId)
+  }
+
+  const openProviderKeyPalette = (providerId: string) => {
+    setPalettePendingDelete(null)
+    setPaletteProviderKeyTarget(providerId)
+    setPaletteMode("providerKeys")
+    setPaletteIndex(0)
   }
 
   const actionPaletteItems = createMemo<PaletteItem[]>(() => {
@@ -501,8 +554,17 @@ function App() {
       },
       {
         label: "Switch model",
-        hint: modelLabel(),
+        hint: truncateText(modelLabel(), PALETTE_HINT_MAX),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
+      },
+      {
+        label: "Provider keys",
+        hint: truncateText(`${providerLabel()} • ${activeProviderKeyLabel()}`, PALETTE_HINT_MAX),
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteMode("providerKeyProviders")
+          setPaletteIndex(0)
+        },
       },
     ]
   })
@@ -545,7 +607,7 @@ function App() {
       return true
     }).map<PaletteItem>((provider) => ({
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
-      hint: provider.id,
+      hint: truncateText(provider.id, PALETTE_HINT_MAX),
       onSelect: () => openModelsPalette(provider.id, "providers"),
     }))
 
@@ -566,6 +628,11 @@ function App() {
     const loading = providerModelsLoading() === providerId
     const error = providerModelsError()[providerId]
     const models = providerModels()[providerId] ?? []
+    const filter = paletteInput().trim().toLowerCase()
+    const filteredModels = !filter
+      ? models
+      : models.filter((model) => model.toLowerCase().includes(filter))
+    const visibleModels = filteredModels.slice(0, 10)
     const items: PaletteItem[] = []
 
     if (loading) {
@@ -580,11 +647,35 @@ function App() {
       items.push({ label: "No models available", kind: "section", onSelect: () => {} })
     }
 
-    for (const model of models) {
+    if (!loading && models.length > 0) {
+      items.push({
+        label: filter
+          ? `Showing ${visibleModels.length} / ${filteredModels.length} match(es)`
+          : `Showing ${visibleModels.length} / ${models.length} model(s)`,
+        kind: "section",
+        onSelect: () => {},
+      })
+      if (filteredModels.length > 10) {
+        items.push({
+          label: "Type to narrow results",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+      if (filter && filteredModels.length === 0) {
+        items.push({
+          label: "No models match current filter",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+    }
+
+    for (const model of visibleModels) {
       const isCurrent = providerId === providerLabel() && model === modelLabel()
       items.push({
         label: `${isCurrent ? ">" : " "} ${model}`,
-        hint: providerId,
+        hint: truncateText(modelHint(model), PALETTE_HINT_MAX),
         onSelect: () => {
           if (!applyProviderModel(providerId, model, true)) return
           setStatus(`provider/model -> ${providerId}/${model}`)
@@ -606,6 +697,97 @@ function App() {
     return items
   })
 
+  const providerKeyProviderPaletteItems = createMemo<PaletteItem[]>(() => {
+    selectionRevision()
+    providerConfigRevision()
+    const seen = new Set<string>()
+    const items = Object.values(PROVIDERS).filter((provider) => {
+      if (seen.has(provider.id)) return false
+      seen.add(provider.id)
+      return true
+    }).map<PaletteItem>((provider) => {
+      const active = getActiveConfiguredProviderKeyName(provider.id) ?? "env"
+      const resolved = getActiveConfiguredProviderKeyName(provider.id) ?? "none"
+      const isCurrent = provider.id === providerLabel()
+      return {
+        label: `${isCurrent ? ">" : " "} ${provider.name}`,
+        hint: truncateText(`${provider.id} • ${resolved}`, PALETTE_HINT_MAX),
+        onSelect: () => openProviderKeyPalette(provider.id),
+      }
+    })
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("actions")
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+      },
+    })
+    return items
+  })
+
+  const providerKeyPaletteItems = createMemo<PaletteItem[]>(() => {
+    providerConfigRevision()
+    const providerId = paletteProviderKeyTarget()
+    const active = getActiveConfiguredProviderKeyName(providerId)
+    const keys = listConfiguredProviderKeys(providerId)
+    const items: PaletteItem[] = []
+
+    items.push({
+      label: `Config: ${getProviderConfigPath()}`,
+      kind: "section",
+      onSelect: () => {},
+    })
+
+    if (keys.length === 0) {
+      items.push({
+        label: "No configured keys",
+        kind: "section",
+        onSelect: () => {},
+      })
+    }
+
+    for (const key of keys) {
+      items.push({
+        label: `${key === active ? ">" : " "} ${key}`,
+        hint: truncateText(providerId, PALETTE_HINT_MAX),
+        onSelect: () => {
+          const result = setActiveConfiguredProviderKey(providerId, key)
+          if (!result.ok) {
+            setStatus(result.message)
+            return
+          }
+          setProviderConfigRevision((value) => value + 1)
+          setProviderModels((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          setProviderModelsError((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          if (providerId === currentProvider) rebuildLayer()
+          setStatus(result.message)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("providerKeyProviders")
+        setPaletteIndex(firstSelectablePaletteIndex(providerKeyProviderPaletteItems()))
+      },
+    })
+    return items
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
@@ -613,13 +795,25 @@ function App() {
         ? providerPaletteItems()
         : paletteMode() === "models"
           ? modelPaletteItems()
+          : paletteMode() === "providerKeyProviders"
+            ? providerKeyProviderPaletteItems()
+            : paletteMode() === "providerKeys"
+              ? providerKeyPaletteItems()
           : actionPaletteItems(),
   )
+
+  createEffect(() => {
+    if (!showPalette()) return
+    if (paletteMode() !== "models") return
+    paletteInput()
+    setPaletteIndex(firstSelectablePaletteIndex(paletteItems()))
+  })
 
   const turns = createMemo(() => {
     selectionRevision()
     const result: DisplayTurn[] = []
     const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
+    const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy`
 
     const ensureTurn = () => {
       const existing = result[result.length - 1]
@@ -668,7 +862,7 @@ function App() {
         || entry.kind === "tool-call"
         || entry.kind === "error",
       )) {
-        turn.footer = assistantFooter()
+        turn.footer = footerText()
       }
     }
 
@@ -858,10 +1052,34 @@ function App() {
           const provider = PROVIDERS[id]
           if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
           const models = await ensureModelsForProvider(id)
-          const nextModel = models.includes(currentModel) ? currentModel : models[0]
+          const fallbackModel = defaultModelForCurrentProvider(id)
+          const nextModel = models.includes(currentModel)
+            ? currentModel
+            : models[0] ?? fallbackModel
           if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
           if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
           return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
+        },
+        currentProviderKeyName: (providerId) => getActiveConfiguredProviderKeyName(providerId ?? currentProvider),
+        listProviderKeys: (providerId) => listConfiguredProviderKeys(providerId),
+        getProviderKeyConfigPath: () => getProviderConfigPath(),
+        setProviderKey: async (providerId, keyName) => {
+          const result = setActiveConfiguredProviderKey(providerId, keyName)
+          if (!result.ok) return result
+          setProviderModels((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          setProviderModelsError((prev) => {
+            const next = { ...prev }
+            delete next[providerId]
+            return next
+          })
+          if (providerId === currentProvider) {
+            rebuildLayer()
+          }
+          return result
         },
         currentModel,
         setCurrentModel: async (name) => {
@@ -975,17 +1193,29 @@ function App() {
       return
     }
     if (showPalette()) {
-      if (paletteMode() === "rename") {
+      if (paletteMode() === "rename" || paletteMode() === "models") {
         if (event.name === "escape") {
-          setPalettePendingDelete(null)
-          setPaletteMode("actions")
-          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          if (paletteMode() === "rename") {
+            setPalettePendingDelete(null)
+            setPaletteMode("actions")
+            setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          } else {
+            const backMode = paletteModelBackMode()
+            setPaletteInput("")
+            setPaletteMode(backMode)
+            setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+          }
         } else if (event.name === "return") {
-          const sid = sessionId()
-          updateSessionMeta(sid, { title: paletteInput() })
-          refreshSessions()
-          setShowPalette(false)
-          setPaletteMode("actions")
+          if (paletteMode() === "rename") {
+            const sid = sessionId()
+            updateSessionMeta(sid, { title: paletteInput() })
+            refreshSessions()
+            setShowPalette(false)
+            setPaletteMode("actions")
+          } else {
+            const item = paletteItems()[paletteIndex()]
+            if (isSelectablePaletteItem(item)) item?.onSelect()
+          }
         } else if (event.name === "backspace") {
           setPaletteInput(prev => prev.slice(0, -1))
         } else if (event.name === "space") {
@@ -1036,6 +1266,7 @@ function App() {
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "models") {
           const backMode = paletteModelBackMode()
+          setPaletteInput("")
           setPaletteMode(backMode)
           setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
         } else {
@@ -1209,7 +1440,7 @@ function App() {
                 {mode() === "build" ? "Build" : "Plan"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-              <text style={{ fg: THEME.text }}>{modelLabel()}</text>
+              <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
               <Show when={running()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
               }>
@@ -1261,7 +1492,7 @@ function App() {
           position="absolute"
           top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : paletteItems().length + 6)) / 2)}
           left={Math.floor((dimensions().width - 2 - 52) / 2)}
-          width={52}
+          width={PALETTE_WIDTH}
           zIndex={100}
           backgroundColor={THEME.surface}
           border={["top", "left", "right", "bottom"]}
@@ -1278,14 +1509,20 @@ function App() {
                     ? "Switch Provider"
                     : paletteMode() === "models"
                       ? `Switch Model · ${paletteProviderTarget()}`
+                      : paletteMode() === "providerKeyProviders"
+                        ? "Provider Keys"
+                        : paletteMode() === "providerKeys"
+                          ? `Provider Keys · ${paletteProviderKeyTarget()}`
                       : "Command Palette"}
             </text>
             <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            {paletteMode() === "rename" ? (
+            <Show when={paletteMode() === "rename" || paletteMode() === "models"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-                <text style={{ fg: THEME.muted }}>Enter new name:</text>
+                <text style={{ fg: THEME.muted }}>
+                  {paletteMode() === "rename" ? "Enter new name:" : "Filter models:"}
+                </text>
                 <box
                   backgroundColor={THEME.background}
                   border={["left", "right"]}
@@ -1298,7 +1535,8 @@ function App() {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            ) : (
+            </Show>
+            <Show when={paletteMode() !== "rename"}>
               <For each={paletteItems()}>
                 {(item, index) => (
                   <box
@@ -1325,27 +1563,32 @@ function App() {
                     gap={2}
                   >
                     <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
-                      {item.label}
+                      {truncateText(item.label, PALETTE_LABEL_MAX)}
                     </text>
                     <Show when={item.hint && item.kind !== "section"}>
-                      <text style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}>
-                        {item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint}
+                      <text
+                        style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
+                        wrapMode="none"
+                      >
+                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX)}
                       </text>
                     </Show>
                   </box>
                 )}
               </For>
-            )}
+            </Show>
           </box>
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border}>
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
-                : paletteMode() === "sessions"
+                  : paletteMode() === "sessions"
                   ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
-                  : paletteMode() === "providers" || paletteMode() === "models"
-                    ? "↑↓ navigate  •  Enter select  •  Esc back"
-                  : "↑↓ navigate  •  Enter select  •  Esc close"}
+                  : paletteMode() === "models"
+                    ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
+                    : paletteMode() === "providers"
+                      ? "↑↓ navigate  •  Enter select  •  Esc back"
+                    : "↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>
         </box>
