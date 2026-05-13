@@ -94,6 +94,7 @@ export async function runSession(
 
     let content = ""
     let reasoning = ""
+    let hasReasoning = false
     let finishReason: string | null | undefined
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
@@ -108,11 +109,14 @@ export async function runSession(
         ui.setStatus("generating...")
         ui.scrollBottom()
       }
-      if (value.delta.reasoning_content) {
-        reasoning += value.delta.reasoning_content
-        ui.streamReasoningChunk(value.delta.reasoning_content)
-        ui.setStatus("reasoning...")
-        ui.scrollBottom()
+      if (value.delta.reasoning_content !== undefined) {
+        hasReasoning = true
+        if (value.delta.reasoning_content) {
+          reasoning += value.delta.reasoning_content
+          ui.streamReasoningChunk(value.delta.reasoning_content)
+          ui.setStatus("reasoning...")
+          ui.scrollBottom()
+        }
       }
       for (const tc of value.tool_calls ?? []) {
         const next = acc.get(tc.index ?? 0) ?? { name: "", arguments: "" }
@@ -146,7 +150,7 @@ export async function runSession(
 
     const assistantMessage: Message = createAssistantMessage({
       content: content || undefined,
-      reasoning_content: reasoning || undefined,
+      reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
       tool_calls: toolCalls,
     })
     allMessages.push(assistantMessage)
