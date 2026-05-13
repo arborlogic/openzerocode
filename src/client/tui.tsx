@@ -56,6 +56,12 @@ const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
   { scope: ["function"], style: { foreground: "#d2a8ff" } },
   { scope: ["type"], style: { foreground: "#ffa657" } },
 ])
+// Register a paste-marker style for extmarks (orange badge like opencode)
+MARKDOWN_SYNTAX.registerStyle("paste", {
+  fg: THEME.background,
+  bg: THEME.warning,
+  bold: true,
+})
 
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
@@ -132,7 +138,7 @@ function modelHint(model: string) {
 }
 
 function isTransientPasteMarker(input: string) {
-  return /^\[Pasted ~.*$/.test(input.trim())
+  return /^\[Pasted ~\d+ lines(?: #\d+)?\]/.test(input.trim())
 }
 
 async function copyToClipboard(text: string) {
@@ -400,6 +406,11 @@ function App() {
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [showCompletedTools, setShowCompletedTools] = createSignal(false)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
+  const [composerCollapsed, setComposerCollapsed] = createSignal(false)
+  const pastedContent = new Map<string, string>()
+  let pasteCounter = 0
+  const pasteStyleId = MARKDOWN_SYNTAX.getStyleId("paste")!
+  let pasteExtmarkTypeId = 0
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   createEffect(() => {
@@ -1107,8 +1118,17 @@ function App() {
       autocompleteApi.select()
       return
     }
-    const input = draft().trim()
-    if (!input) return
+    const rawInput = draft().trim()
+    if (!rawInput) return
+
+    // Expand pasted markers back to full content
+    let input = rawInput
+    for (const [marker, content] of pastedContent) {
+      if (input.includes(marker)) {
+        input = input.replace(marker, content)
+      }
+    }
+
     if (isTransientPasteMarker(input)) {
       setComposerText("")
       return
@@ -1568,15 +1588,42 @@ function App() {
                 backgroundColor={THEME.surface}
                 cursorColor={THEME.text}
                 keyBindings={PROMPT_KEY_BINDINGS}
-                minHeight={1}
-                maxHeight={6}
+                syntaxStyle={MARKDOWN_SYNTAX}
+                minHeight={composerCollapsed() ? 1 : 1}
+                maxHeight={composerCollapsed() ? 1 : 12}
                 width="100%"
                 focused={!showPalette()}
                 ref={(node) => {
                   composer = node
+                  if (node && pasteExtmarkTypeId === 0) {
+                    pasteExtmarkTypeId = node.extmarks.registerType("paste")
+                  }
                 }}
                 onContentChange={() => setDraft(composer?.plainText ?? "")}
                 onSubmit={() => { void submit() }}
+                onPaste={(event) => {
+                  const text = new TextDecoder().decode(event.bytes)
+                    .replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
+                  if (!text) return
+                  const lineCount = (text.match(/\n/g)?.length ?? 0) + 1
+                  if (lineCount >= 3 || text.length > 200) {
+                    event.preventDefault()
+                    if (!composer || pasteExtmarkTypeId === 0) return
+                    pasteCounter++
+                    const marker = `[Pasted ~${lineCount} lines #${pasteCounter}]`
+                    const cursor = composer.visualCursor.offset
+                    composer.insertText(marker + " ")
+                    composer.extmarks.create({
+                      start: cursor,
+                      end: cursor + marker.length,
+                      virtual: true,
+                      styleId: pasteStyleId,
+                      typeId: pasteExtmarkTypeId,
+                    })
+                    pastedContent.set(marker, text)
+                    return
+                  }
+                }}
               />
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
