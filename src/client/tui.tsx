@@ -58,7 +58,7 @@ const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
 ])
 
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
-const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P palette"
+const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -205,7 +205,9 @@ const SIDEBAR_WIDTH = 34
 
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
-  const [collapsed, setCollapsed] = createSignal(collapsible() && !(props.entry.streaming ?? false))
+  const [collapsed, setCollapsed] = createSignal(
+    collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
+  )
   const showHeader = () => props.entry.kind === "reasoning"
     || props.entry.kind === "tool-call"
     || props.entry.kind === "tool"
@@ -396,6 +398,8 @@ function App() {
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
+  const [showCompletedTools, setShowCompletedTools] = createSignal(false)
+  const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   createEffect(() => {
@@ -529,6 +533,44 @@ function App() {
       {
         label: "Focus input",
         onSelect: () => { setShowPalette(false) },
+      },
+      {
+        label: "DISPLAY",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Completed tools",
+        hint: showCompletedTools() ? "shown" : "hidden",
+        onSelect: () => { setShowCompletedTools(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Thinking blocks",
+        hint: showThinkingBlocks() ? "shown" : "hidden",
+        onSelect: () => { setShowThinkingBlocks(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Reload config",
+        hint: "re-read providers.json & AGENTS.md",
+        onSelect: () => {
+          refreshAgentsInstruction()
+          // Re-detect provider in case API keys changed
+          const detected = autoDetectProvider()
+          if (detected && detected !== currentProvider) {
+            currentProvider = detected
+            currentModel = defaultModelForCurrentProvider(currentProvider)
+          } else {
+            // Re-normalize model in case API key status changed
+            currentModel = normalizeBigPickleModel(currentModel)
+          }
+          rebuildLayer()
+          setProviderModels({})
+          setProviderModelsError({})
+          setProviderConfigRevision(v => v + 1)
+          setSelectionRevision(v => v + 1)
+          setStatus("config reloaded")
+          setShowPalette(false)
+        },
       },
       {
         label: "SESSION",
@@ -831,6 +873,26 @@ function App() {
     const result: DisplayTurn[] = []
     const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
     const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy`
+    let hiddenToolCount = 0
+    const hiddenToolNames = new Set<string>()
+
+    const shouldShowEntry = (entry: DisplayBlock): boolean => {
+      // Always show streaming entries
+      if (entry.streaming) return true
+      // Always show user, assistant, system, error
+      if (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "system" || entry.kind === "error") return true
+      // Hide completed tool-call and tool entries when showCompletedTools is off
+      if ((entry.kind === "tool-call" || entry.kind === "tool") && !showCompletedTools()) {
+        if (entry.title) hiddenToolNames.add(entry.title)
+        hiddenToolCount++
+        return false
+      }
+      // Hide completed thinking blocks when showThinkingBlocks is off
+      if (entry.kind === "reasoning" && !showThinkingBlocks()) {
+        return false
+      }
+      return true
+    }
 
     const ensureTurn = () => {
       const existing = result[result.length - 1]
@@ -849,9 +911,21 @@ function App() {
         continue
       }
 
-      const entries = messageToBlocks(msg)
+      const entries = messageToBlocks(msg).filter(shouldShowEntry)
       if (entries.length === 0) continue
       ensureTurn().entries.push(...entries)
+    }
+
+    // Add compact tool summary after the last turn that had hidden tools
+    if (hiddenToolCount > 0) {
+      const lastTurn = result[result.length - 1]
+      if (lastTurn) {
+        const toolList = [...hiddenToolNames].slice(0, 5).join(", ")
+        const summary = hiddenToolNames.size > 5
+          ? `⚙ ${hiddenToolCount} calls · ${toolList}, …  (/tools to show)`
+          : `⚙ ${hiddenToolCount} calls · ${toolList}  (/tools to show)`
+        lastTurn.entries.push({ kind: "system", text: summary, streaming: false })
+      }
     }
 
     for (const n of notices()) {
@@ -1119,6 +1193,24 @@ function App() {
         },
         refreshSessions,
       }
+      // Handle display toggles that need local signal access
+      const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
+      if (slashCmd === "tools" || slashCmd === "tool-details") {
+        setShowCompletedTools(c => !c)
+        const state = showCompletedTools() ? "shown" : "hidden"
+        setNotices((prev) => [...prev, { kind: "system", text: `Completed tool details: ${state}` }])
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+        return
+      }
+      if (slashCmd === "thinking") {
+        setShowThinkingBlocks(c => !c)
+        const state = showThinkingBlocks() ? "visible" : "hidden"
+        setNotices((prev) => [...prev, { kind: "system", text: `Thinking blocks: ${state}` }])
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+        return
+      }
       await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
         setComposerText("")
@@ -1219,7 +1311,7 @@ function App() {
       event.preventDefault()
       return
     }
-    if (event.ctrl && event.name === "p") {
+    if ((event.ctrl && event.name === "p") || event.name === "f2") {
       setShowPalette((open) => !open)
       setPalettePendingDelete(null)
       setPaletteMode("actions")
@@ -1567,7 +1659,7 @@ function App() {
                           ? `Provider Keys · ${paletteProviderKeyTarget()}`
                       : "Command Palette"}
             </text>
-            <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
+            <text style={{ fg: THEME.muted }}>  F2 / Ctrl+P</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <Show when={paletteMode() === "rename" || paletteMode() === "models"}>
