@@ -3,6 +3,7 @@ import { join } from "path"
 import { homedir } from "os"
 import type { Message } from "../provider/types"
 import type { PermissionRule } from "./permission-rules"
+import { sanitizeMessages } from "./message-sanitize"
 
 export type CompactionInfo = {
   summary: string
@@ -121,9 +122,10 @@ export function saveSession(
   const index = readIndex()
   const existing = index.sessions.find(s => s.id === id)
   const createdAt = existing?.createdAt ?? now
+  const sanitized = sanitizeMessages(messages)
 
   writeFileSync(sessionPath(id), JSON.stringify({
-    messages,
+    messages: sanitized,
     model,
     provider,
     mode,
@@ -133,7 +135,7 @@ export function saveSession(
     updatedAt: now,
   }, null, 2), "utf-8")
 
-  const count = messages.length
+  const count = sanitized.length
   if (existing) {
     existing.messageCount = count
     existing.model = model
@@ -171,7 +173,7 @@ export function loadSessionState(id: string): { messages: Message[]; model?: str
     if (!existsSync(path)) return null
     const data = JSON.parse(readFileSync(path, "utf-8"))
     return {
-      messages: data.messages ?? [],
+      messages: sanitizeMessages(data.messages ?? []),
       model: data.model,
       provider: data.provider,
       mode: data.mode,

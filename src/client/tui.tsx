@@ -24,6 +24,7 @@ import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, type PermissionRule } from "./permission-rules"
+import { sanitizeMessages } from "./message-sanitize"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
@@ -1148,7 +1149,7 @@ function App() {
         setStatus("thinking...")
 
     try {
-      const next = await runSession(input, messages(), {
+      const next = await runSession(input, sanitizeMessages(messages()), {
         abort: runAbort.signal,
         streamReasoningChunk: (text) => streamState.streamReasoningChunk(text),
         streamAssistantChunk: (text) => streamState.streamAssistantChunk(text),

@@ -41,6 +41,10 @@ export async function runSession(
 ): Promise<Message[]> {
   const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
   const retrySchedule = [2000, 5000, 10000]
+  const CONTINUE_AFTER_LENGTH: Message = {
+    role: "system",
+    content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
+  }
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(ui.mode) }
   const userMessage: Message = { role: "user", content: userInput }
   const compactionMessage: Message[] = runtime.compactionSummary
@@ -90,12 +94,14 @@ export async function runSession(
 
     let content = ""
     let reasoning = ""
+    let finishReason: string | null | undefined
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
     while (true) {
       if (ui.abort.aborted) break
       const { done, value } = await reader.read()
       if (done) break
+      if (value.finish_reason) finishReason = value.finish_reason
       if (value.delta.content) {
         content += value.delta.content
         ui.streamAssistantChunk(value.delta.content)
@@ -148,6 +154,12 @@ export async function runSession(
     ui.addMessage(assistantMessage)
 
     if (!toolCalls) {
+      if (finishReason === "length") {
+        allMessages.push(CONTINUE_AFTER_LENGTH)
+        ui.notify("response hit token limit, continuing...", "system")
+        ui.setStatus("continuing response...")
+        continue
+      }
       ui.setStatus("waiting for input")
       return resultHistory
     }
