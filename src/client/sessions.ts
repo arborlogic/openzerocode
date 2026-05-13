@@ -116,6 +116,7 @@ export function saveSession(
   mode?: string,
   compaction?: CompactionInfo,
   permissionRules?: PermissionRule[],
+  autoApprove?: boolean,
 ) {
   ensureDir()
   const now = Date.now()
@@ -131,6 +132,7 @@ export function saveSession(
     mode,
     compaction,
     permissionRules: permissionRules ?? [],
+    autoApprove: autoApprove ?? false,
     createdAt,
     updatedAt: now,
   }, null, 2), "utf-8")
@@ -167,7 +169,7 @@ export function loadSession(id: string): Message[] | null {
   }
 }
 
-export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo; permissionRules?: PermissionRule[] } | null {
+export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo; permissionRules?: PermissionRule[]; autoApprove?: boolean } | null {
   try {
     const path = sessionPath(id)
     if (!existsSync(path)) return null
@@ -179,6 +181,7 @@ export function loadSessionState(id: string): { messages: Message[]; model?: str
       mode: data.mode,
       compaction: data.compaction,
       permissionRules: data.permissionRules ?? [],
+      autoApprove: data.autoApprove ?? false,
     }
   } catch {
     return null

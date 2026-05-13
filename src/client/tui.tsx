@@ -346,6 +346,7 @@ function App() {
   let initialMode: RunMode = "build"
   let initialCompaction: CompactionInfo | undefined
   let initialPermissionRules: PermissionRule[] = []
+  let initialAutoApprove = false
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -357,6 +358,7 @@ function App() {
       if (loaded.mode === "plan") initialMode = "plan"
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
+      initialAutoApprove = loaded.autoApprove ?? false
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -407,7 +409,7 @@ function App() {
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [showCompletedTools, setShowCompletedTools] = createSignal(false)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
-const [autoApprove, setAutoApprove] = createSignal(false)
+const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const pastedContent = new Map<string, string>()
   let pasteCounter = 0
@@ -441,8 +443,13 @@ const [autoApprove, setAutoApprove] = createSignal(false)
     return index >= 0 ? index : 0
   }
 
+  // Return the correct visible items list for the current palette mode
+  // (respects filtering for non-rename/non-models modes)
+  const displayItems = () =>
+    paletteMode() === "models" ? paletteItems() : filteredPaletteItems()
+
   const movePaletteIndex = (delta: -1 | 1) => {
-    const items = paletteItems()
+    const items = displayItems()
     if (items.length === 0) return
     let next = paletteIndex()
     while (true) {
@@ -479,7 +486,7 @@ const [autoApprove, setAutoApprove] = createSignal(false)
       currentProvider = nextProvider
       currentModel = nextModel
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules())
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       refreshSessions()
       return true
     } catch (error) {
@@ -649,7 +656,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Reload config",
-        hint: "re-read providers.json & AGENTS.md",
+        hint: "config files only (not source code)",
         onSelect: () => {
           refreshAgentsInstruction()
           // Re-detect provider in case API keys changed
@@ -668,6 +675,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setSelectionRevision(v => v + 1)
           setStatus("config reloaded")
           setShowPalette(false)
+        },
+      },
+      {
+        label: "Restart app",
+        hint: "exit (npm run dev for auto-reload)",
+        onSelect: () => {
+          doSaveCurrent()
+          setShowPalette(false)
+          // Exit so external watcher (bun --watch) can restart
+          setTimeout(() => process.exit(0), 100)
         },
       },
       {
@@ -981,6 +998,41 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           : actionPaletteItems(),
   )
 
+  const filteredPaletteItems = createMemo<PaletteItem[]>(() => {
+    const items = paletteItems()
+    // rename mode: paletteInput is the name text, not a filter
+    // models mode: handles its own filtering internally
+    if (paletteMode() === "rename" || paletteMode() === "models") return items
+    const filter = paletteInput().trim().toLowerCase()
+    if (!filter) return items
+    return items.filter((item) => {
+      if (item.kind === "section") return true
+      if (item.label.toLowerCase().includes(filter)) return true
+      if (item.hint && item.hint.toLowerCase().includes(filter)) return true
+      return false
+    })
+  })
+
+  // Reset filter when switching to modes that need a clean state
+  createEffect(() => {
+    const mode = paletteMode()
+    if (mode !== "rename" && mode !== "models") {
+      setPaletteInput("")
+    }
+  })
+
+  // Keep palette index valid when filter narrows the visible items
+  createEffect(() => {
+    if (paletteMode() === "rename" || paletteMode() === "models") return
+    paletteInput() // depend on filter text
+    const items = displayItems()
+    const idx = paletteIndex()
+    if (items.length === 0) return
+    if (idx >= items.length || !isSelectablePaletteItem(items[idx])) {
+      setPaletteIndex(firstSelectablePaletteIndex(items))
+    }
+  })
+
   createEffect(() => {
     if (!showPalette()) return
     if (paletteMode() !== "models") return
@@ -1123,7 +1175,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules())
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
   }
 
   const refreshSessions = () => {
@@ -1139,6 +1191,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
+    setAutoApprove(loaded?.autoApprove ?? false)
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -1233,7 +1286,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
       setMessages(tail)
       setCompaction(newCompaction)
-      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules())
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
       refreshSessions()
       setStatus("session compacted")
     } catch {
@@ -1368,6 +1421,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         queueMicrotask(scrollBottom)
         return
       }
+      if (slashCmd === "commit") {
+        setComposerText("Please help generate a commit message and commit the changes")
+        queueMicrotask(scrollBottom)
+        return
+      }
       await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
         setComposerText("")
@@ -1458,7 +1516,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules())
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
@@ -1498,41 +1556,58 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
     if (showPalette()) {
-      if (paletteMode() === "rename" || paletteMode() === "models") {
-        if (event.name === "escape") {
-          if (paletteMode() === "rename") {
-            setPalettePendingDelete(null)
-            setPaletteMode("actions")
-            setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
-          } else {
-            const backMode = paletteModelBackMode()
-            setPaletteInput("")
-            setPaletteMode(backMode)
-            setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
-          }
-        } else if (event.name === "return") {
-          if (paletteMode() === "rename") {
-            const sid = sessionId()
-            updateSessionMeta(sid, { title: paletteInput() })
-            refreshSessions()
-            setShowPalette(false)
-            setPaletteMode("actions")
-          } else {
-            const item = paletteItems()[paletteIndex()]
-            if (isSelectablePaletteItem(item)) item?.onSelect()
-          }
-        } else if (event.name === "backspace") {
-          setPaletteInput(prev => prev.slice(0, -1))
-        } else if (event.name === "space") {
-          setPaletteInput(prev => prev + " ")
-        } else if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
-          setPaletteInput(prev => prev + event.name)
-        }
+      // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
+      if (event.name === "backspace") {
+        setPaletteInput(prev => prev.slice(0, -1))
         event.preventDefault()
         return
       }
+      if (event.name === "space") {
+        setPaletteInput(prev => prev + " ")
+        event.preventDefault()
+        return
+      }
+      if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
+        setPaletteInput(prev => prev + event.name)
+        event.preventDefault()
+        return
+      }
+      if (paletteMode() === "rename") {
+        if (event.name === "escape") {
+          setPalettePendingDelete(null)
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const sid = sessionId()
+          updateSessionMeta(sid, { title: paletteInput() })
+          refreshSessions()
+          setShowPalette(false)
+          setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "models") {
+        if (event.name === "escape") {
+          const backMode = paletteModelBackMode()
+          setPaletteInput("")
+          setPaletteMode(backMode)
+          setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const item = paletteItems()[paletteIndex()]
+          if (isSelectablePaletteItem(item)) item?.onSelect()
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "sessions" && event.ctrl && event.name === "d") {
-        const item = paletteItems()[paletteIndex()]
+        const item = displayItems()[paletteIndex()]
         const targetId = item?.sessionId
         if (!targetId) {
           setComposerText("")
@@ -1597,7 +1672,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (event.name === "return") {
-        const item = paletteItems()[paletteIndex()]
+        const item = displayItems()[paletteIndex()]
         if (isSelectablePaletteItem(item)) item?.onSelect()
         event.preventDefault()
         return
@@ -1796,6 +1871,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
+              <Show when={autoApprove()}>
+                <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+                <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
+              </Show>
               <Show when={running()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
               }>
@@ -1828,7 +1907,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
-          const noArgs = new Set(["help", "clear", "info", "exit", "quit"])
+          const noArgs = new Set(["help", "clear", "info", "exit", "quit", "commit"])
           if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })
@@ -1845,7 +1924,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette()}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : paletteItems().length + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={Math.floor((dimensions().width - 2 - 52) / 2)}
           width={PALETTE_WIDTH}
           zIndex={100}
@@ -1877,10 +1956,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>  F2 / Ctrl+P</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <Show when={paletteMode() === "rename" || paletteMode() === "models"}>
-              <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
+            <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : "Filter models:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "models" ? "Filter models:" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -1894,9 +1972,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            </Show>
             <Show when={paletteMode() !== "rename"}>
-              <For each={paletteItems()}>
+              <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
                     paddingLeft={2}
@@ -1942,12 +2019,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
                   : paletteMode() === "sessions"
-                  ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
                   : paletteMode() === "models"
                     ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providers"
-                      ? "↑↓ navigate  •  Enter select  •  Esc back"
-                    : "↑↓ navigate  •  Enter select  •  Esc close"}
+                      ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
+                    : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>
         </box>
