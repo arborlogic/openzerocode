@@ -47,6 +47,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "session", description: "Manage sessions: /session new|open|delete|rename" },
   { name: "tools", description: "Toggle completed tool details visibility", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks visibility" },
+  { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
   { name: "exit", description: "Exit program", aliases: ["quit"] },
 ]
 

@@ -23,7 +23,7 @@ import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMes
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
 import { buildSystemPrompt } from "./system-prompt"
-import { addPermissionRules, shouldAutoApprove, type PermissionRule } from "./permission-rules"
+import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
@@ -407,6 +407,7 @@ function App() {
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [showCompletedTools, setShowCompletedTools] = createSignal(false)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
+const [autoApprove, setAutoApprove] = createSignal(false)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const pastedContent = new Map<string, string>()
   let pasteCounter = 0
@@ -640,6 +641,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Thinking blocks",
         hint: showThinkingBlocks() ? "shown" : "hidden",
         onSelect: () => { setShowThinkingBlocks(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Auto-approve",
+        hint: autoApprove() ? "ON" : "OFF",
+        onSelect: () => { setAutoApprove(c => !c); setShowPalette(false) },
       },
       {
         label: "Reload config",
@@ -1354,6 +1360,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         queueMicrotask(scrollBottom)
         return
       }
+      if (slashCmd === "auto" || slashCmd === "auto-approve") {
+        setAutoApprove(c => !c)
+        const state = autoApprove() ? "ON" : "OFF"
+        setNotices((prev) => [...prev, { kind: "system", text: `Auto-approve: ${state}` }])
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+        return
+      }
       await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
         setComposerText("")
@@ -1409,6 +1423,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
           if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
+          // Auto-approve mode: auto-approve non-bash permissions,
+          // and bash commands that are not destructive.
+          if (autoApprove()) {
+            if (req.permission === "bash") {
+              const dangerous = req.patterns.some((p) => isDangerousBashCommand(p))
+              if (dangerous) {
+                const request = { ...req, id: `perm_${Date.now()}` }
+                setPendingApproval({
+                  request,
+                  resolve,
+                  reject,
+                  allowAlways: () => {
+                    setPermissionRules((prev) => addPermissionRules(prev, req))
+                    resolve()
+                  },
+                })
+                return
+              }
+            }
+            resolve(); return
+          }
           const request = { ...req, id: `perm_${Date.now()}` }
           setPendingApproval({
             request,
