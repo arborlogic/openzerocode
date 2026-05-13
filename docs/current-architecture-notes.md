@@ -1,85 +1,85 @@
 # OpenZeroCode — Current Architecture Notes
 
-> **Status: ✅ 穩定版 — 此為 v1 已實作架構的記錄文件。**
+> **Status: ✅ Stable — This document records the v1 implemented architecture.**
 
-本文件記錄目前已確認的架構狀態與後續可考慮的方向，不把猜測性提案寫成既定方向。
+This document records the currently confirmed architecture state and directions to consider for the future. It does not present speculative proposals as established directions.
 
 ---
 
 ## Current Stable State
 
-### 核心架構
+### Core Architecture
 
 - **Active client entry**: `src/client/tui.tsx`
 - **Runtime**: Bun with `@opentui/solid/preload`
-- **Old readline client**: 已移除，不再是 active code path
+- **Old readline client**: Removed, no longer an active code path
 
 ### Session Persistence
 
-Multi-session JSON 結構（已穩定）：
+Multi-session JSON structure (stable):
 
 - `~/.openzerocode/sessions/index.json`
 - `~/.openzerocode/sessions/<session-id>.json`
-- session JSON 儲存：messages、model、provider、mode、compaction、permissionRules、autoApprove
+- Session JSON stores: messages, model, provider, mode, compaction, permissionRules, autoApprove
 
-### Memory Policy（v1 ✅）
+### Memory Policy (v1 ✅)
 
-| 項目 | 狀態 |
-|------|------|
-| `AGENTS.md` 載入為 workspace instruction | ✅ 已實作 (`workspace-memory.ts`) |
-| `SESSION_SUMMARY.md` 不進入自動 loop | ✅ 不自動讀寫 |
-| Compaction summary 存 session JSON | ✅ 不寫 repo 檔案 |
-| Context budget 自動觸發 compaction | ✅ 80% threshold |
+| Item | Status |
+|------|--------|
+| `AGENTS.md` loaded as workspace instruction | ✅ Implemented (`workspace-memory.ts`) |
+| `SESSION_SUMMARY.md` not in automatic loop | ✅ No auto read/write |
+| Compaction summary stored in session JSON | ✅ Not written to repo files |
+| Context budget auto-triggers compaction | ✅ 80% threshold |
 
-詳細設計請見 [memory-architecture.md](memory-architecture.md)
+See [memory-architecture.md](memory-architecture.md) for detailed design.
 
-### Provider 層
+### Provider Layer
 
-Registry 結構（已穩定）：
+Registry structure (stable):
 
 - `openrouter` — OpenRouter API
 - `big-pickle` — Big Pickle API
-- 可透過 registry 擴充
+- Extensible through registry
 
-實作：`src/provider/registry.ts` + `src/provider/config.ts`
+Implementation: `src/provider/registry.ts` + `src/provider/config.ts`
 
 ### Message Model
 
-已支援 part-based message：
+Part-based messages supported:
 
 - `role`, `content`, `reasoning_content`, `tool_calls`, `parts`
 
-### Permission / Auto-Approve（已實作 ✅）
+### Permission / Auto-Approve (✅ Implemented)
 
 - **`permission-rules.ts`**: `isSafePermission()`, `shouldAutoApprove()`, `addPermissionRules()`, `isDangerousBashCommand()`
-- **Dangerous command detection**: rm, rmdir, mv, truncate, shred, dd, `>` 等 destructive patterns
-- **Normalization**: 處理 env var prefix (`VAR=val rm`) 與 `sudo` prefix
-- **Auto-approve toggle**: 在 TUI 中可透過 `/auto` 指令或 palette 切換
-- **Session persistence**: autoApprove 狀態存於 session JSON
+- **Dangerous command detection**: rm, rmdir, mv, truncate, shred, dd, `>` and other destructive patterns
+- **Normalization**: Handles env var prefix (`VAR=val rm`) and `sudo` prefix
+- **Auto-approve toggle**: Can be switched via `/auto` command or palette in the TUI
+- **Session persistence**: autoApprove state stored in session JSON
 
 ### Tool Execution
 
-- `abort` 已串進 context
-- `ask()` permission callback 已整合 auto-approve logic
-- `metadata()` 可用
+- `abort` is wired into context
+- `ask()` permission callback integrated with auto-approve logic
+- `metadata()` is available
 
 ## Confirmed Runtime Behavior
 
-- assistant response 即時串流到 transcript
-- `reasoning_content` 以獨立 `Thinking` 區塊即時顯示
-- response 為 turn-oriented group
-- 純 `user` / `assistant` / `system` 文字不再顯示冗餘 header
-- assistant response footer：provider/model + copy hint
-- selection copy 已實作（onMouseUp → renderer selection → clipboard）
-- Build / Plan mode 已實作（Plan mode 傳空的 `toolDefs`）
-- command palette / provider / model switching 已實作
-- session list / rename / delete / compaction 已實作
-- sidebar 顯示 context、token/cost estimate、git diff summary
+- Assistant response streams in real-time to transcript
+- `reasoning_content` displays in a dedicated `Thinking` block in real-time
+- Response is turn-oriented groups
+- Plain `user` / `assistant` / `system` text no longer shows redundant headers
+- Assistant response footer: provider/model + copy hint
+- Selection copy implemented (onMouseUp → renderer selection → clipboard)
+- Build / Plan mode implemented (Plan mode sends empty `toolDefs`)
+- Command palette / provider / model switching implemented
+- Session list / rename / delete / compaction implemented
+- Sidebar shows context, token/cost estimate, git diff summary
 
-## 已驗證 (Test Coverage)
+## Test Coverage
 
-| 模組 | 測試檔案 |
-|------|---------|
+| Module | Test File |
+|--------|-----------|
 | Workspace memory | `workspace-memory.test.ts` |
 | Permission rules | `permission-rules.test.ts` |
 | Session state | `session-state.test.ts` |
@@ -93,7 +93,7 @@ Registry 結構（已穩定）：
 | Errors | `errors.test.ts` |
 | Markdown | `markdown.test.ts` |
 
-## Future Considerations（明確標為 idea，非 current plan）
+## Future Considerations (explicitly marked as ideas, not current plans)
 
 ### P1 — Coding-Agent Clarity
 
@@ -109,5 +109,5 @@ Registry 結構（已穩定）：
 
 ## Notes
 
-- 若要新增 roadmap，請只寫「已確認要做」的項目。
-- 若只是參考 opencode 的可能方向，請明確標成 idea，而不是 current plan。
+- When adding roadmap items, only include items confirmed for implementation.
+- If referencing possible directions from opencode, mark them clearly as ideas, not current plans.

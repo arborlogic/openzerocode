@@ -1,38 +1,38 @@
 # OpenZeroCode — Memory Architecture (v1)
 
-> **Status: ✅ 穩定版 — 此為已實作且正在使用的設計。**
+> **Status: ✅ Stable — This is the design currently implemented and in use.**
 
-本文件是 v1 的決定記錄，不是討論稿。
+This document records the v1 decisions, not a discussion draft.
 
 ---
 
 ## v1 Decision
 
-**v1 只做三件事（皆已實作）：**
+**v1 does only three things (all implemented):**
 
-1. ✅ `AGENTS.md` 穩定載入為 workspace instruction
-2. ✅ session JSON 穩定保存 messages + compaction summary
-3. ✅ context 超過門檻才 compact
+1. ✅ `AGENTS.md` is reliably loaded as a workspace instruction
+2. ✅ Session JSON reliably stores messages + compaction summary
+3. ✅ Context is compacted only when exceeding the threshold
 
-**v1 不做（未來可能）：**
+**v1 does not do (possible future):**
 
-- SESSION_SUMMARY.md 自動更新
-- 任何 repo 檔案的自動寫入
-- cross-session 記憶演化
-- `.zero/` 目錄
-- WORKSPACE_MEMORY.md / WORKSPACE_PROCEDURES.md
-- zero-api 整合
+- Auto-update `SESSION_SUMMARY.md`
+- Auto-write any repo files
+- Cross-session memory evolution
+- `.zero/` directory
+- `WORKSPACE_MEMORY.md` / `WORKSPACE_PROCEDURES.md`
+- zero-api integration
 
 ---
 
-## Prompt 組裝順序
+## Prompt Assembly Order
 
 ```
 System Prompt
   ↓
-AGENTS.md（如果存在）
+AGENTS.md (if present)
   ↓
-Compaction Summary（如果這個 session 曾經 compact 過）
+Compaction Summary (if this session has been compacted before)
   ↓
 Recent Tail Messages
   ↓
@@ -41,34 +41,34 @@ Current User Message
 
 ---
 
-## 各元件職責
+## Component Responsibilities
 
 ### AGENTS.md
 
-- workspace-level 的唯一 instruction 來源
-- 只放 stable、high-signal、執行前必須知道的事實
-- 由人類維護，不自動更新
-- 放在 workspace root（project root / git root）
+- The single workspace-level instruction source
+- Contains only stable, high-signal facts that must be known before execution
+- Maintained by humans, not auto-updated
+- Located at workspace root (project root / git root)
 
-適合放的內容：
+Appropriate content:
 
-- package manager（bun / pnpm / npm）
-- test command
-- 不能動的 generated files
-- known gotchas / constraints
-- repo structure 事實
+- Package manager (bun / pnpm / npm)
+- Test command
+- Generated files that should not be touched
+- Known gotchas / constraints
+- Repo structure facts
 
-不應該放：
+Should not contain:
 
-- session 細節
-- 臨時工作狀態
-- generic programming advice
+- Session details
+- Temporary work status
+- Generic programming advice
 
 ### Session JSON
 
-路徑：`~/.openzerocode/sessions/<session-id>.json`
+Path: `~/.openzerocode/sessions/<session-id>.json`
 
-儲存：
+Stores:
 
 ```json
 {
@@ -87,51 +87,51 @@ Current User Message
 }
 ```
 
-`compaction` 欄位只有在 compact 過後才存在。
+The `compaction` field only exists after compaction has occurred.
 
 ### Compaction
 
-- 觸發條件：估算 token 超過 model context limit 的門檻（建議 80%）
-- 手動觸發：`/compact` 指令
-- 輸出：summary 寫回 `session.compaction.summary`，不寫任何 repo 檔案
-- 保留最近 N 條 messages 作為 tail
+- Trigger condition: estimated token count exceeds the model context limit threshold (recommended 80%)
+- Manual trigger: `/compact` command
+- Output: summary written back to `session.compaction.summary`, no repo files are written
+- Retains the most recent N messages as a tail
 
 ---
 
-## SESSION_SUMMARY.md 的處理
+## SESSION_SUMMARY.md Handling
 
-v1 中不進入自動流程。
+Not part of the automatic flow in v1.
 
-不自動讀取、不自動寫入。
+Not automatically read or written.
 
-如果未來要支援，作為手動指令（`/export-summary`），由使用者自行決定。
-
----
-
-## 實作驗證
-
-對應的原始檔：
-
-- `src/client/workspace-memory.ts` — `loadAgentsInstruction()`: 從 workspace root 載入 AGENTS.md
-- `src/client/system-prompt.ts` — 組裝 prompt 時注入 AGENTS.md 內容
-- `src/client/sessions.ts` — `saveSession()` / `loadSessionState()`: session JSON 含 `compaction` 欄位
-- `src/client/session-compact.ts` — 產生 structured compaction summary
-- `src/client/session-runner.ts` — prompt 組裝順序：system → AGENTS.md → compaction → tail → user message
-
-## 為什麼這樣決定
-
-| 問題 | 原本做法 | v1 做法 |
-|---|---|---|
-| 每 turn 多一次 LLM call | 每次 submit 後呼叫 generateSessionSummary | 移除 |
-| git diff 被污染 | SESSION_SUMMARY.md 每 turn 變動 | 不寫 repo 檔案 |
-| 多 session 共用 summary 打架 | 所有 session 覆蓋同一個檔案 | summary 存 session JSON |
-| session context 被誤當 workspace memory | SESSION_SUMMARY.md 自動注入 | 只注入 AGENTS.md |
+If supported in the future, it will be a manual command (`/export-summary`) invoked at the user's discretion.
 
 ---
 
-## 未來可能演化（不在 v1 範圍）
+## Implementation Verification
 
-- directory-aware AGENTS.md（讀某個路徑時沿目錄向上找對應 AGENTS.md）
-- CLAUDE.md 相容層
-- cross-session memory 萃取（zero 整合）
-- WORKSPACE_MEMORY.md / WORKSPACE_PROCEDURES.md 拆檔
+Corresponding source files:
+
+- `src/client/workspace-memory.ts` — `loadAgentsInstruction()`: Loads AGENTS.md from workspace root
+- `src/client/system-prompt.ts` — Injects AGENTS.md content when assembling the prompt
+- `src/client/sessions.ts` — `saveSession()` / `loadSessionState()`: session JSON includes `compaction` field
+- `src/client/session-compact.ts` — Generates structured compaction summary
+- `src/client/session-runner.ts` — Prompt assembly order: system → AGENTS.md → compaction → tail → user message
+
+## Why These Decisions Were Made
+
+| Problem | Previous Approach | v1 Approach |
+|---------|-------------------|-------------|
+| Extra LLM call per turn | Called `generateSessionSummary` after each submit | Removed |
+| Git diff pollution | `SESSION_SUMMARY.md` changed every turn | Don't write repo files |
+| Multi-session summary conflicts | All sessions overwrote the same file | Summary stored in session JSON |
+| Session context mistaken for workspace memory | `SESSION_SUMMARY.md` auto-injected | Only inject `AGENTS.md` |
+
+---
+
+## Possible Future Evolution (outside v1 scope)
+
+- Directory-aware AGENTS.md (when reading a path, traverse upward to find a corresponding AGENTS.md)
+- CLAUDE.md compatibility layer
+- Cross-session memory extraction (zero integration)
+- Separate `WORKSPACE_MEMORY.md` / `WORKSPACE_PROCEDURES.md` files

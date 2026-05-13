@@ -1,77 +1,77 @@
 # OpenZeroCode — Current UI Notes
 
-> **Status: ✅ 穩定版 — 此為 v1 已實作 UI 的記錄文件。**
+> **Status: ✅ Stable — This document records the v1 implemented UI.**
 
-本文件記錄目前 UI 已落地的互動、尚未實作的缺口，以及可考慮的後續工作。
+This document records the current UI interactions that have been implemented, gaps that remain unimplemented, and recommended next steps.
 
 ---
 
-## 已實作功能
+## Implemented Features
 
-### 核心 UI
+### Core UI
 
-- 主入口為 `src/client/tui.tsx`
-- 回應區使用 `scrollbox`
-- response 為 turn-oriented transcript group
-- 滑鼠滾輪與 PgUp/PgDn 只影響回應區
+- Main entry point is `src/client/tui.tsx`
+- Response area uses `scrollbox`
+- Response is turn-oriented transcript groups
+- Mouse wheel and PgUp/PgDn only affect the response area
 
-### 輸入與操作
+### Input & Interaction
 
-- Escape 行為：
-  - 有 draft 時清空輸入
-  - 執行中且 draft 為空時中斷目前 run
-- Up / Down 輸入歷史已實作，最多 100 筆
-- 執行中 spinner animation 已實作
-- `/exit` 與 `Ctrl+C` 會先 destroy renderer 再退出
+- Escape behavior:
+  - Clears input when there is a draft
+  - Interrupts the current run during execution when draft is empty
+- Up / Down input history implemented, up to 100 entries
+- Spinner animation during execution implemented
+- `/exit` and `Ctrl+C` destroy the renderer before exiting
 
-### 模式切換
+### Mode Switching
 
-- Build / Plan mode 切換已實作
-- provider / model command palette 已實作
+- Build / Plan mode switching implemented
+- Provider / model command palette implemented
 
-### Session 管理
+### Session Management
 
-- session list / rename / delete / compaction 已實作
+- Session list / rename / delete / compaction implemented
 
-### Response 呈現
+### Response Display
 
-- assistant response 即時串流
-- `Thinking` 區塊即時串流
-- reasoning / tool / error block 可 collapse
-- assistant response footer：
+- Assistant response streams in real-time
+- `Thinking` block streams in real-time
+- Reasoning / tool / error blocks are collapsible
+- Assistant response footer:
   - `provider/model`
   - copy hint
-- selection copy 已實作 (onMouseUp → renderer selection → clipboard)
+- Selection copy implemented (onMouseUp → renderer selection → clipboard)
 
 ### Sidebar
 
-- 顯示 context、估算 cost、git diff summary
+- Shows context, estimated cost, git diff summary
 
 ### Permission / Auto-Approve
 
-- `/auto` 或 `/auto-approve` 指令切換 auto-approve 模式
-- Palette 中顯示 Auto-approve toggle（ON/OFF）
-- Auto-approve ON 時：
-  - 唯讀工具（read/grep/glob/web-fetch）自動放行
-  - write/edit 自動放行
-  - 非 destructive bash 自動放行
-  - destructive bash 仍跳出審批對話框
-- Permission rules 可累積：每次 allow 後自動加入規則
-- Auto-approve 狀態會保存至 session JSON
+- `/auto` or `/auto-approve` command toggles auto-approve mode
+- Palette displays Auto-approve toggle (ON/OFF)
+- When auto-approve is ON:
+  - Read-only tools (read/grep/glob/web-fetch) auto-approved
+  - write/edit auto-approved
+  - Non-destructive bash auto-approved
+  - Destructive bash still shows approval dialog
+- Permission rules accumulate: each allow action auto-adds a rule
+- Auto-approve state is persisted to session JSON
 
-## 尚未實作
+## Not Implemented
 
-- Smart auto-follow（`stickyScroll` 是部分解法，非完整 auto-follow）
+- Smart auto-follow (`stickyScroll` is a partial solution, not full auto-follow)
 - Paced streaming
 - Diff view
 - Response-scoped diff summary
 - Rich tool-specific cards
-- Copy affordance button（目前只有 hint）
+- Copy affordance button (currently only a hint)
 - Reasoning collapse / side panel
 
-## 已驗證 (Test Coverage)
+## Test Coverage
 
-| 測試 | 檔案 |
+| Test | File |
 |------|------|
 | Autocomplete | `autocomplete.test.ts` |
 | Commands | `commands.test.ts` |

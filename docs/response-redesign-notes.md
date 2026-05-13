@@ -1,58 +1,58 @@
 # OpenZeroCode — Response Redesign Notes
 
-> **Status: ✅ 穩定版 — response redesign 目前階段已實作完成。**
+> **Status: ✅ Stable — The current phase of response redesign is complete.**
 
-本文件記錄從 opencode 對照研究中提取的設計原則、目前已完成的 response 改造項目，以及未來可考慮的方向。
+This document records design principles extracted from studying opencode, the response redesign items that have been completed, and directions to consider for the future.
 
 ---
 
 ## Background
 
-最初的問題不是資料缺失，而是呈現模型過於扁平：
+The original problem wasn't missing data, but an overly flat presentation model:
 
-- 所有內容被壓成 `DisplayBlock[]`
-- 大部分 block 共用同一套視覺結構
-- assistant response 缺少 footer / summary / change context
-- user prompt、assistant parts、tool outputs 之間缺少視覺綁定
+- Everything was flattened into `DisplayBlock[]`
+- Most blocks shared the same visual structure
+- Assistant response lacked footer / summary / change context
+- No visual binding between user prompt, assistant parts, and tool outputs
 
-## 設計原則（沿用 opencode 參考）
+## Design Principles (adapted from opencode references)
 
-- 用 turn，而不是 flat block list
-- 用 part-specific UI，而不是 generic block renderer
-- 把 assistant metadata 放回 response 結尾
-- 讓 tool 結果有更高的視覺權重
-- 把 code changes 綁回該輪 response
+- Use turns, not flat block lists
+- Use part-specific UI, not a generic block renderer
+- Put assistant metadata back at the end of the response
+- Give tool results higher visual weight
+- Tie code changes back to the turn's response
 
 ---
 
-## 已實作
+## Implemented
 
 ### Phase 1 — Turn Skeleton ✅
 
-- response 從 flat block 流改成 turn-oriented transcript group
-- user prompt 成為 turn 起點
-- assistant / tool / streaming parts 併入同一輪 render
+- Response changed from flat block stream to turn-oriented transcript groups
+- User prompt becomes the turn start point
+- Assistant / tool / streaming parts are rendered within the same turn
 
 ### Phase 2 — Basic Block Cleanup ✅
 
-- 純 `user` / `assistant` / `system` 文字不再顯示冗餘 header
-- reasoning / tool / error block 已具備基本 collapse 行為
+- Plain `user` / `assistant` / `system` text no longer shows redundant headers
+- Reasoning / tool / error blocks have basic collapse behavior
 
 ### Phase 3 — Basic Assistant Footer ✅
 
-- assistant response 已有第一版 footer
-- 目前顯示 session-level `provider/model`
-- 有 copy hint
+- Assistant response has a first-version footer
+- Currently displays session-level `provider/model`
+- Has a copy hint
 
 ### Phase 4 — Permission / Auto-Approve UI ✅
 
-- Auto-approve toggle 在 palette 中顯示 ON/OFF 狀態
-- `/auto` 指令可切換
-- Dangerous bash 命令會觸發審批對話框（即使 auto-approve ON）
+- Auto-approve toggle shows ON/OFF status in the palette
+- `/auto` command can toggle it
+- Dangerous bash commands trigger an approval dialog (even with auto-approve ON)
 
 ---
 
-## 尚未實作（未來方向）
+## Not Implemented (future directions)
 
 ### P1 — Coding-Agent Clarity
 
@@ -62,31 +62,31 @@
 
 ### P2 — Interaction Polish
 
-- Working / thinking 中間態 polish
+- Working / thinking intermediate state polish
 - Paced streaming
 - Copy affordance button
 
 ### Deferred
 
-- 完整模仿 opencode 的 rich diff viewer
-- 過度複雜的 hover / tooltip interaction
-- 沒有明確使用價值前，不增加更重的 response chrome
+- Full opencode-style rich diff viewer
+- Overly complex hover / tooltip interactions
+- No heavier response chrome until there is clear usage value
 
 ---
 
 ## Risks And Tradeoffs
 
-### Risk 1 — 現有資料模型沒有完整 per-message meta
+### Risk 1 — Current data model lacks per-message metadata
 
-影響：footer 第一版只能先顯示 session-level provider/model
+Impact: First version of footer can only show session-level provider/model
 
-### Risk 2 — TUI 過度模仿 Web UI 會變得太吵
+### Risk 2 — TUI imitating Web UI becomes too noisy
 
-影響：終端視覺密度容易失控
+Impact: Terminal visual density can easily get out of control
 
-### Risk 3 — response 改造會直接影響 summary / memory quality
+### Risk 3 — Response redesign directly affects summary / memory quality
 
-影響：future summary 品質會依賴 response 結構是否足夠清楚
+Impact: Future summary quality depends on whether the response structure is clear enough
 
 ---
 
