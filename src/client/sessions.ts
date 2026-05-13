@@ -26,17 +26,24 @@ type SessionIndex = {
   current: string | null
 }
 
-const SESSION_DIR = join(homedir(), ".openzerocode", "sessions")
-const INDEX_FILE = join(SESSION_DIR, "index.json")
+function getSessionDir(): string {
+  return join(homedir(), ".openzerocode", "sessions")
+}
+
+function getIndexFile(): string {
+  return join(getSessionDir(), "index.json")
+}
 
 function ensureDir() {
-  if (!existsSync(SESSION_DIR)) mkdirSync(SESSION_DIR, { recursive: true })
+  const dir = getSessionDir()
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 }
 
 function readIndex(): SessionIndex {
   try {
-    if (!existsSync(INDEX_FILE)) return { sessions: [], current: null }
-    return JSON.parse(readFileSync(INDEX_FILE, "utf-8"))
+    const idxFile = getIndexFile()
+    if (!existsSync(idxFile)) return { sessions: [], current: null }
+    return JSON.parse(readFileSync(idxFile, "utf-8"))
   } catch {
     return { sessions: [], current: null }
   }
@@ -44,11 +51,11 @@ function readIndex(): SessionIndex {
 
 function writeIndex(index: SessionIndex) {
   ensureDir()
-  writeFileSync(INDEX_FILE, JSON.stringify(index, null, 2), "utf-8")
+  writeFileSync(getIndexFile(), JSON.stringify(index, null, 2), "utf-8")
 }
 
 function sessionPath(id: string): string {
-  return join(SESSION_DIR, `${id}.json`)
+  return join(getSessionDir(), `${id}.json`)
 }
 
 export function generateId(): string {
