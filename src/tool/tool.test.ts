@@ -10,6 +10,7 @@ import { WriteTool } from "./write"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
 import { WebFetchTool } from "./web-fetch"
+import { GrepTool } from "./grep"
 import { ToolRegistry, layer } from "./registry"
 
 function testCtx(): Context {
@@ -40,6 +41,16 @@ describe("tool", () => {
     const bash = await Effect.runPromise(BashTool)
     const result = await Effect.runPromise(bash.execute({ command: "echo hello" }, testCtx()))
     assert.equal(result.output.trim(), "hello")
+  })
+
+  it("grep: finds matches without leaking shell errors", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "sample.ts")
+    writeFileSync(filePath, "const greeting = 'hello'\nconst target = 'world'\n")
+    const grep = await Effect.runPromise(GrepTool)
+    const result = await Effect.runPromise(grep.execute({ pattern: "target", path: dir, include: "*.ts" }, testCtx()))
+    assert.ok(result.output.includes("sample.ts:2:const target = 'world'"))
+    assert.ok(!result.output.includes("command not found"))
   })
 
   it("write: creates file with content", async () => {
