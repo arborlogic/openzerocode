@@ -5,7 +5,7 @@
   "private": true,
   "description": "AI coding assistant in the terminal",
   "bin": {
-    "openzerocode": "./bin/openzerocode"
+    "openzerocode": "./bin/openzerocode.cjs"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -17,7 +17,7 @@
     "build": "bash scripts/build.sh"
   },
   "files": [
-    "bin/",
+    "bin/openzerocode.cjs",
     "src/",
     "scripts/",
     "tsconfig.json",
