@@ -99,6 +99,7 @@ export function Sidebar(props: {
   model: string
   provider: string
   sessionTitle?: string
+  cwd?: string
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(readGitBranch())
@@ -193,6 +194,15 @@ export function Sidebar(props: {
           <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Branch</text>
             <text style={{ fg: props.theme.muted }}>{branch()}</text>
+          </box>
+        </Show>
+
+        <Show when={props.cwd}>
+          <box flexDirection="column">
+            <text style={{ fg: props.theme.accent }}>Directory</text>
+            <text style={{ fg: props.theme.muted }} wrapMode="none">
+              {truncatePath(props.cwd ?? "", Math.max(1, props.width - 4))}
+            </text>
           </box>
         </Show>
 

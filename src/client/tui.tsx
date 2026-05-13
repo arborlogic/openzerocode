@@ -1994,6 +1994,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         provider={providerLabel()}
         model={modelLabel()}
         sessionTitle={sessionMeta()?.title}
+        cwd={process.cwd()}
       />
       </box>
 
