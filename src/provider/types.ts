@@ -9,12 +9,19 @@ export type ToolCall = {
   function: { name?: string; arguments?: string }
 }
 
+export type Part =
+  | { type: "text"; text: string }
+  | { type: "reasoning"; text: string }
+  | { type: "tool-call"; id: string; tool: string; input: string }
+  | { type: "tool-result"; id?: string; tool?: string; output: string; error?: boolean }
+
 export type Message = {
   role: Role
   content?: string
   reasoning_content?: string
   tool_calls?: ToolCall[]
   tool_call_id?: string
+  parts?: Part[]
 }
 
 export type ToolDef = {

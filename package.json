@@ -5,12 +5,18 @@
   "private": true,
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "start": "tsx src/client/cli.ts",
+    "dev": "bun run --watch --preload @opentui/solid/preload src/client/tui.tsx",
+    "start": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
+    "start:tui": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
     "test": "tsx --test"
   },
   "dependencies": {
+    "@opentui/core": "^0.2.6",
+    "@opentui/solid": "^0.2.6",
     "chalk": "^5.6.2",
-    "effect": "4.0.0-beta.59"
+    "effect": "4.0.0-beta.59",
+    "marked": "^18.0.3",
+    "solid-js": "^1.9.12"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

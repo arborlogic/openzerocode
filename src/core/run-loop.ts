@@ -1,10 +1,12 @@
 import { Effect } from "effect"
-import { Def, Context, Result } from "../tool/tool"
+import { Context, Result } from "../tool/tool"
 import { ToolRegistry } from "../tool/registry"
-import { Provider, type Message, type ToolCall, type CompletionResult } from "../provider/types"
+import { Provider, type Message, type CompletionResult } from "../provider/types"
+import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { convertToolsToDefs, convertToolResult } from "./convert"
 
 export type LoopConfig = {
+  model: string
   systemPrompt?: string
   maxSteps?: number
   cwd: string
@@ -43,19 +45,18 @@ export function runLoop(
       const toolDefs = convertToolsToDefs(tools)
 
       const result: CompletionResult = yield* provider.complete({
-        model: "big-pickle",
+        model: config.model,
         messages: allMessages,
         tools: toolDefs.length > 0 ? toolDefs : undefined,
         stream: false,
       })
 
       const toolCalls = result.message.tool_calls
-      const reply: Message = {
-        role: "assistant",
+      const reply: Message = createAssistantMessage({
         content: result.message.content ?? undefined,
         reasoning_content: result.message.reasoning_content ?? undefined,
         tool_calls: toolCalls,
-      }
+      })
       allMessages.push(reply)
       history.push(reply)
 
@@ -67,11 +68,14 @@ export function runLoop(
         const args = parseToolArgs(call.function.arguments ?? "{}")
         const def = tools.find((t) => t.id === (call.function.name ?? ""))
         if (!def) {
-          allMessages.push({
-            role: "tool",
+          const tm = createToolMessage({
             tool_call_id: call.id,
-            content: `Unknown tool: ${call.function.name}`,
+            tool: call.function.name,
+            output: `Unknown tool: ${call.function.name}`,
+            error: true,
           })
+          allMessages.push(tm)
+          history.push(tm)
           continue
         }
 
@@ -91,11 +95,13 @@ export function runLoop(
           ),
         )
 
-        allMessages.push({
-          role: "tool",
+        const tm = createToolMessage({
           tool_call_id: call.id,
-          content: convertToolResult(toolResult),
+          tool: def.id,
+          output: convertToolResult(toolResult),
         })
+        allMessages.push(tm)
+        history.push(tm)
       }
     }
 

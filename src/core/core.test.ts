@@ -6,8 +6,8 @@ import { bigPickleLayer } from "../provider/index"
 import { ToolRegistry, layer as toolLayer } from "../tool/registry"
 import { runLoop } from "./run-loop"
 
-const API_KEY = process.env.OPENCODE_API_KEY
-if (!API_KEY) throw new Error("OPENCODE_API_KEY env var required")
+const API_KEY = process.env.OPENCODE_API ?? process.env.OPENCODE_API_KEY
+if (!API_KEY) throw new Error("OPENCODE_API env var required")
 
 const testLayer = Layer.merge(
   bigPickleLayer({ apiKey: API_KEY }),
@@ -21,6 +21,7 @@ describe("runLoop", () => {
         "say hello in one word",
         [],
         {
+          model: "big-pickle",
           cwd: process.cwd(),
           root: process.cwd(),
           abort: new AbortController().signal,
@@ -40,6 +41,7 @@ describe("runLoop", () => {
         "run: echo hello-tool-test",
         [],
         {
+          model: "big-pickle",
           cwd: process.cwd(),
           root: process.cwd(),
           abort: new AbortController().signal,

@@ -8,6 +8,8 @@ import { Def, Context, Result } from "./types"
 import { ReadTool } from "./read"
 import { WriteTool } from "./write"
 import { BashTool } from "./bash"
+import { EditTool } from "./edit"
+import { WebFetchTool } from "./web-fetch"
 import { ToolRegistry, layer } from "./registry"
 
 function testCtx(): Context {
@@ -74,6 +76,8 @@ describe("registry", () => {
     assert.ok(ids.includes("bash"))
     assert.ok(ids.includes("grep"))
     assert.ok(ids.includes("glob"))
+    assert.ok(ids.includes("edit"))
+    assert.ok(ids.includes("web_fetch"))
   })
 
   it("register adds custom tool", async () => {
@@ -94,5 +98,46 @@ describe("registry", () => {
     const all = await Effect.runPromise(registry.all())
     const custom = all.find((t) => t.id === "custom")
     assert.ok(custom)
+  })
+})
+
+describe("edit tool", () => {
+  it("replaces text in file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    writeFileSync(filePath, "hello world foo")
+    const edit = await Effect.runPromise(EditTool)
+    const result = await Effect.runPromise(edit.execute({ filePath, oldString: "world", newString: "there", replaceAll: false }, testCtx()))
+    assert.equal(result.title, "Edited")
+    assert.equal(readFileSync(filePath, "utf-8"), "hello there foo")
+  })
+
+  it("replaceAll replaces all occurrences", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    writeFileSync(filePath, "a b a c a")
+    const edit = await Effect.runPromise(EditTool)
+    const result = await Effect.runPromise(edit.execute({ filePath, oldString: "a", newString: "x", replaceAll: true }, testCtx()))
+    assert.equal(result.title, "Edited")
+    assert.equal(readFileSync(filePath, "utf-8"), "x b x c x")
+  })
+
+  it("returns error when oldString not found", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    writeFileSync(filePath, "hello world")
+    const edit = await Effect.runPromise(EditTool)
+    const result = await Effect.runPromise(edit.execute({ filePath, oldString: "zzz", newString: "x", replaceAll: false }, testCtx()))
+    assert.equal(result.title, "Error")
+    assert.ok(result.output.includes("not found"))
+  })
+})
+
+describe("web_fetch tool", () => {
+  it("fetches a URL", async () => {
+    const fetch = await Effect.runPromise(WebFetchTool)
+    const result = await Effect.runPromise(fetch.execute({ url: "https://example.com", format: "text" }, testCtx()))
+    assert.equal(result.title, "Fetched https://example.com")
+    assert.ok(result.output.includes("Example Domain"))
   })
 })
