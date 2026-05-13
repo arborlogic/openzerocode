@@ -16,17 +16,16 @@ import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta } from "./sessions"
-import { getKnownModelConfig, getModelConfig } from "../provider/models"
-import { buildCompactionTranscript, createCompactSummaryMessage, selectCompactionTail } from "./session-compact"
-import { loadWorkspaceMemory } from "./workspace-memory"
-import { buildSessionSummaryPrompt, writeSessionSummary } from "./workspace-summary"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, type CompactionInfo } from "./sessions"
+import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
+import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
+import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
-let workspaceMemory = loadWorkspaceMemory(process.cwd())
+let agentsInstruction = loadAgentsInstruction(process.cwd())
 
 const SYSTEM_PROMPT = [
   "You are OpenZeroCode, an AI coding assistant.",
@@ -173,15 +172,15 @@ function systemPrompt(mode: RunMode) {
     )
   }
 
-  if (workspaceMemory.contextBlock) {
-    parts.push(workspaceMemory.contextBlock)
+  if (agentsInstruction) {
+    parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)
   }
 
   return parts.join("\n\n")
 }
 
-function refreshWorkspaceMemory() {
-  workspaceMemory = loadWorkspaceMemory(process.cwd())
+function refreshAgentsInstruction() {
+  agentsInstruction = loadAgentsInstruction(process.cwd())
 }
 
 function messageToBlocks(msg: Message): DisplayBlock[] {
@@ -355,6 +354,7 @@ function App() {
 
   let initialMessages: Message[] = []
   let initialMode: RunMode = "build"
+  let initialCompaction: CompactionInfo | undefined
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -364,6 +364,7 @@ function App() {
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
       if (loaded.mode === "plan") initialMode = "plan"
+      initialCompaction = loaded.compaction
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -385,6 +386,7 @@ function App() {
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
+  const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
@@ -468,7 +470,7 @@ function App() {
       currentProvider = nextProvider
       currentModel = nextModel
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode())
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction())
       refreshSessions()
       return true
     } catch (error) {
@@ -935,41 +937,7 @@ function App() {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    saveSession(id, msgs, currentModel, currentProvider, mode())
-  }
-
-  const generateSessionSummary = async (nextMessages: Message[]) => {
-    const last = nextMessages[nextMessages.length - 1]
-    if (!last || last.role === "user") return
-
-    const { system, user } = buildSessionSummaryPrompt(nextMessages)
-
-    try {
-      const result = await runSync(Effect.gen(function* () {
-        const provider = yield* Provider
-        return yield* provider.complete({
-          model: currentModel,
-          stream: false,
-          max_tokens: 1400,
-          temperature: 0,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-        })
-      }))
-
-      const summary = result.message.content?.trim()
-      if (!summary) return
-
-      const path = writeSessionSummary(summary, process.cwd())
-      refreshWorkspaceMemory()
-      if (path) {
-        setNotices((prev) => [...prev, { kind: "system", text: `Updated ${path}` }])
-      }
-    } catch {
-      setNotices((prev) => [...prev, { kind: "error", text: "Failed to update SESSION_SUMMARY.md" }])
-    }
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction())
   }
 
   const refreshSessions = () => {
@@ -983,6 +951,7 @@ function App() {
     if (loaded?.provider && loaded.model) applyProviderModel(loaded.provider, loaded.model)
     setMessages(loaded?.messages ?? [])
     setMode(loaded?.mode === "plan" ? "plan" : "build")
+    setCompaction(loaded?.compaction)
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -1049,9 +1018,14 @@ function App() {
         return
       }
 
-      const compacted = [createCompactSummaryMessage(summary), ...tail]
-      setMessages(compacted)
-      saveSession(sessionId(), compacted, currentModel, currentProvider, mode())
+      const newCompaction: CompactionInfo = {
+        summary,
+        createdAt: new Date().toISOString(),
+        sourceMessageCount: head.length,
+      }
+      setMessages(tail)
+      setCompaction(newCompaction)
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction)
       refreshSessions()
       setStatus("session compacted")
     } catch {
@@ -1165,9 +1139,18 @@ function App() {
 
     queueMicrotask(scrollBottom)
 
+    // Auto-compact if context is near limit (> 80%)
+    {
+      const cfg = getModelConfig(currentModel)
+      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
+      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
+        await compactCurrentSession()
+      }
+    }
+
     runAbort = new AbortController()
     streamState.reset()
-    refreshWorkspaceMemory()
+    refreshAgentsInstruction()
     setRunning(true)
     setStatus("thinking...")
 
@@ -1191,11 +1174,11 @@ function App() {
         runSync,
         systemPrompt,
         parseJson: tryParseJSON,
+        compactionSummary: compaction()?.summary,
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode())
-      await generateSessionSummary(next)
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction())
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)

@@ -26,6 +26,7 @@ type SessionRuntime = {
   runSync: <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>) => Promise<A>
   systemPrompt: (mode: RunMode) => string
   parseJson: (raw: string) => Record<string, unknown>
+  compactionSummary?: string
 }
 
 export async function runSession(
@@ -38,7 +39,10 @@ export async function runSession(
   const retrySchedule = [2000, 5000, 10000]
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(ui.mode) }
   const userMessage: Message = { role: "user", content: userInput }
-  const allMessages: Message[] = [systemMessage, ...history, userMessage]
+  const compactionMessage: Message[] = runtime.compactionSummary
+    ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
+    : []
+  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...history, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
   ui.addMessage(userMessage)
 

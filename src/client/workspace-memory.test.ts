@@ -3,53 +3,42 @@ import assert from "node:assert"
 import { mkdtempSync, mkdirSync, writeFileSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { loadWorkspaceMemory, resolveWorkspaceWritePaths } from "./workspace-memory"
+import { loadAgentsInstruction } from "./workspace-memory"
 
 function makeTempWorkspace() {
   return mkdtempSync(join(tmpdir(), "ozc-workspace-memory-"))
 }
 
-describe("loadWorkspaceMemory", () => {
-  it("returns empty context when no files are present", () => {
+describe("loadAgentsInstruction", () => {
+  it("returns undefined when no AGENTS.md exists", () => {
     const dir = makeTempWorkspace()
-    const result = loadWorkspaceMemory(dir)
-
-    assert.equal(result.agentsPath, undefined)
-    assert.equal(result.sessionSummaryPath, undefined)
-    assert.equal(result.contextBlock, undefined)
+    const result = loadAgentsInstruction(dir)
+    assert.equal(result, undefined)
   })
 
-  it("loads AGENTS.md from the nearest parent directory", () => {
+  it("loads AGENTS.md from the workspace root", () => {
+    const root = makeTempWorkspace()
+    writeFileSync(join(root, "package.json"), "{}\n")
+    writeFileSync(join(root, "AGENTS.md"), "- This repo uses pnpm.\n")
+
+    const result = loadAgentsInstruction(root)
+
+    assert.equal(result, "- This repo uses pnpm.")
+  })
+
+  it("finds AGENTS.md by walking up from a nested directory", () => {
     const root = makeTempWorkspace()
     const nested = join(root, "src", "routes")
     mkdirSync(nested, { recursive: true })
     writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "AGENTS.md"), "- This repo uses pnpm.\n")
+    writeFileSync(join(root, "AGENTS.md"), "- Run tests with bun test.\n")
 
-    const result = loadWorkspaceMemory(nested)
+    const result = loadAgentsInstruction(nested)
 
-    assert.equal(result.agentsPath, join(root, "AGENTS.md"))
-    assert.equal(result.agentsContent, "- This repo uses pnpm.")
-    assert.ok(result.contextBlock?.includes("## Stable Instructions from AGENTS.md"))
-    assert.ok(result.contextBlock?.includes("- This repo uses pnpm."))
+    assert.equal(result, "- Run tests with bun test.")
   })
 
-  it("loads SESSION_SUMMARY.md from the nearest parent directory", () => {
-    const root = makeTempWorkspace()
-    const nested = join(root, "src", "handlers")
-    mkdirSync(nested, { recursive: true })
-    writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "SESSION_SUMMARY.md"), "## Goal\n- Add login API.\n")
-
-    const result = loadWorkspaceMemory(nested)
-
-    assert.equal(result.sessionSummaryPath, join(root, "SESSION_SUMMARY.md"))
-    assert.equal(result.sessionSummaryContent, "## Goal\n- Add login API.")
-    assert.ok(result.contextBlock?.includes("## Recent Session Summary from SESSION_SUMMARY.md"))
-    assert.ok(result.contextBlock?.includes("## Goal"))
-  })
-
-  it("prefers the nearest matching file when multiple parents contain AGENTS.md", () => {
+  it("prefers the nearest AGENTS.md when multiple parents have one", () => {
     const root = makeTempWorkspace()
     const subdir = join(root, "packages", "app")
     const nested = join(subdir, "src")
@@ -58,37 +47,17 @@ describe("loadWorkspaceMemory", () => {
     writeFileSync(join(root, "AGENTS.md"), "- root instruction\n")
     writeFileSync(join(subdir, "AGENTS.md"), "- package instruction\n")
 
-    const result = loadWorkspaceMemory(nested)
+    const result = loadAgentsInstruction(nested)
 
-    assert.equal(result.agentsPath, join(subdir, "AGENTS.md"))
-    assert.equal(result.agentsContent, "- package instruction")
-    assert.ok(!result.contextBlock?.includes("- root instruction"))
+    assert.equal(result, "- package instruction")
   })
 
-  it("combines AGENTS.md and SESSION_SUMMARY.md into one workspace context block", () => {
+  it("returns undefined for an empty AGENTS.md", () => {
     const root = makeTempWorkspace()
-    writeFileSync(join(root, "AGENTS.md"), "- Run tests with `pnpm test`.\n")
-    writeFileSync(join(root, "SESSION_SUMMARY.md"), "## Next Steps\n- Add integration tests.\n")
+    writeFileSync(join(root, "AGENTS.md"), "   \n")
 
-    const result = loadWorkspaceMemory(root)
+    const result = loadAgentsInstruction(root)
 
-    assert.ok(result.contextBlock?.startsWith("# Workspace Context"))
-    assert.ok(result.contextBlock?.includes("## Stable Instructions from AGENTS.md"))
-    assert.ok(result.contextBlock?.includes("## Recent Session Summary from SESSION_SUMMARY.md"))
-    assert.ok(result.contextBlock?.includes("- Run tests with `pnpm test`."))
-    assert.ok(result.contextBlock?.includes("- Add integration tests."))
-  })
-
-  it("writes new workspace files at the workspace boundary when started in a nested directory", () => {
-    const root = makeTempWorkspace()
-    const nested = join(root, "src", "client")
-    mkdirSync(nested, { recursive: true })
-    writeFileSync(join(root, "package.json"), "{}\n")
-
-    const result = resolveWorkspaceWritePaths(nested)
-
-    assert.equal(result.workspaceDir, root)
-    assert.equal(result.agentsPath, join(root, "AGENTS.md"))
-    assert.equal(result.sessionSummaryPath, join(root, "SESSION_SUMMARY.md"))
+    assert.equal(result, undefined)
   })
 })
