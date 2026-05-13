@@ -204,7 +204,7 @@ const SIDEBAR_WIDTH = 34
 
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
-  const [collapsed, setCollapsed] = createSignal(collapsible())
+  const [collapsed, setCollapsed] = createSignal(collapsible() && !(props.entry.streaming ?? false))
   const showHeader = () => props.entry.kind === "reasoning"
     || props.entry.kind === "tool-call"
     || props.entry.kind === "tool"
@@ -879,19 +879,19 @@ function App() {
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
 
-  const streamingText = createMemo(() =>
-    streamState.parts()
-      .filter(p => p.type === "text")
-      .map(p => p.text)
-      .join("")
-  )
-
-  const streamingReasoning = createMemo(() =>
-    streamState.parts()
-      .filter(p => p.type === "reasoning")
-      .map(p => stripAnsi(p.text))
-      .join("")
-      .trim()
+  const streamingEntries = createMemo<DisplayBlock[]>(() =>
+    streamState.parts().map((part) => {
+      switch (part.type) {
+        case "text":
+          return { kind: "assistant", text: part.text, streaming: true } satisfies DisplayBlock
+        case "reasoning":
+          return { kind: "reasoning", text: stripAnsi(part.text), title: "Thinking", streaming: true } satisfies DisplayBlock
+        case "tool-call":
+          return { kind: "tool-call", text: part.input || "{}", title: part.tool, streaming: true } satisfies DisplayBlock
+        case "tool-result":
+          return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool, streaming: true } satisfies DisplayBlock
+      }
+    }),
   )
 
   const scrollBottom = () => {
@@ -1142,18 +1142,21 @@ function App() {
     }
 
     runAbort = new AbortController()
-    streamState.reset()
-    refreshAgentsInstruction()
-    setRunning(true)
-    setStatus("thinking...")
+        streamState.reset()
+        refreshAgentsInstruction()
+        setRunning(true)
+        setStatus("thinking...")
 
     try {
       const next = await runSession(input, messages(), {
         abort: runAbort.signal,
         streamReasoningChunk: (text) => streamState.streamReasoningChunk(text),
         streamAssistantChunk: (text) => streamState.streamAssistantChunk(text),
+        streamToolCallChunk: (index, input) => streamState.streamToolCallChunk(index, input),
+        setStreamingToolResult: (input) => streamState.setToolResult(input),
         addMessage: (msg) => {
           if (msg.role === "assistant") streamState.reset()
+          if (msg.role === "tool") streamState.reset()
           setMessages((prev) => [...prev, msg])
         },
         notify: (text, kind) => {
@@ -1441,23 +1444,11 @@ function App() {
         <For each={turns()}>
           {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
         </For>
-        <Show when={running()}>
+        <Show when={running() && streamingEntries().length > 0}>
           <box marginTop={1} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accentDim}>
-            <Show when={streamingReasoning()}>
-              <box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accent} marginBottom={1}>
-                <text style={{ fg: THEME.muted }}>think  Thinking</text>
-                <text style={{ fg: THEME.muted }}>{streamingReasoning()}</text>
-              </box>
-            </Show>
-            <Show when={streamingText()}>
-              <markdown
-                content={streamingText()}
-                syntaxStyle={MARKDOWN_SYNTAX}
-                fg={THEME.text}
-                bg={THEME.background}
-                streaming={true}
-              />
-            </Show>
+            <For each={streamingEntries()}>
+              {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
+            </For>
           </box>
         </Show>
       </scrollbox>

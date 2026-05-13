@@ -15,6 +15,8 @@ type SessionUi = {
   abort: AbortSignal
   streamReasoningChunk: (text: string) => void
   streamAssistantChunk: (text: string) => void
+  streamToolCallChunk: (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => void
+  setStreamingToolResult: (input: { id?: string; tool?: string; output: string; error?: boolean }) => void
   addMessage: (msg: Message) => void
   notify: (text: string, kind: string) => void
   setStatus: (text: string) => void
@@ -113,6 +115,13 @@ export async function runSession(
         if (tc.function?.arguments) next.arguments += tc.function.arguments
         if (tc.index !== undefined) next.index = tc.index
         acc.set(tc.index ?? 0, next)
+        ui.streamToolCallChunk(tc.index ?? 0, {
+          id: tc.id,
+          tool: tc.function?.name,
+          argumentsChunk: tc.function?.arguments,
+        })
+        ui.setStatus(tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool...")
+        ui.scrollBottom()
       }
     }
 
@@ -164,6 +173,8 @@ export async function runSession(
       }
 
       ui.setStatus(`running tool: ${name}`)
+      ui.setStreamingToolResult({ id: call.id, tool: name, output: "running..." })
+      ui.scrollBottom()
       const result = await Effect.runPromise(
         def.execute(runtime.parseJson(call.function.arguments ?? "{}"), new Context({
           abort: ui.abort,
@@ -178,6 +189,7 @@ export async function runSession(
       )
 
       const text = convertToolResult(result)
+      ui.setStreamingToolResult({ id: call.id, tool: name, output: text, error: result.title === "Error" })
       const toolMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: text })
       allMessages.push(toolMsg)
       resultHistory.push(toolMsg)
