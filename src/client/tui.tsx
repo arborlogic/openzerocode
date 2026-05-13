@@ -10,6 +10,7 @@ import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message } from "../provider/types"
+import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
@@ -388,6 +389,8 @@ function App() {
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
+  type PendingApproval = { request: PermissionRequest; resolve: () => void; reject: (e: Error) => void }
+  const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
   const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys">("actions")
@@ -1175,6 +1178,11 @@ function App() {
         systemPrompt,
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
+        ask: (req) => new Promise<void>((resolve, reject) => {
+          const SAFE = ["read", "grep", "glob", "web-fetch"]
+          if (SAFE.includes(req.permission)) { resolve(); return }
+          setPendingApproval({ request: { ...req, id: `perm_${Date.now()}` }, resolve, reject })
+        }),
       })
 
       setMessages(next)
@@ -1189,6 +1197,18 @@ function App() {
   }
 
   useKeyboard((event) => {
+    const approval = pendingApproval()
+    if (approval) {
+      if (event.name === "y" || event.name === "return") {
+        setPendingApproval(undefined)
+        approval.resolve()
+      } else if (event.name === "n" || event.name === "escape" || event.name === "q") {
+        setPendingApproval(undefined)
+        approval.reject(new Error("denied by user"))
+      }
+      event.preventDefault()
+      return
+    }
     if (event.ctrl && event.name === "c") {
       void exitApp(0)
       event.preventDefault()
@@ -1440,6 +1460,16 @@ function App() {
           </box>
         </Show>
       </scrollbox>
+
+      <Show when={pendingApproval()}>
+        {(approval: () => PendingApproval) => (
+          <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#f85149" backgroundColor={THEME.surface}>
+            <text style={{ fg: "#f85149" }}>PERMISSION REQUIRED</text>
+            <text style={{ fg: THEME.text }}>{`${approval().request.permission}: ${approval().request.patterns.join("  ")}`}</text>
+            <text style={{ fg: THEME.muted }}>{"y / Enter = allow   n / Escape = deny"}</text>
+          </box>
+        )}
+      </Show>
 
       <box flexShrink={0} flexDirection="column" border={["left"]} borderColor={THEME.border}>
         <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>

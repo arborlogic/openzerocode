@@ -4,6 +4,7 @@ import { Provider } from "../provider/types"
 import type { Message, ToolCall } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { Context, Result } from "../tool/tool"
+import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
 
@@ -27,6 +28,7 @@ type SessionRuntime = {
   systemPrompt: (mode: RunMode) => string
   parseJson: (raw: string) => Record<string, unknown>
   compactionSummary?: string
+  ask: (request: Omit<PermissionRequest, "id">) => Promise<void>
 }
 
 export async function runSession(
@@ -167,7 +169,10 @@ export async function runSession(
           abort: ui.abort,
           cwd: process.cwd(),
           root: process.cwd(),
-          ask: () => Effect.void,
+          ask: (req) => Effect.tryPromise({
+            try: () => runtime.ask(req),
+            catch: (e) => new Error(String(e)),
+          }) as Effect.Effect<void>,
           metadata: () => Effect.void,
         })).pipe(Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` })))),
       )

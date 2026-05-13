@@ -16,9 +16,10 @@ export const EditTool = Effect.gen(function* () {
     id: "edit",
     description: "Replace text in a file using exact string matching. Use this to make targeted edits.",
     parameters: Parameters,
-    execute: (raw, _ctx) =>
+    execute: (raw, ctx) =>
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
+        yield* ctx.ask({ permission: "edit", patterns: [args.filePath] })
         const content = yield* Effect.promise(() => readFile(args.filePath, "utf-8"))
 
         if (args.replaceAll) {
