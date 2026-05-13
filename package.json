@@ -5,7 +5,7 @@
   "license": "MIT",
   "description": "AI coding assistant in the terminal",
   "bin": {
-    "openzerocode": "./bin/openzerocode.js"
+    "openzerocode": "bin/openzerocode"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -17,7 +17,7 @@
     "build": "bash scripts/build.sh"
   },
   "files": [
-    "bin/openzerocode.js",
+    "bin/openzerocode",
     "src/",
     "scripts/",
     "tsconfig.json",
