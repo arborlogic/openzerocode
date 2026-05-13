@@ -8,7 +8,8 @@
     "dev": "bun run --watch --preload @opentui/solid/preload src/client/tui.tsx",
     "start": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
     "start:tui": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
-    "test": "tsx --test"
+    "test": "tsx --test",
+    "test:unit": "find src -name '*.test.ts' -not -path '*core/core.test.ts' -not -path '*provider/provider.test.ts' -print0 | xargs -0 tsx --test"
   },
   "dependencies": {
     "@opentui/core": "^0.2.6",
