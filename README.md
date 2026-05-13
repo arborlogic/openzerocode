@@ -69,4 +69,4 @@ npm run typecheck
 - Main implementation entry is `src/client/tui.tsx`.
 - Provider registry lives in `src/provider/registry.ts`.
 - Built-in tool registration lives in `src/tool/registry.ts`.
-- Current response redesign notes are in `docs/response-redesign-roadmap.md`.
+- Current response redesign notes are in `docs/response-redesign-notes.md`.

@@ -1,6 +1,6 @@
 # OpenZeroCode — Current Architecture Notes
 
-本文件只記錄目前已確認的實作狀態與短期缺口，避免把猜測性提案寫成既定方向。
+本文件只記錄目前已確認的架構狀態與短期缺口，不把猜測性提案寫成既定方向。
 
 ---
 
@@ -26,7 +26,7 @@
   - `ask()` / `metadata()` 仍是 stub
   - 尚未有完整 permission model
 
-## Confirmed UI Behavior
+## Confirmed Runtime Behavior
 
 - assistant response 會即時串流到 transcript
 - `reasoning_content` 會以獨立 `Thinking` 區塊即時顯示
@@ -45,16 +45,24 @@
 - session list / rename / delete / compaction 已實作
 - sidebar 已顯示 context、token/cost estimate、git diff summary
 
-## Short Backlog
+## Prioritized Backlog
 
-- Tool output truncation
+### P0 — Safety / Correctness
+
 - Permission / approval model
+- Tool output truncation
+
+### P1 — Coding-Agent Clarity
+
 - Per-message provider/model metadata
 - Richer tool-specific rendering
-- Diff view
 - Response-scoped change summary
+
+### P2 — Interaction Polish
+
 - Smart auto-follow
 - Paced streaming
+- Diff view
 
 ## Notes For Future Work
 
