@@ -22,19 +22,13 @@ import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
+import { buildSystemPrompt } from "./system-prompt"
+import { addPermissionRules, shouldAutoApprove, type PermissionRule } from "./permission-rules"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
-
-const SYSTEM_PROMPT = [
-  "You are OpenZeroCode, an AI coding assistant.",
-  "You have access to tools for reading, writing, searching files and running shell commands.",
-  "Use tools when the user asks you to perform actions like running commands or accessing files.",
-  "For simple conversation or questions, just respond directly without tools.",
-  "Be concise and helpful.",
-].join("\n")
 
 const THEME = {
   background: "#0d1117",
@@ -163,21 +157,7 @@ async function copyToClipboard(text: string) {
 }
 
 function systemPrompt(mode: RunMode) {
-  const parts = [SYSTEM_PROMPT]
-
-  if (mode === "plan") {
-    parts.push(
-      "You are currently in Plan mode.",
-      "Do not write code, do not call tools, and do not make changes.",
-      "Explain the approach, risks, and step-by-step plan only.",
-    )
-  }
-
-  if (agentsInstruction) {
-    parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)
-  }
-
-  return parts.join("\n\n")
+  return buildSystemPrompt(mode, agentsInstruction)
 }
 
 function refreshAgentsInstruction() {
@@ -356,6 +336,7 @@ function App() {
   let initialMessages: Message[] = []
   let initialMode: RunMode = "build"
   let initialCompaction: CompactionInfo | undefined
+  let initialPermissionRules: PermissionRule[] = []
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -366,6 +347,7 @@ function App() {
       if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
       if (loaded.mode === "plan") initialMode = "plan"
       initialCompaction = loaded.compaction
+      initialPermissionRules = loaded.permissionRules ?? []
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -389,7 +371,13 @@ function App() {
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
-  type PendingApproval = { request: PermissionRequest; resolve: () => void; reject: (e: Error) => void }
+  const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
+  type PendingApproval = {
+    request: PermissionRequest
+    resolve: () => void
+    reject: (e: Error) => void
+    allowAlways: () => void
+  }
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
@@ -473,7 +461,7 @@ function App() {
       currentProvider = nextProvider
       currentModel = nextModel
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction())
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules())
       refreshSessions()
       return true
     } catch (error) {
@@ -940,7 +928,7 @@ function App() {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction())
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules())
   }
 
   const refreshSessions = () => {
@@ -955,6 +943,7 @@ function App() {
     setMessages(loaded?.messages ?? [])
     setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
+    setPermissionRules(loaded?.permissionRules ?? [])
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -971,6 +960,7 @@ function App() {
     setSessionRevision((v) => v + 1)
     setMessages([])
     setNotices([])
+    setPermissionRules([])
     setComposerText("")
     setDraft("")
   }
@@ -1028,7 +1018,7 @@ function App() {
       }
       setMessages(tail)
       setCompaction(newCompaction)
-      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction)
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules())
       refreshSessions()
       setStatus("session compacted")
     } catch {
@@ -1179,14 +1169,22 @@ function App() {
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
-          const SAFE = ["read", "grep", "glob", "web-fetch"]
-          if (SAFE.includes(req.permission)) { resolve(); return }
-          setPendingApproval({ request: { ...req, id: `perm_${Date.now()}` }, resolve, reject })
+          if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
+          const request = { ...req, id: `perm_${Date.now()}` }
+          setPendingApproval({
+            request,
+            resolve,
+            reject,
+            allowAlways: () => {
+              setPermissionRules((prev) => addPermissionRules(prev, req))
+              resolve()
+            },
+          })
         }),
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction())
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules())
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
@@ -1202,6 +1200,9 @@ function App() {
       if (event.name === "y" || event.name === "return") {
         setPendingApproval(undefined)
         approval.resolve()
+      } else if (event.name === "a") {
+        setPendingApproval(undefined)
+        approval.allowAlways()
       } else if (event.name === "n" || event.name === "escape" || event.name === "q") {
         setPendingApproval(undefined)
         approval.reject(new Error("denied by user"))
@@ -1466,7 +1467,7 @@ function App() {
           <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#f85149" backgroundColor={THEME.surface}>
             <text style={{ fg: "#f85149" }}>PERMISSION REQUIRED</text>
             <text style={{ fg: THEME.text }}>{`${approval().request.permission}: ${approval().request.patterns.join("  ")}`}</text>
-            <text style={{ fg: THEME.muted }}>{"y / Enter = allow   n / Escape = deny"}</text>
+            <text style={{ fg: THEME.muted }}>{"y / Enter = allow once   a = always allow in this session   n / Escape = deny"}</text>
           </box>
         )}
       </Show>

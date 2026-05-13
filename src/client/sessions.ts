@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "
 import { join } from "path"
 import { homedir } from "os"
 import type { Message } from "../provider/types"
+import type { PermissionRule } from "./permission-rules"
 
 export type CompactionInfo = {
   summary: string
@@ -106,7 +107,15 @@ export function createSession(model: string, provider: string, messages?: Messag
   return meta
 }
 
-export function saveSession(id: string, messages: Message[], model: string, provider: string, mode?: string, compaction?: CompactionInfo) {
+export function saveSession(
+  id: string,
+  messages: Message[],
+  model: string,
+  provider: string,
+  mode?: string,
+  compaction?: CompactionInfo,
+  permissionRules?: PermissionRule[],
+) {
   ensureDir()
   const now = Date.now()
   const index = readIndex()
@@ -119,6 +128,7 @@ export function saveSession(id: string, messages: Message[], model: string, prov
     provider,
     mode,
     compaction,
+    permissionRules: permissionRules ?? [],
     createdAt,
     updatedAt: now,
   }, null, 2), "utf-8")
@@ -155,12 +165,19 @@ export function loadSession(id: string): Message[] | null {
   }
 }
 
-export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo } | null {
+export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo; permissionRules?: PermissionRule[] } | null {
   try {
     const path = sessionPath(id)
     if (!existsSync(path)) return null
     const data = JSON.parse(readFileSync(path, "utf-8"))
-    return { messages: data.messages ?? [], model: data.model, provider: data.provider, mode: data.mode, compaction: data.compaction }
+    return {
+      messages: data.messages ?? [],
+      model: data.model,
+      provider: data.provider,
+      mode: data.mode,
+      compaction: data.compaction,
+      permissionRules: data.permissionRules ?? [],
+    }
   } catch {
     return null
   }
