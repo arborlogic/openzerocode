@@ -103,6 +103,40 @@ function tryParseJSON(raw: string): Record<string, unknown> {
   try { return JSON.parse(raw) } catch { return {} }
 }
 
+/** Format a tool-call input for compact one-line display */
+function formatToolCallInput(tool: string, input: string): string {
+  const parsed = tryParseJSON(input)
+  if (tool === "bash" && typeof parsed.command === "string") {
+    return `$ ${parsed.command}`
+  }
+  if (tool === "read_file" && typeof parsed.filePath === "string") {
+    return parsed.filePath
+  }
+  if (tool === "write" && typeof parsed.filePath === "string") {
+    const contentLen = typeof parsed.content === "string" ? parsed.content.length : 0
+    return `${parsed.filePath}  (${contentLen} chars)`
+  }
+  if (tool === "glob" && typeof parsed.pattern === "string") {
+    return parsed.pattern
+  }
+  if (tool === "web_fetch" && typeof parsed.url === "string") {
+    return parsed.url
+  }
+  // Fallback: first line of input, truncated
+  const firstLine = input.split("\n")[0] ?? ""
+  return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine
+}
+
+/** Format a tool result for compact one-line preview */
+function formatToolResultPreview(text: string): string {
+  const lines = text.split("\n")
+  if (lines.length === 0) return ""
+  if (lines.length === 1 && lines[0]!.length <= 120) return lines[0]!
+  const firstLine = lines[0]!
+  const preview = firstLine.length > 100 ? firstLine.slice(0, 97) + "…" : firstLine
+  return `${preview}  (${lines.length} lines)`
+}
+
 function stripAnsi(str: string) {
   return str.replace(/\x1b\[[0-9;]*m/g, "")
 }
@@ -214,11 +248,12 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const [collapsed, setCollapsed] = createSignal(
     collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
   )
-  const showHeader = () => props.entry.kind === "reasoning"
-    || props.entry.kind === "tool-call"
-    || props.entry.kind === "tool"
-    || props.entry.kind === "error"
-    || !!props.entry.title
+
+  const icon = () => props.entry.kind === "reasoning" ? "💭"
+    : props.entry.kind === "error" ? "✗"
+    : props.entry.kind === "tool" ? "✓"
+    : props.entry.kind === "tool-call" ? "▶"
+    : ""
 
   const label = () => props.entry.kind === "assistant" ? "assistant"
     : props.entry.kind === "user" ? "you"
@@ -242,6 +277,20 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
 
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
+  /** Compact one-line summary for collapsed tools */
+  const collapsedPreview = () => {
+    if (props.entry.kind === "tool-call" && props.entry.title) {
+      return formatToolCallInput(props.entry.title, props.entry.text)
+    }
+    if (props.entry.kind === "tool") {
+      return formatToolResultPreview(props.entry.text)
+    }
+    if (props.entry.kind === "reasoning") {
+      return props.entry.text.split("\n")[0] ?? ""
+    }
+    return ""
+  }
+
   if (props.entry.kind === "assistant") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
@@ -264,6 +313,10 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     )
   }
 
+  const tag = icon()
+    ? `${icon()} ${label()}`
+    : label()
+
   return (
     <box
       marginTop={props.isFirst ? 0 : 1}
@@ -275,22 +328,45 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
       borderColor={borderColor()}
     >
       <box flexDirection="column" gap={1}>
-        <Show when={showHeader()}>
-          <box
-            flexDirection="row"
-            gap={1}
-            onMouseDown={() => collapsible() && setCollapsed(c => !c)}
-          >
-            <Show when={collapsible()}>
-              <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
-            </Show>
-            <text style={{ fg: labelColor() }}>
-              {label()}{props.entry.title ? ` ${props.entry.title}` : ""}
-            </text>
-          </box>
+        {/* Header / toggle line */}
+        <box
+          flexDirection="row"
+          gap={1}
+          onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+        >
+          <Show when={collapsible()}>
+            <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
+          </Show>
+          <text style={{ fg: labelColor() }}>
+            {tag}{props.entry.title ? ` ${props.entry.title}` : ""}
+          </text>
+          {/* Show streaming spinner for in-flight tool calls */}
+          <Show when={props.entry.streaming && (props.entry.kind === "tool-call" || props.entry.kind === "tool")}>
+            <text style={{ fg: THEME.muted }}>{" …"}</text>
+          </Show>
+        </box>
+
+        {/* Collapsed: show compact one-line preview */}
+        <Show when={collapsed() && collapsedPreview()}>
+          <text style={{ fg: THEME.muted }}>{collapsedPreview()}</text>
         </Show>
+
+        {/* Expanded: show full content */}
         <Show when={!collapsed()}>
-          <text style={{ fg: textColor() }}>{props.entry.text}</text>
+          <Show when={props.entry.kind === "tool-call" && props.entry.title === "bash" && !props.entry.streaming}>
+            {/* For static (completed) bash calls, show a compact representation */}
+            <text style={{ fg: textColor() }}>
+              {(() => {
+                const parsed = tryParseJSON(props.entry.text)
+                return typeof parsed.command === "string"
+                  ? `$ ${parsed.command}`
+                  : props.entry.text
+              })()}
+            </text>
+          </Show>
+          <Show when={props.entry.kind !== "tool-call" || props.entry.title !== "bash" || !!props.entry.streaming}>
+            <text style={{ fg: textColor() }}>{props.entry.text}</text>
+          </Show>
         </Show>
       </box>
     </box>
