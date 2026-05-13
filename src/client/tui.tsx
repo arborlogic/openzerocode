@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
+import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
 import { platform } from "os"
@@ -9,7 +10,6 @@ import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message } from "../provider/types"
-import { renderMarkdown } from "./markdown"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
@@ -52,6 +52,16 @@ const THEME = {
   headerBg: "#161b22",
   headerBorder: "#21262d",
 }
+const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
+  { scope: ["default"], style: { foreground: THEME.text } },
+  { scope: ["comment"], style: { foreground: THEME.muted, italic: true } },
+  { scope: ["string"], style: { foreground: "#a5d6ff" } },
+  { scope: ["keyword"], style: { foreground: THEME.accent, bold: true } },
+  { scope: ["number"], style: { foreground: "#79c0ff" } },
+  { scope: ["function"], style: { foreground: "#d2a8ff" } },
+  { scope: ["type"], style: { foreground: "#ffa657" } },
+])
+
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P palette"
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
@@ -95,10 +105,6 @@ function stripAnsi(str: string) {
   return str.replace(/\x1b\[[0-9;]*m/g, "")
 }
 
-function renderAssistantText(text: string) {
-  const rendered = renderMarkdown(text).trim()
-  return rendered || text
-}
 
 function truncateText(text: string, max: number) {
   if (max <= 0) return ""
@@ -182,7 +188,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
     return msg.parts.map((part): DisplayBlock => {
         switch (part.type) {
           case "text":
-            return { kind: "assistant", text: renderAssistantText(part.text) }
+            return { kind: "assistant", text: part.text }
           case "reasoning":
             return { kind: "reasoning", text: part.text, title: "Thinking" }
           case "tool-call":
@@ -199,7 +205,7 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
     case "assistant": {
       const result: DisplayBlock[] = []
       if (msg.reasoning_content) result.push({ kind: "reasoning", text: msg.reasoning_content, title: "Thinking" })
-      if (msg.content) result.push({ kind: "assistant", text: renderAssistantText(msg.content) })
+      if (msg.content) result.push({ kind: "assistant", text: msg.content })
       return result
     }
     case "user":
@@ -246,7 +252,21 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
 
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
-  if (props.entry.kind === "assistant" || props.entry.kind === "system") {
+  if (props.entry.kind === "assistant") {
+    return (
+      <box marginTop={props.isFirst ? 0 : 1}>
+        <markdown
+          content={props.entry.text}
+          syntaxStyle={MARKDOWN_SYNTAX}
+          fg={THEME.text}
+          bg={THEME.background}
+          streaming={false}
+        />
+      </box>
+    )
+  }
+
+  if (props.entry.kind === "system") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
         <text style={{ fg: textColor() }}>{props.entry.text}</text>
@@ -848,8 +868,7 @@ function App() {
           const text = stripAnsi(part.text).trim()
           if (text) turn.entries.push({ kind: "reasoning", text, title: "Thinking" })
         } else if (part.type === "text") {
-          const rendered = renderAssistantText(part.text)
-          turn.entries.push({ kind: "assistant", text: rendered })
+          turn.entries.push({ kind: "assistant", text: part.text })
         }
       }
     }
