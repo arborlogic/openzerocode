@@ -1,18 +1,20 @@
 # OpenZeroCode — Memory Architecture (v1)
 
+> **Status: ✅ 穩定版 — 此為已實作且正在使用的設計。**
+
 本文件是 v1 的決定記錄，不是討論稿。
 
 ---
 
 ## v1 Decision
 
-**v1 只做三件事：**
+**v1 只做三件事（皆已實作）：**
 
-1. `AGENTS.md` 穩定載入為 workspace instruction
-2. session JSON 穩定保存 messages + compaction summary
-3. context 超過門檻才 compact
+1. ✅ `AGENTS.md` 穩定載入為 workspace instruction
+2. ✅ session JSON 穩定保存 messages + compaction summary
+3. ✅ context 超過門檻才 compact
 
-**v1 不做：**
+**v1 不做（未來可能）：**
 
 - SESSION_SUMMARY.md 自動更新
 - 任何 repo 檔案的自動寫入
@@ -105,6 +107,16 @@ v1 中不進入自動流程。
 如果未來要支援，作為手動指令（`/export-summary`），由使用者自行決定。
 
 ---
+
+## 實作驗證
+
+對應的原始檔：
+
+- `src/client/workspace-memory.ts` — `loadAgentsInstruction()`: 從 workspace root 載入 AGENTS.md
+- `src/client/system-prompt.ts` — 組裝 prompt 時注入 AGENTS.md 內容
+- `src/client/sessions.ts` — `saveSession()` / `loadSessionState()`: session JSON 含 `compaction` 欄位
+- `src/client/session-compact.ts` — 產生 structured compaction summary
+- `src/client/session-runner.ts` — prompt 組裝順序：system → AGENTS.md → compaction → tail → user message
 
 ## 為什麼這樣決定
 

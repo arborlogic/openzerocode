@@ -1,10 +1,12 @@
 # OpenZeroCode — Response Redesign Notes
 
-本文件保留 `opencode` 對照研究、目前已完成的 response redesign 項目，以及剩餘的改造方向。
+> **Status: ✅ 穩定版 — response redesign 目前階段已實作完成。**
+
+本文件記錄從 opencode 對照研究中提取的設計原則、目前已完成的 response 改造項目，以及未來可考慮的方向。
 
 ---
 
-## Why This Work Exists
+## Background
 
 最初的問題不是資料缺失，而是呈現模型過於扁平：
 
@@ -13,23 +15,7 @@
 - assistant response 缺少 footer / summary / change context
 - user prompt、assistant parts、tool outputs 之間缺少視覺綁定
 
-`opencode` 提供的主要參考點是：
-
-- turn-oriented transcript
-- part-specific renderer
-- assistant footer/meta
-- working/thinking 中間態
-- tool-specific high-signal cards
-- response-scoped diff summary
-
-## Current Reference Findings
-
-對照來源：
-
-- `submodules/opencode/packages/ui/src/components/session-turn.tsx`
-- `submodules/opencode/packages/ui/src/components/message-part.tsx`
-
-最值得沿用的設計原則：
+## 設計原則（沿用 opencode 參考）
 
 - 用 turn，而不是 flat block list
 - 用 part-specific UI，而不是 generic block renderer
@@ -37,32 +23,36 @@
 - 讓 tool 結果有更高的視覺權重
 - 把 code changes 綁回該輪 response
 
-## Completed
+---
 
-### Phase 1 — Turn Skeleton
+## 已實作
 
-已完成：
+### Phase 1 — Turn Skeleton ✅
 
 - response 從 flat block 流改成 turn-oriented transcript group
 - user prompt 成為 turn 起點
 - assistant / tool / streaming parts 併入同一輪 render
 
-### Phase 2 — Basic Block Cleanup
-
-已完成：
+### Phase 2 — Basic Block Cleanup ✅
 
 - 純 `user` / `assistant` / `system` 文字不再顯示冗餘 header
 - reasoning / tool / error block 已具備基本 collapse 行為
 
-### Phase 3 — Basic Assistant Footer
-
-已完成：
+### Phase 3 — Basic Assistant Footer ✅
 
 - assistant response 已有第一版 footer
-- 目前先顯示 session-level `provider/model`
-- 有 copy hint，但還沒有獨立 copy button
+- 目前顯示 session-level `provider/model`
+- 有 copy hint
 
-## Remaining
+### Phase 4 — Permission / Auto-Approve UI ✅
+
+- Auto-approve toggle 在 palette 中顯示 ON/OFF 狀態
+- `/auto` 指令可切換
+- Dangerous bash 命令會觸發審批對話框（即使 auto-approve ON）
+
+---
+
+## 尚未實作（未來方向）
 
 ### P1 — Coding-Agent Clarity
 
@@ -76,31 +66,29 @@
 - Paced streaming
 - Copy affordance button
 
-## Deferred
+### Deferred
 
 - 完整模仿 opencode 的 rich diff viewer
 - 過度複雜的 hover / tooltip interaction
 - 沒有明確使用價值前，不增加更重的 response chrome
 
+---
+
 ## Risks And Tradeoffs
 
 ### Risk 1 — 現有資料模型沒有完整 per-message meta
 
-影響：
-
-- footer 第一版只能先顯示 session-level provider/model
+影響：footer 第一版只能先顯示 session-level provider/model
 
 ### Risk 2 — TUI 過度模仿 Web UI 會變得太吵
 
-影響：
-
-- 終端視覺密度容易失控
+影響：終端視覺密度容易失控
 
 ### Risk 3 — response 改造會直接影響 summary / memory quality
 
-影響：
+影響：future summary 品質會依賴 response 結構是否足夠清楚
 
-- future `SESSION_SUMMARY.md` 的品質會依賴 response 結構是否足夠清楚
+---
 
 ## Next Recommended Work
 

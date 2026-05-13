@@ -1,5 +1,7 @@
 # Auto-Approve 權限設計
 
+> **Status: ✅ 已實作 — 此為設計記錄，非待辦清單。**
+
 本文件記錄 auto-approve 機制的設計決策，不是討論稿。
 
 ---
@@ -41,14 +43,15 @@
 
 ---
 
-## 架構變動
+## 架構變動（已實作 ✅）
 
 ### 影響的檔案
 
 ```
-src/client/permission-rules.ts   ← 新增危險指令偵測
-src/client/tui.tsx               ← 新增 auto-approve toggle + 修改 ask 流程
-src/client/commands.ts           ← 可選：新增 /auto 指令
+src/client/permission-rules.ts   ← 危險指令偵測（isDangerousBashCommand）
+src/client/tui.tsx               ← auto-approve toggle + ask 流程整合
+src/client/commands.ts           ← /auto 與 /auto-approve 指令
+src/client/sessions.ts           ← autoApprove 狀態存於 session JSON
 ```
 
 ### 不影響的檔案
@@ -163,21 +166,31 @@ ask(req)
 
 ---
 
-## 實作順序
+## 實作狀態
 
-```
-Step 1: permission-rules.ts 新增 isDangerousCommand()
-Step 2: tui.tsx 新增 autoApprove signal + 修改 ask callback
-Step 3: palette 加入 toggle
-Step 4: (可選) commands.ts 加入 /auto 指令
-Step 5: 寫測試 permission-rules.test.ts
-```
+### 已實作
+
+| 步驟 | 狀態 | 檔案 |
+|------|------|------|
+| `isDangerousCommand()` | ✅ | `src/client/permission-rules.ts` |
+| `normalizeCommand()` — env var + sudo 前置處理 | ✅ | `src/client/permission-rules.ts` |
+| autoApprove signal + ask callback 整合 | ✅ | `src/client/tui.tsx` |
+| Palette toggle | ✅ | `src/client/tui.tsx` (actionPaletteItems) |
+| `/auto` 與 `/auto-approve` 指令 | ✅ | `src/client/commands.ts` |
+| autoApprove 狀態 session persistence | ✅ | `src/client/sessions.ts` |
+| Permission rules 累積機制 | ✅ | `src/client/permission-rules.ts` (`addPermissionRules`) |
+| 單元測試 | ✅ | `src/client/permission-rules.test.ts` |
+
+### 實作差異（與設計文件的差異）
+
+- 設計文件只有 `/auto` 指令，實作也加入了 `/auto-approve` 作為 alias（已在 commands.ts 中註冊）
+- 設計文件將 auto-approve 狀態設為「不存檔」，但實作中會存到 session JSON（`saveSession()` 與 `loadSessionState()` 均已包含 `autoApprove`）
 
 ---
 
 ## 未納入設計的項目
 
-- **不** 做 session-level persistence（auto-approve 狀態不存檔，每次重開需要手動開啟）
+- ✅ **session-level persistence** — 原設計不存檔，但實作後決定存於 session JSON（每次重開自動沿用上次狀態）
 - **不** 做 protected paths 設定（如 `~/Documents` 禁止寫入）
 - **不** 做 sandbox / container 隔離
 - **不** 做 audit log

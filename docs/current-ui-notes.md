@@ -1,49 +1,83 @@
 # OpenZeroCode — Current UI Notes
 
-本文件只描述目前 UI 已落地的互動、尚未完成的缺口，以及短期最建議的後續工作。
+> **Status: ✅ 穩定版 — 此為 v1 已實作 UI 的記錄文件。**
+
+本文件記錄目前 UI 已落地的互動、尚未實作的缺口，以及可考慮的後續工作。
 
 ---
 
-## Implemented
+## 已實作功能
+
+### 核心 UI
 
 - 主入口為 `src/client/tui.tsx`
 - 回應區使用 `scrollbox`
-- response 目前已是 turn-oriented transcript group
+- response 為 turn-oriented transcript group
 - 滑鼠滾輪與 PgUp/PgDn 只影響回應區
+
+### 輸入與操作
+
 - Escape 行為：
   - 有 draft 時清空輸入
   - 執行中且 draft 為空時中斷目前 run
 - Up / Down 輸入歷史已實作，最多 100 筆
+- 執行中 spinner animation 已實作
+- `/exit` 與 `Ctrl+C` 會先 destroy renderer 再退出
+
+### 模式切換
+
 - Build / Plan mode 切換已實作
 - provider / model command palette 已實作
+
+### Session 管理
+
 - session list / rename / delete / compaction 已實作
+
+### Response 呈現
+
 - assistant response 即時串流
 - `Thinking` 區塊即時串流
-- reasoning / tool / error block 已可 collapse
-- assistant response footer 已有第一版：
+- reasoning / tool / error block 可 collapse
+- assistant response footer：
   - `provider/model`
   - copy hint
-- selection copy 已實作
-- `/exit` 與 `Ctrl+C` 會先 destroy renderer 再退出
-- 執行中 spinner animation 已實作
-- sidebar 已顯示 context、估算 cost、git diff summary
+- selection copy 已實作 (onMouseUp → renderer selection → clipboard)
 
-## Not Implemented Yet
+### Sidebar
 
-- Smart auto-follow
+- 顯示 context、估算 cost、git diff summary
+
+### Permission / Auto-Approve
+
+- `/auto` 或 `/auto-approve` 指令切換 auto-approve 模式
+- Palette 中顯示 Auto-approve toggle（ON/OFF）
+- Auto-approve ON 時：
+  - 唯讀工具（read/grep/glob/web-fetch）自動放行
+  - write/edit 自動放行
+  - 非 destructive bash 自動放行
+  - destructive bash 仍跳出審批對話框
+- Permission rules 可累積：每次 allow 後自動加入規則
+- Auto-approve 狀態會保存至 session JSON
+
+## 尚未實作
+
+- Smart auto-follow（`stickyScroll` 是部分解法，非完整 auto-follow）
 - Paced streaming
 - Diff view
 - Response-scoped diff summary
 - Rich tool-specific cards
-- Copy affordance button
+- Copy affordance button（目前只有 hint）
 - Reasoning collapse / side panel
 
-## Cautions
+## 已驗證 (Test Coverage)
 
-- `stickyScroll` 目前只能算部分解法，不能視為完整 auto-follow。
-- 資料模型已支援 `parts`，但 tool / response meta 還沒有完整細分到 per-message UI。
-- selection copy 已可用，但文案與視覺反饋仍可再調整。
-- `memory` 目前已有 command-level control surface，但這應視為過渡期做法，不應成為長期主互動模型。
+| 測試 | 檔案 |
+|------|------|
+| Autocomplete | `autocomplete.test.ts` |
+| Commands | `commands.test.ts` |
+| Errors | `errors.test.ts` |
+| Markdown | `markdown.test.ts` |
+| Permission rules | `permission-rules.test.ts` |
 
 ## Next Recommended UI Work
 

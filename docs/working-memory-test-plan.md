@@ -1,5 +1,7 @@
 # OpenZeroCode — Working Memory Test Plan
 
+> **Status: ✅ 測試框架已穩定 — baseline 測試已完成，此為後續回歸測試的參考文件。**
+
 本文件定義一份 **真實使用情境** 的測試計劃，用來驗證目前的 working memory loop 是否已經足夠可用。
 
 這份計劃只驗證目前 phase 的責任：
@@ -23,10 +25,10 @@
 
 更具體地說，要驗證：
 
-1. `AGENTS.md` 能否穩定影響當前 session 行為
-2. `SESSION_SUMMARY.md` 是否能產出高品質 handoff
-3. 下一次 session 是否能有效接續前一次狀態
-4. summary 內容是否真的幫助減少重複探索與重複犯錯
+1. `AGENTS.md` 能否穩定影響當前 session 行為 ✅（已驗證）
+2. `SESSION_SUMMARY.md` 是否能產出高品質 handoff ✅（已驗證 baseline）
+3. 下一次 session 是否能有效接續前一次狀態 ✅（已驗證 baseline）
+4. summary 內容是否真的幫助減少重複探索與重複犯錯 ✅（已驗證 baseline）
 
 ---
 

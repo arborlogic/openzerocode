@@ -1,6 +1,8 @@
-# OpenZeroCode — Opencode-Inspired Memory: Implementation Spec
+# OpenZeroCode — Opencode-Inspired Memory: Implementation Retrospective
 
-本文件是 v1 實作規格，對照 opencode 的設計做法。
+> **Status: ✅ 所有 v1 任務已完成 — 此為實作回顧，非待辦清單。**
+
+本文件回顧 OpenZeroCode 的 working memory 實作，對照 opencode 的設計做法，並記錄已完成的實作項目。
 
 ---
 
@@ -8,79 +10,76 @@
 
 ### 1. Workspace Instruction（對應 opencode instruction.ts）
 
-opencode 做法：
-- 讀 `AGENTS.md` / `CLAUDE.md`
-- 全域 + 專案層
-- 每次 LLM call 都注入 system prompt
-
-OpenZeroCode v1 做法：
-- 只讀 workspace root 的 `AGENTS.md`
-- session 開始時載入，注入 system prompt
-- 不自動更新
+| 面向 | opencode | OpenZeroCode (已實作) |
+|------|----------|----------------------|
+| 讀取來源 | `AGENTS.md` / `CLAUDE.md` | workspace root 的 `AGENTS.md` |
+| 載入時機 | 每次 LLM call | session 開始時載入，注入 system prompt |
+| 自動更新 | 無 | 不自動更新（由人類維護） |
+| 實作檔案 | `instruction.ts` | `src/client/workspace-memory.ts` |
 
 ### 2. Session Persistence（對應 opencode SQLite session storage）
 
-opencode 做法：
-- SQLite 存 messages + parts + tool results
-- session 有 metadata（model / provider / timestamps）
-
-OpenZeroCode v1 做法：
-- JSON 存 messages + model + provider + mode + compaction
-- 路徑：`~/.openzerocode/sessions/<session-id>.json`
+| 面向 | opencode | OpenZeroCode (已實作) |
+|------|----------|----------------------|
+| 儲存方式 | SQLite | JSON 檔案 |
+| 儲存內容 | messages + parts + tool results | messages + model + provider + mode + compaction + permissionRules + autoApprove |
+| 路徑 | SQLite DB | `~/.openzerocode/sessions/<session-id>.json` |
+| 實作檔案 | session storage | `src/client/sessions.ts` |
 
 ### 3. Session Compaction（對應 opencode compaction.ts）
 
-opencode 做法：
-- context overflow 時觸發
-- 產生 anchored summary
-- summary 存 DB，不寫 repo 檔案
-- 保留最近 tail messages
-- 下次組 prompt 時：summary + tail + new message
-
-OpenZeroCode v1 做法：
-- context 超過門檻或 `/compact` 手動觸發
-- 產生 structured summary（Goal / Progress / Decisions / Files / Next Steps）
-- summary 存 `session.compaction.summary`，不寫 repo 檔案
-- 保留最近 tail messages
+| 面向 | opencode | OpenZeroCode (已實作) |
+|------|----------|----------------------|
+| 觸發方式 | context overflow | 自動（80% threshold）或 `/compact` 手動 |
+| Summary 格式 | anchored summary | Structured (Goal / Progress / Decisions / Files / Next Steps) |
+| 儲存位置 | DB | `session.compaction.summary` in JSON |
+| 保留 tail | ✅ | ✅ 保留最近 N 條 messages |
+| 實作檔案 | `compaction.ts` | `src/client/session-compact.ts` |
 
 ---
 
-## 實作任務清單
+## 實作完成確認
 
-### Task 1：移除 SESSION_SUMMARY.md 自動寫入（已完成部分）
+### Task 1：移除 SESSION_SUMMARY.md 自動寫入 ✅
 
-- [ ] 移除 `submit()` 後的 `generateSessionSummary(next)`
-- [ ] 移除 workspace-memory 對 SESSION_SUMMARY.md 的自動讀取注入
-- [ ] 保留檔案支援程式碼，但不進入自動 loop
+- [x] 移除自動 `generateSessionSummary(next)` — session summary 不再自動產生
+- [x] 移除對 SESSION_SUMMARY.md 的自動讀取注入
+- [x] 保留手動匯出指令（`/export-summary`）供使用者自行決定
 
-完成標準：10 turn 對話後，`git diff` 不出現 SESSION_SUMMARY.md 變動。
+**驗證：** 10 turn 對話後 `git diff` 不應出現 SESSION_SUMMARY.md 變動。
 
-### Task 2：AGENTS.md 穩定載入
+### Task 2：AGENTS.md 穩定載入 ✅
 
 - [x] 找到 workspace root（git root / package.json root）
 - [x] 讀取 AGENTS.md（如果存在）
 - [x] 注入 system prompt
 
-完成標準：AGENTS.md 裡寫一條規則，下一輪 assistant 確實遵守。
+**驗證：** AGENTS.md 裡的規則會在下一輪被 assistant 遵守。
 
-### Task 3：Compaction summary 存進 session JSON
+**實作：** `src/client/workspace-memory.ts` — `loadAgentsInstruction()`
 
-- [ ] 修改 session JSON schema 加入 `compaction` 欄位
-- [ ] `/compact` 執行後 summary 寫進 `session.compaction`
-- [ ] 組 prompt 時如果有 compaction，加在 AGENTS.md 之後、tail messages 之前
+### Task 3：Compaction summary 存進 session JSON ✅
 
-完成標準：`/compact` 後切換 session 再切回來，context 仍有 compaction summary。
+- [x] session JSON schema 包含 `compaction` 欄位（`saveSession()`）
+- [x] `/compact` 執行後 summary 寫進 `session.compaction`
+- [x] prompt 組裝順序：system → AGENTS.md → compaction → tail → user message
 
-### Task 4：Context budget 自動觸發
+**驗證：** `/compact` 後切換 session 再切回來，context 仍有 compaction summary。
 
-- [ ] 每次 submit 前估算 token 數
-- [ ] 超過 model context limit 80% 時自動觸發 compact
+**實作：** `src/client/sessions.ts` + `src/client/session-runner.ts`
 
-完成標準：長對話不需要手動 compact，自動在接近 limit 時壓縮。
+### Task 4：Context budget 自動觸發 ✅
+
+- [x] 每次 submit 前估算 token 數
+- [x] 超過 model context limit 80% 時自動觸發 compact
+
+**驗證：** 長對話不需要手動 compact，自動在接近 limit 時壓縮。
+
+**實作：** `src/client/tui.tsx` — `estimateTokenCount()` + auto-compact check
 
 ---
 
-## 不做的事（v1 明確排除）
+## 不做的事（v1 明確排除，仍維持）
 
 - SESSION_SUMMARY.md 自動讀寫
 - 任何 repo 檔案的自動修改

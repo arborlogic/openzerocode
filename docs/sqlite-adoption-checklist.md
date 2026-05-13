@@ -1,5 +1,7 @@
 # OpenZeroCode — SQLite Adoption Checklist
 
+> **Status: ✅ 當前決定維持不變 — 仍以檔案式 storage 為主力。**
+
 本文件定義：
 
 - 為什麼 **現在** 不急著在 OpenZeroCode 導入 sqlite
@@ -11,7 +13,7 @@
 
 ---
 
-## Current Decision
+## Current Decision（仍維持）
 
 目前階段的結論是：
 
@@ -19,19 +21,12 @@
 
 原因不是 sqlite 不好，而是目前要驗證的是 **memory v1 的產品行為**，不是 storage scalability。
 
-現在真正要跑順的 loop 是：
+現在真正已經跑順的 loop 是：
 
-1. session start 讀 `AGENTS.md`
-2. session start 讀 `SESSION_SUMMARY.md`
-3. session end 重寫 `SESSION_SUMMARY.md`
-4. 下一次 session 繼續沿用這份 handoff
-
-只要這條 loop 還沒成熟，先加 sqlite 只會提早增加：
-
-- schema 設計成本
-- migration 成本
-- debug 成本
-- local artifact 與 internal state 不一致的風險
+1. ✅ session start 讀 `AGENTS.md`
+2. ✅ session JSON 保存 messages + compaction summary
+3. ✅ context 超過門檻自動 compact
+4. ✅ auto-approve 與 permission rules 持久化
 
 ---
 
