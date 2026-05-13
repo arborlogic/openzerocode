@@ -390,12 +390,13 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
   const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
+  const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
@@ -532,7 +533,87 @@ function App() {
     setPaletteIndex(0)
   }
 
-  const actionPaletteItems = createMemo<PaletteItem[]>(() => {
+  const timelineMsgs = createMemo(() => {
+    return messages().filter((msg) => msg.role === "user" && msg.content);
+  });
+
+  const formatTimelineHint = () => {
+    const count = timelineMsgs().length;
+    return count === 0 ? "empty" : String(count);
+  };
+
+  const timelinePaletteItems = createMemo<PaletteItem[]>(() => {
+    selectionRevision();
+    const msgs = timelineMsgs();
+    const items: PaletteItem[] = [];
+
+    if (msgs.length === 0) {
+      items.push({ label: "No user messages yet", kind: "section", onSelect: () => {} });
+    }
+
+    // If paletteMode is "timelineActions", show actions for the selected message
+    if (paletteMode() === "timelineActions") {
+      const targetMsg = msgs[timelineTargetMsgIdx()];
+      if (targetMsg) {
+        items.push({
+          label: "Edit this message",
+          hint: "set as draft input",
+          onSelect: () => {
+            setComposerText(targetMsg.content ?? "");
+            setShowPalette(false);
+            setPaletteMode("actions");
+          },
+        });
+        items.push({
+          label: "Fork from here",
+          hint: "create new session",
+          onSelect: () => {
+            doForkFromMessage(timelineTargetMsgIdx());
+            setShowPalette(false);
+            setPaletteMode("actions");
+          },
+        });
+        items.push({ label: "", onSelect: () => {} });
+        items.push({
+          label: "← Back to timeline",
+          onSelect: () => {
+            setPaletteMode("timeline");
+            setPaletteIndex(0);
+          },
+        });
+      }
+      return items;
+    }
+
+    for (let i = 0; i < msgs.length; i++) {
+      const msg = msgs[i];
+      const text = (msg.content ?? "").replace(/\n/g, " ").slice(0, 50);
+      const isActive = i === timelineTargetMsgIdx();
+      items.push({
+        label: (isActive ? ">" : " ") + " " + text,
+        hint: `msg #${i + 1}`,
+        onSelect: () => {
+          setTimelineTargetMsgIdx(i);
+          // Show actions for this message
+          setPaletteMode("timelineActions");
+          setPaletteIndex(0);
+        },
+      });
+    }
+
+    items.push({ label: "", onSelect: () => {} });
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("actions");
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()));
+      },
+    });
+    return items;
+  });
+
+
+const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
     return [
@@ -607,6 +688,25 @@ function App() {
       {
         label: "Compact session",
         onSelect: () => { void compactCurrentSession() },
+      },
+      {
+        label: "Timeline",
+        hint: formatTimelineHint(),
+        onSelect: () => {
+          setPalettePendingDelete(null);
+          setTimelineTargetMsgIdx(0);
+          setPaletteMode("timeline");
+          setPaletteIndex(0);
+        },
+      },
+      {
+        label: "Fork from timeline",
+        onSelect: () => {
+          setPalettePendingDelete(null);
+          setTimelineTargetMsgIdx(0);
+          setPaletteMode("timeline");
+          setPaletteIndex(0);
+        },
       },
       {
         label: "MODEL",
@@ -858,6 +958,7 @@ function App() {
     return items
   })
 
+  
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
@@ -869,6 +970,8 @@ function App() {
             ? providerKeyProviderPaletteItems()
             : paletteMode() === "providerKeys"
               ? providerKeyPaletteItems()
+          : paletteMode() === "timeline" || paletteMode() === "timelineActions"
+            ? timelinePaletteItems()
           : actionPaletteItems(),
   )
 
@@ -1037,6 +1140,26 @@ function App() {
     setComposerText("")
     setDraft("")
   }
+
+  
+  const doForkFromMessage = (msgIdx: number) => {
+    doSaveCurrent();
+    const msgs = timelineMsgs();
+    if (msgIdx < 0 || msgIdx >= msgs.length) return;
+    const targetMsg = msgs[msgIdx];
+    // Create new session with messages up to and including the target message
+    const msgsUpToTarget = messages().slice(0, messages().indexOf(targetMsg) + 1);
+    const meta = createSession(currentModel, currentProvider, msgsUpToTarget);
+    setSessionId(meta.id);
+    setSessionMeta(meta);
+    setSessionRevision((v) => v + 1);
+    setMessages(msgsUpToTarget);
+    setNotices([]);
+    setPermissionRules(permissionRules());
+    setComposerText(targetMsg.content ?? "");
+    setDraft(targetMsg.content ?? "");
+    setStatus("forked session from message " + (msgIdx + 1));
+  };
 
   const doCreateNewSession = () => {
     doSaveCurrent()
@@ -1416,6 +1539,12 @@ function App() {
           setPaletteInput("")
           setPaletteMode(backMode)
           setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+        } else if (paletteMode() === "timelineActions") {
+          setPaletteMode("timeline")
+          setPaletteIndex(0)
+        } else if (paletteMode() === "timeline") {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else {
             setShowPalette(false)
           }
@@ -1704,6 +1833,10 @@ function App() {
                         ? "Provider Keys"
                         : paletteMode() === "providerKeys"
                           ? `Provider Keys · ${paletteProviderKeyTarget()}`
+                      : paletteMode() === "timeline"
+                        ? "Timeline"
+                        : paletteMode() === "timelineActions"
+                          ? "Message Actions"
                       : "Command Palette"}
             </text>
             <text style={{ fg: THEME.muted }}>  F2 / Ctrl+P</text>
