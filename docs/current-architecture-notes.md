@@ -1,62 +1,99 @@
 # OpenZeroCode — Current Architecture Notes
 
-本文件只記錄目前已確認的架構狀態與短期缺口，不把猜測性提案寫成既定方向。
+> **Status: ✅ Stable — This document records the v1 implemented architecture.**
+
+This document records the currently confirmed architecture state and directions to consider for the future. It does not present speculative proposals as established directions.
 
 ---
 
-## Current State
+## Current Stable State
 
-- Active client entry: `src/client/tui.tsx`
-- Runtime: Bun with `@opentui/solid/preload`
-- Old readline client files已移除，不再是 active code path
-- Session persistence 已是 multi-session 結構：
-  - `~/.openzerocode/sessions/index.json`
-  - `~/.openzerocode/sessions/<session-id>.json`
-  - session JSON 儲存：messages、model、provider、mode
-- Memory policy（v1）：
-  - 只讀 `AGENTS.md` 作為 workspace instruction
-  - `SESSION_SUMMARY.md` 不進入自動 loop（不自動讀、不自動寫）
-  - compaction summary 存 session JSON，不寫 repo 檔案
-  - 參考：[memory-architecture.md](memory-architecture.md)
-- Provider 已經是 registry 結構：
-  - `openapi` / `big-pickle`
-  - `openrouter`
-- Message model 已支援 part-based message：
-  - `role`
-  - `content`
-  - `reasoning_content`
-  - `tool_calls`
-  - `parts`
-- Tool execution 目前會直接執行：
-  - `abort` 已串進 context
-  - `ask()` / `metadata()` 仍是 stub
-  - 尚未有完整 permission model
+### Core Architecture
+
+- **Active client entry**: `src/client/tui.tsx`
+- **Runtime**: Bun with `@opentui/solid/preload`
+- **Old readline client**: Removed, no longer an active code path
+
+### Session Persistence
+
+Multi-session JSON structure (stable):
+
+- `~/.openzerocode/sessions/index.json`
+- `~/.openzerocode/sessions/<session-id>.json`
+- Session JSON stores: messages, model, provider, mode, compaction, permissionRules, autoApprove
+
+### Memory Policy (v1 ✅)
+
+| Item | Status |
+|------|--------|
+| `AGENTS.md` loaded as workspace instruction | ✅ Implemented (`workspace-memory.ts`) |
+| `SESSION_SUMMARY.md` not in automatic loop | ✅ No auto read/write |
+| Compaction summary stored in session JSON | ✅ Not written to repo files |
+| Context budget auto-triggers compaction | ✅ 80% threshold |
+
+See [memory-architecture.md](memory-architecture.md) for detailed design.
+
+### Provider Layer
+
+Registry structure (stable):
+
+- `openrouter` — OpenRouter API
+- `big-pickle` — Big Pickle API
+- Extensible through registry
+
+Implementation: `src/provider/registry.ts` + `src/provider/config.ts`
+
+### Message Model
+
+Part-based messages supported:
+
+- `role`, `content`, `reasoning_content`, `tool_calls`, `parts`
+
+### Permission / Auto-Approve (✅ Implemented)
+
+- **`permission-rules.ts`**: `isSafePermission()`, `shouldAutoApprove()`, `addPermissionRules()`, `isDangerousBashCommand()`
+- **Dangerous command detection**: rm, rmdir, mv, truncate, shred, dd, `>` and other destructive patterns
+- **Normalization**: Handles env var prefix (`VAR=val rm`) and `sudo` prefix
+- **Auto-approve toggle**: Can be switched via `/auto` command or palette in the TUI
+- **Session persistence**: autoApprove state stored in session JSON
+
+### Tool Execution
+
+- `abort` is wired into context
+- `ask()` permission callback integrated with auto-approve logic
+- `metadata()` is available
 
 ## Confirmed Runtime Behavior
 
-- assistant response 會即時串流到 transcript
-- `reasoning_content` 會以獨立 `Thinking` 區塊即時顯示
-- response 區塊目前已改為 turn-oriented group
-- 純 `user` / `assistant` / `system` 文字不再顯示冗餘 header
-- assistant response 目前已有簡易 footer：
-  - `provider/model`
-  - copy hint
-- selection copy 已實作：
-  - `onMouseUp`
-  - 取 renderer selection
-  - 寫入 clipboard
-- Build / Plan mode 已實作
-  - Plan mode 會傳空的 `toolDefs`
-- command palette / provider / model switching 已實作
-- session list / rename / delete / compaction 已實作
-- sidebar 已顯示 context、token/cost estimate、git diff summary
+- Assistant response streams in real-time to transcript
+- `reasoning_content` displays in a dedicated `Thinking` block in real-time
+- Response is turn-oriented groups
+- Plain `user` / `assistant` / `system` text no longer shows redundant headers
+- Assistant response footer: provider/model + copy hint
+- Selection copy implemented (onMouseUp → renderer selection → clipboard)
+- Build / Plan mode implemented (Plan mode sends empty `toolDefs`)
+- Command palette / provider / model switching implemented
+- Session list / rename / delete / compaction implemented
+- Sidebar shows context, token/cost estimate, git diff summary
 
-## Prioritized Backlog
+## Test Coverage
 
-### P0 — Safety / Correctness
+| Module | Test File |
+|--------|-----------|
+| Workspace memory | `workspace-memory.test.ts` |
+| Permission rules | `permission-rules.test.ts` |
+| Session state | `session-state.test.ts` |
+| Session persistence | `sessions.test.ts` |
+| Session compaction | `session-compact.test.ts` |
+| Message sanitization | `message-sanitize.test.ts` |
+| System prompt | `system-prompt.test.ts` |
+| Stream state | `stream-state.test.ts` |
+| Autocomplete | `autocomplete.test.ts` |
+| Commands | `commands.test.ts` |
+| Errors | `errors.test.ts` |
+| Markdown | `markdown.test.ts` |
 
-- Permission / approval model
-- Tool output truncation
+## Future Considerations (explicitly marked as ideas, not current plans)
 
 ### P1 — Coding-Agent Clarity
 
@@ -70,7 +107,7 @@
 - Paced streaming
 - Diff view
 
-## Notes For Future Work
+## Notes
 
-- 若要新增 roadmap，請只寫「已確認要做」的項目。
-- 若只是參考 opencode 的可能方向，請明確標成 idea，而不是 current plan。
+- When adding roadmap items, only include items confirmed for implementation.
+- If referencing possible directions from opencode, mark them clearly as ideas, not current plans.

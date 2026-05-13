@@ -1,193 +1,188 @@
 # OpenZeroCode — SQLite Adoption Checklist
 
-本文件定義：
+> **Status: ✅ Current decision unchanged — file-based storage remains the primary approach.**
 
-- 為什麼 **現在** 不急著在 OpenZeroCode 導入 sqlite
-- 什麼情況下值得導入 sqlite
-- 導入後哪些資料仍然應該維持檔案形式
-- 如果未來要加，第一版應該怎麼切
+This document defines:
 
-這份文件的目的是避免過早把 storage 複雜化。
+- Why there is **no rush** to introduce SQLite in OpenZeroCode
+- Under what circumstances SQLite would be worth adopting
+- Which data should remain file-based even after SQLite adoption
+- How the first version should be scoped if SQLite is added in the future
+
+The purpose of this document is to avoid prematurely complicating storage.
 
 ---
 
-## Current Decision
+## Current Decision (still in effect)
 
-目前階段的結論是：
+The conclusion at this stage is:
 
-> **先把檔案式 workspace memory 做完整，不先導入 sqlite。**
+> **First, complete the file-based workspace memory implementation. Do not introduce SQLite yet.**
 
-原因不是 sqlite 不好，而是目前要驗證的是 **memory v1 的產品行為**，不是 storage scalability。
+The reason is not that SQLite is bad, but that what needs to be validated now is **memory v1's product behavior**, not storage scalability.
 
-現在真正要跑順的 loop 是：
+The loops that are already working:
 
-1. session start 讀 `AGENTS.md`
-2. session start 讀 `SESSION_SUMMARY.md`
-3. session end 重寫 `SESSION_SUMMARY.md`
-4. 下一次 session 繼續沿用這份 handoff
-
-只要這條 loop 還沒成熟，先加 sqlite 只會提早增加：
-
-- schema 設計成本
-- migration 成本
-- debug 成本
-- local artifact 與 internal state 不一致的風險
+1. ✅ Session start reads `AGENTS.md`
+2. ✅ Session JSON saves messages + compaction summary
+3. ✅ Auto-compaction when context exceeds threshold
+4. ✅ Auto-approve and permission rules persistence
 
 ---
 
 ## What We Keep File-Based
 
-即使未來導入 sqlite，下列資料也應該優先保留檔案形式：
+Even if SQLite is adopted in the future, the following data should remain file-based:
 
 ### `AGENTS.md`
 
-原因：
+Rationale:
 
-- 這是給人和 agent 一起讀的 workspace instruction artifact
-- 需要容易 review
-- 需要容易手改
-- 需要能直接跟 repo 一起版本管理
+- This is a workspace instruction artifact read by both humans and agents
+- Needs to be easy to review
+- Needs to be easy to edit manually
+- Needs to be version-controlled alongside the repo
 
 ### `SESSION_SUMMARY.md`
 
-原因：
+Rationale:
 
-- 這是 handoff artifact，不是純 internal cache
-- 需要能直接打開看
-- 需要能直接修正
-- 需要作為 local-first continuation 的 source
+- This is a handoff artifact, not a pure internal cache
+- Needs to be directly openable and readable
+- Needs to be directly editable
+- Serves as the source for local-first continuation
 
 ### Why This Matters
 
-一句話：
+In short:
 
-> **檔案是使用者介面與真實來源；sqlite 只能是內部索引與查詢層。**
+> **Files are the user interface and source of truth; SQLite should only be the internal index and query layer.**
 
 ---
 
 ## What SQLite Would Be For
 
-如果未來導入 sqlite，最合理的角色不是取代 `AGENTS.md` / `SESSION_SUMMARY.md`，而是補下面這些能力：
+If SQLite is adopted in the future, its most reasonable role is not to replace `AGENTS.md` / `SESSION_SUMMARY.md`, but to supplement with these capabilities:
 
-- local trace index
-- structured candidate store
-- accepted / rejected state tracking
-- local queryable history
-- internal dedupe / merge support
-- response / session / tool metadata indexing
+- Local trace index
+- Structured candidate store
+- Accepted / rejected state tracking
+- Local queryable history
+- Internal dedupe / merge support
+- Response / session / tool metadata indexing
 
-也就是：
+In other words:
 
-> sqlite 應該先服務 **internal retrieval and bookkeeping**，不是先服務 human-facing memory artifacts。
+> **SQLite should first serve internal retrieval and bookkeeping, not human-facing memory artifacts.**
 
 ---
 
 ## When To Add SQLite
 
-只有在下列訊號開始出現時，才建議導入 sqlite。
+SQLite adoption is only recommended when the following signals start to appear.
 
 ### Signal 1 — Session history starts getting large
 
-症狀：
+Symptoms:
 
-- 想保留很多 session summary 歷史
-- 需要查詢「某次做過什麼」
-- 單靠 markdown 已經很難快速定位
+- Want to retain many session summary histories
+- Need to query "what was done in a particular session"
+- Markdown alone makes it hard to quickly locate information
 
-判斷：
+Judgment:
 
-- 如果你開始需要按 task / file / date / session 查過去內容，sqlite 很可能值得加
+- If you start needing to search past content by task / file / date / session, SQLite is likely worth adding
 
 ### Signal 2 — Zero candidate lifecycle needs state
 
-症狀：
+Symptoms:
 
-- 需要追蹤某條 candidate 是否已接受
-- 需要記 rejected / ignored / edited 狀態
-- 需要知道一條 candidate 出現過幾次
+- Need to track whether a candidate has been accepted
+- Need to record rejected / ignored / edited states
+- Need to know how many times a candidate has appeared
 
-判斷：
+Judgment:
 
-- 如果 zero 前置材料開始需要狀態機，sqlite 很適合
+- If zero's upstream materials start needing a state machine, SQLite is a good fit
 
 ### Signal 3 — Local traces need structured querying
 
-症狀：
+Symptoms:
 
-- 需要查某個檔案近期被哪些 session 改過
-- 需要查某類任務的成功 pattern
-- 需要把 tool usage、diff、summary 關聯起來
+- Need to query which sessions recently modified a particular file
+- Need to find success patterns for certain task types
+- Need to correlate tool usage, diffs, and summaries
 
-判斷：
+Judgment:
 
-- 如果你開始需要 response/session/tool 三者的關聯查詢，就該考慮 sqlite
+- If you start needing relational queries across response / session / tool, consider SQLite
 
 ### Signal 4 — Accepted memory becomes too rich for plain append
 
-症狀：
+Symptoms:
 
-- `AGENTS.md` 已經不只是 instruction，而有多種結構化項目
-- 想做分類、排序、來源追溯
-- 想保留「原文 artifact」與「內部 normalized record」兩套視角
+- `AGENTS.md` has grown beyond instructions into multiple structured categories
+- Want to categorize, sort, and trace origins
+- Want to maintain both "original artifact" and "internal normalized record" perspectives
 
-判斷：
+Judgment:
 
-- 如果 memory 開始長出 entity 與 metadata，sqlite 值得導入
+- If memory starts growing entities and metadata, SQLite is worth adopting
 
 ### Signal 5 — Export to zero needs a stable local staging layer
 
-症狀：
+Symptoms:
 
-- 想把 accepted items、summary、trace 穩定地 export 到 zero
-- 需要 retry / version / cursor / sync state
+- Want to reliably export accepted items, summaries, and traces to zero
+- Need retry / version / cursor / sync state
 
-判斷：
+Judgment:
 
-- 如果 OpenZeroCode 開始擔任 zero 的 candidate staging source，sqlite 會很有幫助
+- If OpenZeroCode starts serving as zero's candidate staging source, SQLite becomes very useful
 
 ---
 
 ## When Not To Add SQLite Yet
 
-以下情況不應該成為導入 sqlite 的理由：
+The following should not be reasons to introduce SQLite:
 
-- 只是覺得 sqlite 比 markdown 專業
-- 只是覺得未來可能用得到
-- 只是想先把 schema 設計好
-- 只是想模仿 opencode 的 storage 形狀
+- Just feeling that SQLite is more professional than markdown
+- Just thinking it might be useful in the future
+- Just wanting to design the schema upfront
+- Just wanting to mimic opencode's storage shape
 
-目前如果只是要做到：
+If the current goals are only:
 
-- local-first memory
-- summary handoff
-- human-editable workspace artifacts
+- Local-first memory
+- Summary handoff
+- Human-editable workspace artifacts
 
-那檔案就足夠。
+Then files are sufficient.
 
 ---
 
 ## Comparison With Opencode
 
-`submodules/opencode` 現在的做法是：
+The `submodules/opencode` approach is:
 
-- 核心資料主要進 sqlite
-- 讀取時直接查 sqlite
-- 寫入很多地方走 event/projector 路徑
-- 另外保留少量本地檔案作為輔助 artifact
+- Core data primarily goes into SQLite
+- Reads query SQLite directly
+- Writes often go through event/projector paths
+- A small number of local files are kept as supplementary artifacts
 
-這樣的設計很適合：
+This design suits:
 
-- session / message / part 很多
-- 需要同步與 projector
-- 需要大量內部關聯查詢
+- Many sessions / messages / parts
+- Sync and projector requirements
+- Heavy internal relational queries
 
-但 OpenZeroCode 目前的 memory v1 還沒有進到這個複雜度。
+But OpenZeroCode's memory v1 has not yet reached this level of complexity.
 
-所以現在最合理的借鏡不是「立刻用 sqlite」，而是：
+So the most reasonable lessons to draw are not "use SQLite immediately", but:
 
-- 學它的 local instruction mindset
-- 學它的 anchored summary 思路
-- 先不要學它完整的 storage complexity
+- Learn its local instruction mindset
+- Learn its anchored summary approach
+- Don't yet adopt its full storage complexity
 
 ---
 
@@ -195,67 +190,67 @@
 
 ### Stage 1 — File-based memory only
 
-保留：
+Retain:
 
 - `AGENTS.md`
 - `SESSION_SUMMARY.md`
 
-完成：
+Complete:
 
-- loading
-- summary generation
+- Loading
+- Summary generation
 
 ### Stage 2 — Optional lightweight local index
 
-如果開始需要更多查詢能力，再考慮導入 sqlite，但只用於：
+If more querying capability becomes necessary, consider introducing SQLite, but only for:
 
-- session summary index
-- zero candidate lifecycle
-- trace metadata
+- Session summary index
+- Zero candidate lifecycle
+- Trace metadata
 
-此時：
+At this point:
 
-- `AGENTS.md` 仍然是 human-facing instruction artifact
-- `SESSION_SUMMARY.md` 仍然是 human-facing handoff artifact
+- `AGENTS.md` remains the human-facing instruction artifact
+- `SESSION_SUMMARY.md` remains the human-facing handoff artifact
 
 ### Stage 3 — Candidate staging for zero
 
-當 local memory loop 成熟後，再考慮：
+Once the local memory loop matures, consider:
 
-- local sqlite record
-- export queue
-- sync state
-- candidate material for zero
+- Local SQLite record
+- Export queue
+- Sync state
+- Candidate material for zero
 
-這時 sqlite 才開始真正連到 zero pipeline。
+At this point, SQLite is truly connected to the zero pipeline.
 
 ---
 
 ## Minimal Rule
 
-最簡單的決策規則是：
+The simplest decision rule is:
 
-> **如果一個需求主要是讓人讀、讓人改、讓 repo 本地繼續工作，就先用檔案。**
+> **If a requirement is primarily for humans to read, edit, and continue working locally, use files first.**
 
-> **如果一個需求主要是讓系統查、讓系統追蹤狀態、讓系統做結構化關聯，就考慮 sqlite。**
+> **If a requirement is primarily for the system to query, track state, and make structured associations, consider SQLite.**
 
 ---
 
 ## Current Recommendation
 
-截至目前為止，建議維持：
+As of now, the recommendation is to maintain:
 
-- workspace memory 用檔案
-- summary 用檔案
-- 不引入 sqlite dependency
+- Workspace memory via files
+- Summary via files
+- No SQLite dependency
 
-等到出現以下至少兩個訊號，再重開 sqlite 評估：
+Re-evaluate SQLite when at least two of the following signals appear:
 
-1. 需要保留並查詢很多歷史 summary
-2. 需要 zero candidate lifecycle state
-3. 需要 trace / tool / response 的關聯查詢
-4. 需要穩定 export 到 zero 的 staging layer
+1. Need to retain and query many historical summaries
+2. Need zero candidate lifecycle state
+3. Need relational queries across traces / tools / responses
+4. Need a stable export staging layer to zero
 
-在那之前：
+Until then:
 
-> **先把檔案式 memory 做好，比先把 sqlite 接進來更重要。**
+> **Getting file-based memory right is more important than getting SQLite wired in.**

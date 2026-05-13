@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { Provider, type CompletionRequest, type CompletionResult, type Chunk } from "./types"
+import { Provider, type CompletionRequest, type CompletionResult, type Chunk, type Message } from "./types"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 import { resolveConfiguredProviderApiKey } from "./config"
@@ -63,6 +63,10 @@ function openaiChunkToChunk(raw: any): Chunk {
   }
 }
 
+function sanitizeMessages(messages: Message[]): Message[] {
+  return messages.map(({ parts, ...rest }) => rest)
+}
+
 const DEFAULT_BASE = "https://opencode.ai/zen/v1"
 
 export const layer = (input: { apiKey: string; baseURL?: string; model?: string }) =>
@@ -85,7 +89,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
               headers: headers(),
-              body: JSON.stringify({ ...req, model: req.model || defaultModel, stream: false }),
+              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: false }),
             })
           )
           if (!res.ok) {
@@ -112,7 +116,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
               headers: headers(),
-              body: JSON.stringify({ ...req, model: req.model || defaultModel, stream: true }),
+              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true }),
             })
           )
           if (!res.ok) {

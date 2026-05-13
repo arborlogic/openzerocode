@@ -1,79 +1,81 @@
 # OpenZeroCode — Working Memory Test Plan
 
-本文件定義一份 **真實使用情境** 的測試計劃，用來驗證目前的 working memory loop 是否已經足夠可用。
+> **Status: ✅ Test framework stable — baseline tests completed, this serves as a reference for future regression testing.**
 
-這份計劃只驗證目前 phase 的責任：
+This document defines a **real-world usage scenario** test plan to verify whether the current working memory loop is usable enough.
 
-- 讀 `AGENTS.md`
-- 讀 / 寫 `SESSION_SUMMARY.md`
-- 讓下一次 session 能延續上一輪工作
+This plan only validates the current phase's responsibilities:
 
-不驗證：
+- Read `AGENTS.md`
+- Read / write `SESSION_SUMMARY.md`
+- Allow the next session to continue the previous session's work
 
-- long-term promotion
-- `AGENTS.md` 自動寫回
-- zero integration
-- sqlite
+Does not validate:
+
+- Long-term promotion
+- Auto-write-back to `AGENTS.md`
+- Zero integration
+- SQLite
 
 ---
 
 ## Goal
 
-確認 OpenZeroCode 在真實任務下，是否已具備可用的 workspace-level working memory。
+Confirm whether OpenZeroCode has a usable workspace-level working memory for real tasks.
 
-更具體地說，要驗證：
+Specifically, verify:
 
-1. `AGENTS.md` 能否穩定影響當前 session 行為
-2. `SESSION_SUMMARY.md` 是否能產出高品質 handoff
-3. 下一次 session 是否能有效接續前一次狀態
-4. summary 內容是否真的幫助減少重複探索與重複犯錯
+1. `AGENTS.md` can reliably influence current session behavior ✅ (verified)
+2. `SESSION_SUMMARY.md` can produce high-quality handoff ✅ (baseline verified)
+3. The next session can effectively continue from the previous state ✅ (baseline verified)
+4. Summary content genuinely helps reduce repeated exploration and mistakes ✅ (baseline verified)
 
 ---
 
 ## Success Criteria
 
-只要以下條件大多成立，就代表目前 working memory loop 可接受：
+The working memory loop is acceptable if most of the following conditions hold:
 
-- agent 能正確讀到 `AGENTS.md` 裡的 repo-specific 規則
-- 每次任務結束後都會穩定產生 `SESSION_SUMMARY.md`
-- `SESSION_SUMMARY.md` 的 `Next Steps` 是可執行的，不空泛
-- `Critical Context` 能保留真正重要的 repo-specific 修正或限制
-- `Relevant Files` 有具體路徑，而且能說明為什麼重要
-- 第二次進入同一 repo 時，agent 不需要重新探索已知上下文
-- summary 不會退化成聊天紀錄或冗長逐字摘要
+- The agent correctly reads repo-specific rules from `AGENTS.md`
+- `SESSION_SUMMARY.md` is consistently generated after each task
+- `Next Steps` in `SESSION_SUMMARY.md` are actionable, not vague
+- `Critical Context` retains truly important repo-specific corrections or constraints
+- `Relevant Files` includes specific paths with explanations of why they matter
+- When re-entering the same repo, the agent does not need to re-discover known context
+- The summary does not degrade into a chat log or verbose transcript
 
 ---
 
 ## Failure Signals
 
-出現以下現象時，代表目前 prompt 或資料流還不夠穩：
+The following indicate that the current prompt or data flow is not stable:
 
-- `SESSION_SUMMARY.md` 大量重述對話語氣，而不是工作 handoff
-- `Next Steps` 寫成模糊句子，例如「continue working」
-- `Critical Context` 缺少真正關鍵的錯誤、修正、限制
-- `Relevant Files` 缺少路徑，或沒有 `path: why it matters`
-- 第二次 session 還是在重做第一輪已經確認過的探索
-- summary 把不重要的細節寫很多，但漏掉真正阻礙後續工作的資訊
+- `SESSION_SUMMARY.md` heavily restates conversational tone instead of being a work handoff
+- `Next Steps` are vague sentences like "continue working"
+- `Critical Context` lacks truly critical errors, corrections, or constraints
+- `Relevant Files` lacks paths, or doesn't include `path: why it matters`
+- The second session re-does exploration already confirmed in the first session
+- The summary includes many unimportant details but misses information that blocks future work
 
 ---
 
 ## Test Setup
 
-每輪測試都盡量維持同樣前提：
+Each test round should maintain the same preconditions:
 
-1. 使用真實 repo，不要用過度簡化的 toy example
-2. repo root 內有：
+1. Use a real repo, not an overly simplified toy example
+2. The repo root contains:
    - `AGENTS.md`
-   - `SESSION_SUMMARY.md` 可不存在，讓系統自動建立
-3. 每輪任務開始前，保留上一輪 summary 結果
-4. 每輪測試後人工檢查產出的 `SESSION_SUMMARY.md`
+   - `SESSION_SUMMARY.md` may be absent — the system will create it automatically
+3. Before each task round, retain the previous round's summary result
+4. After each test round, manually inspect the generated `SESSION_SUMMARY.md`
 
-建議至少準備兩種 repo：
+It is recommended to prepare at least two types of repos:
 
 - `TypeScript / frontend or fullstack repo`
 - `backend or CLI repo`
 
-這樣可以避免 prompt 只對單一專案形態有效。
+This prevents the prompt from being effective only for a single project type.
 
 ---
 
@@ -81,126 +83,126 @@
 
 ### Scenario 1 — Repo Rule Compliance
 
-目的：
+**Purpose:**
 
-驗證 `AGENTS.md` 是否真的能影響當前 session 行為。
+Verify that `AGENTS.md` can genuinely influence current session behavior.
 
-前置：
+**Prerequisites:**
 
-- 在 `AGENTS.md` 放 3 到 5 條高訊號規則
-- 至少包含：
-  - package manager
-  - test command
-  - 不該改的路徑或 generated file 規則
+- Add 3 to 5 high-signal rules in `AGENTS.md`
+- Include at least:
+  - Package manager
+  - Test command
+  - Paths or generated file rules that should not be modified
 
-操作：
+**Steps:**
 
-1. 啟動新 session
-2. 下達一個需要讀檔、改檔、跑測試的任務
-3. 觀察 agent 是否直接遵守 `AGENTS.md`
+1. Start a new session
+2. Issue a task that requires reading files, modifying files, and running tests
+3. Observe whether the agent directly follows `AGENTS.md`
 
-驗收：
+**Acceptance:**
 
-- 沒有猜錯 package manager
-- 沒有碰禁止修改的路徑
-- 有使用正確測試命令
+- Does not guess the wrong package manager
+- Does not touch paths marked as off-limits
+- Uses the correct test command
 
-失敗例：
+**Failure examples:**
 
-- 明明寫了 `pnpm` 還跑 `npm`
-- 明明寫了 generated files 不要改，還去修改
+- Runs `npm` despite `AGENTS.md` specifying `pnpm`
+- Modifies generated files despite `AGENTS.md` saying not to
 
 ### Scenario 2 — Single-Session Summary Quality
 
-目的：
+**Purpose:**
 
-驗證一次任務結束後，summary 本身是否可讀、可接手。
+Verify that the summary produced after a single task is readable and handoff-ready.
 
-操作：
+**Steps:**
 
-1. 啟動新 session
-2. 執行一個中等複雜度任務
-   - 例如新增一個 API route
-   - 或修一個跨 2 到 4 個檔案的 bug
-3. 完成後檢查 `SESSION_SUMMARY.md`
+1. Start a new session
+2. Execute a medium-complexity task
+   - e.g., add a new API route
+   - or fix a bug spanning 2 to 4 files
+3. After completion, inspect `SESSION_SUMMARY.md`
 
-重點檢查：
+**Key checks:**
 
-- `Goal` 是否正確
-- `Done` 是否有真正完成的項目
-- `In Progress` / `Blocked` 是否誠實
-- `Next Steps` 是否真的可執行
-- `Relevant Files` 是否有 `path: why it matters`
-- `Critical Context` 是否保留了真正會影響下一輪的資訊
+- Is `Goal` correct?
+- Does `Done` include genuinely completed items?
+- Are `In Progress` / `Blocked` honest?
+- Are `Next Steps` truly actionable?
+- Do `Relevant Files` include `path: why it matters`?
+- Does `Critical Context` retain information that would genuinely affect the next round?
 
-通過標準：
+**Pass criteria:**
 
-- 一位沒看過對話的人，只看 summary 就能大致接手
+- Someone who hasn't seen the conversation can roughly take over just by reading the summary
 
 ### Scenario 3 — Multi-Session Continuation
 
-目的：
+**Purpose:**
 
-驗證 `SESSION_SUMMARY.md` 是否真的有 continuation 價值。
+Verify that `SESSION_SUMMARY.md` has genuine continuation value.
 
-操作：
+**Steps:**
 
-1. 第一輪 session 做一半就停止
-   - 例如只完成 route / schema，還沒補測試
-2. 確認 `SESSION_SUMMARY.md` 已生成
-3. 關掉 session
-4. 開一個新的 session
-5. 直接要求接續剛剛的任務
+1. Stop the first session halfway through
+   - e.g., completed route / schema but not tests
+2. Confirm `SESSION_SUMMARY.md` has been generated
+3. Close the session
+4. Open a new session
+5. Directly ask to continue the task
 
-驗收：
+**Acceptance:**
 
-- agent 能直接接上未完成工作
-- agent 不需要重新探索上一輪已經明確的檔案與決策
-- `Next Steps` 對第二輪真的有幫助
+- The agent can directly pick up the unfinished work
+- The agent does not need to re-discover files and decisions already clarified in the previous round
+- `Next Steps` genuinely helps the second round
 
-失敗例：
+**Failure examples:**
 
-- 第二輪重新從頭 grep 同一批已明確的檔案
-- 完全忽略上一輪留下的 pending work
+- The second round re-greps the same set of already-clarified files from scratch
+- Completely ignores pending work from the previous round
 
 ### Scenario 4 — Correction Retention
 
-目的：
+**Purpose:**
 
-驗證重要修正是否會進入 `Critical Context`。
+Verify that important corrections make it into `Critical Context`.
 
-操作：
+**Steps:**
 
-1. 在 session 中故意讓 agent 遇到一個 repo-specific 修正
-   - 例如測試命令不是預設值
-   - 或某個 generated directory 不能改
-2. 明確糾正 agent
-3. 完成任務後檢查 `SESSION_SUMMARY.md`
-4. 下一輪 session 再做相近任務
+1. During a session, deliberately let the agent encounter a repo-specific correction
+   - e.g., test command is not the default
+   - or a generated directory should not be modified
+2. Clearly correct the agent
+3. After completing the task, inspect `SESSION_SUMMARY.md`
+4. In the next session, perform a similar task
 
-驗收：
+**Acceptance:**
 
-- `Critical Context` 有保留這個修正
-- 下一輪 agent 不再犯同樣的錯
+- `Critical Context` retains this correction
+- The agent no longer makes the same mistake in the next round
 
 ### Scenario 5 — Relevant Files Precision
 
-目的：
+**Purpose:**
 
-驗證 `Relevant Files` 不是亂列，而是真的對 continuation 有幫助。
+Verify that `Relevant Files` is not a random listing but genuinely helpful for continuation.
 
-操作：
+**Steps:**
 
-1. 執行一個會跨多個檔案的任務
-2. 檢查 `Relevant Files`
+1. Execute a task that spans multiple files
+2. Inspect `Relevant Files`
 
-驗收：
+**Acceptance:**
 
-- 每個條目都包含明確 path
-- 每個條目都說明為什麼重要
-- 條目數量精簡，不要把所有 touched files 全列進去
+- Each entry includes a clear path
+- Each entry explains why it matters
+- The number of entries is concise — not every touched file is listed
 
-理想格式：
+**Ideal format:**
 
 ```md
 - src/routes/auth.ts: route registration for login flow
@@ -210,181 +212,181 @@
 
 ### Scenario 6 — Noise Resistance
 
-目的：
+**Purpose:**
 
-驗證 summary 不會被閒聊或低價值內容污染。
+Verify that the summary is not polluted by casual conversation or low-value content.
 
-操作：
+**Steps:**
 
-1. 在 session 中加入一些不重要對話
-2. 再完成一個實際任務
-3. 檢查 `SESSION_SUMMARY.md`
+1. Add some unimportant conversation during the session
+2. Complete an actual task
+3. Inspect `SESSION_SUMMARY.md`
 
-驗收：
+**Acceptance:**
 
-- summary 還是偏 handoff，不是 conversation recap
-- 不重要的閒聊不會進入 `Critical Context` 或 `Relevant Files`
+- The summary remains handoff-oriented, not a conversation recap
+- Unimportant chit-chat does not appear in `Critical Context` or `Relevant Files`
 
 ---
 
 ## Recommended Test Tasks
 
-建議至少跑 3 種任務：
+It is recommended to run at least 3 types of tasks:
 
-1. 新增功能
-   - 例如新增 API endpoint、加入欄位、增加按鈕行為
+1. **Add a feature**
+   - e.g., add an API endpoint, add a field, add a button behavior
 
-2. 修 bug
-   - 例如修 route registration、修測試失敗、修資料流問題
+2. **Fix a bug**
+   - e.g., fix route registration, fix a test failure, fix a data flow issue
 
-3. 半完成任務交接
-   - 故意做一半，測 continuation 品質
+3. **Half-completed task handoff**
+   - Intentionally stop halfway, test continuation quality
 
-這三種最能看出 summary 到底是在記「完成紀錄」，還是在做「工作交接」。
+These three types best reveal whether the summary records "completion notes" or functions as a "work handoff."
 
 ---
 
 ## Review Rubric
 
-每次跑完一輪，用下面 rubric 打分：
+After each round, score using the following rubric:
 
 ### A. Goal Accuracy
 
-- 0: 任務摘要錯誤
-- 1: 大致正確但模糊
-- 2: 簡潔且準確
+- 0: Task summary is wrong
+- 1: Roughly correct but vague
+- 2: Concise and accurate
 
 ### B. Next Steps Usefulness
 
-- 0: 幾乎不能執行
-- 1: 有方向但太模糊
-- 2: 明確且能直接接著做
+- 0: Nearly not actionable
+- 1: Has direction but too vague
+- 2: Clear and directly actionable
 
 ### C. Critical Context Quality
 
-- 0: 漏掉關鍵限制或修正
-- 1: 部分保留，但不完整
-- 2: 只保留真正重要且會影響下一輪的資訊
+- 0: Misses key constraints or corrections
+- 1: Partially retained but incomplete
+- 2: Only retains truly important information that affects the next round
 
 ### D. Relevant Files Quality
 
-- 0: 沒列，或列得很亂
-- 1: 有路徑但缺乏用途說明
-- 2: 路徑精準，且每條都有 continuation 價值
+- 0: Not listed, or listed poorly
+- 1: Has paths but lacks explanations
+- 2: Paths are precise, each entry has continuation value
 
 ### E. Continuation Value
 
-- 0: 第二輪幾乎沒幫助
-- 1: 有些幫助，但還是重做很多探索
-- 2: 第二輪能明顯更快接手
+- 0: The second round is barely helped
+- 1: Somewhat helpful, but still re-does much exploration
+- 2: The second round is noticeably faster
 
-建議：
+**Guidance:**
 
-- 每輪總分滿分 10
-- 平均 7 分以上可視為目前可用
-- 若連續兩輪低於 6，優先調整 summary prompt
+- Total per round: 10 points maximum
+- Average of 7 or above: considered usable
+- If two consecutive rounds score below 6, prioritize adjusting the summary prompt
 
 ---
 
 ## Execution Plan
 
-建議的執行順序：
+Recommended execution order:
 
-1. 跑 Scenario 1
-2. 跑 Scenario 2
-3. 跑 Scenario 3
-4. 跑 Scenario 4
-5. 跑 Scenario 5
-6. 視情況補 Scenario 6
+1. Run Scenario 1
+2. Run Scenario 2
+3. Run Scenario 3
+4. Run Scenario 4
+5. Run Scenario 5
+6. Run Scenario 6 as needed
 
-這樣能先驗證：
+This first validates:
 
-- rule compliance
-- summary quality
-- continuation ability
+- Rule compliance
+- Summary quality
+- Continuation ability
 
-再驗證：
+Then validates:
 
-- correction retention
-- file precision
-- noise resistance
+- Correction retention
+- File precision
+- Noise resistance
 
 ---
 
 ## What To Adjust If It Fails
 
-如果測試失敗，優先調整：
+If tests fail, prioritize adjusting:
 
-1. `buildSessionSummaryPrompt()` 的 section rules
-2. `Critical Context` 的選擇規則
-3. `Relevant Files` 的輸出格式要求
-4. `Next Steps` 是否夠 action-oriented
+1. Section rules in `buildSessionSummaryPrompt()`
+2. Selection rules for `Critical Context`
+3. Output format requirements for `Relevant Files`
+4. Whether `Next Steps` is sufficiently action-oriented
 
-不要第一時間就導入：
+Do not immediately introduce:
 
-- sqlite
-- candidate lifecycle
-- long-term memory promotion
-- zero integration
+- SQLite
+- Candidate lifecycle
+- Long-term memory promotion
+- Zero integration
 
-因為這些不會解決 summary 品質問題。
+Because these will not solve summary quality problems.
 
 ---
 
 ## Exit Criteria
 
-當以下條件成立時，可以視為 working memory v1 已驗證完成：
+Working memory v1 can be considered validated when the following conditions are met:
 
-- 至少完成 3 輪真實任務測試
-- 至少 1 輪 multi-session continuation 測試成功
-- summary rubric 平均分數 >= 7/10
-- 沒有明顯 recurring failure，例如：
-  - 一直漏 `Next Steps`
-  - 一直亂列 `Relevant Files`
-  - 一直把閒聊寫進 summary
+- At least 3 rounds of real task tests completed
+- At least 1 round of multi-session continuation test successful
+- Summary rubric average score >= 7/10
+- No recurring failures such as:
+  - Consistently missing `Next Steps`
+  - Consistently listing `Relevant Files` poorly
+  - Consistently including chat in the summary
 
-達到這些條件後，再考慮下一步：
+Once these conditions are met, consider next steps:
 
-- summary rotation / archive strategy
-- 更細的 repo boundary behavior
-- 後續 zero integration contract
+- Summary rotation / archive strategy
+- More granular repo boundary behavior
+- Future zero integration contract
 
 ---
 
 ## Baseline Results
 
-本區記錄已經實際跑過的案例，讓後續回歸測試有可對照的 baseline。
+This section records actual test runs, providing baselines for future regression testing.
 
 ### Run 1 — README Command / Testing Note Update
 
-Date:
+**Date:**
 
 - 2026-05-13
 
-Scenario Coverage:
+**Scenario Coverage:**
 
 - Scenario 1 — Repo Rule Compliance
 - Scenario 2 — Single-Session Summary Quality
 
-Task:
+**Task:**
 
 - Update `README.md` to mention `npm run start:tui` as a valid start command.
 - Add a targeted test example using `npx tsx --test <file>`.
 - Keep the testing note aligned with `AGENTS.md` so `npm test` is not implied as the default smoke test.
 
-Observed Behavior:
+**Observed Behavior:**
 
 - Agent followed `AGENTS.md` guidance and did not treat `npm test` as the default smoke test.
 - Agent used `npm run typecheck` for verification.
 - `SESSION_SUMMARY.md` was generated with a usable handoff structure.
 
-Artifacts:
+**Artifacts:**
 
-- [README.md](/Users/masato/Dev/ai-util/openzerocode/README.md:1)
-- [AGENTS.md](/Users/masato/Dev/ai-util/openzerocode/AGENTS.md:1)
-- [SESSION_SUMMARY.md](/Users/masato/Dev/ai-util/openzerocode/SESSION_SUMMARY.md:1)
+- [README.md](./README.md:1)
+- [AGENTS.md](./AGENTS.md:1)
+- [SESSION_SUMMARY.md](./SESSION_SUMMARY.md:1)
 
-Rubric Score:
+**Rubric Score:**
 
 - Goal Accuracy: 2/2
 - Next Steps Usefulness: 2/2
@@ -393,33 +395,27 @@ Rubric Score:
 - Continuation Value: 2/2
 - Total: 10/10
 
-Notes:
+**Notes:**
 
 - The first provider-backed summary generation was too sparse and placed routine verification into `Critical Context`.
-- The summary prompt was then tightened to exclude routine verification from `Critical Context` unless it represents a non-obvious repo requirement.
-- After that prompt adjustment, the regenerated summary reached the expected quality bar.
 
-Follow-up:
+...[9 lines omitted]
 
-- Next recommended validation is Scenario 3 — Multi-Session Continuation.
-
-### Run 2 — Partial Task Handoff / Continuation
-
-Date:
+**Date:**
 
 - 2026-05-13
 
-Scenario Coverage:
+**Scenario Coverage:**
 
 - Scenario 3 — Multi-Session Continuation
 
-Task:
+**Task:**
 
 - Update `README.md` and `docs/current-ui-notes.md` so both mention that targeted local tests can use `npx tsx --test <file>`.
 - Keep the guidance aligned with `AGENTS.md` about provider-gated tests.
 - Intentionally stop after updating only `README.md`.
 
-Observed Behavior:
+**Observed Behavior:**
 
 - `SESSION_SUMMARY.md` correctly preserved the unfinished work.
 - `In Progress` explicitly recorded that `docs/current-ui-notes.md` still needed the same testing guidance.
@@ -427,14 +423,14 @@ Observed Behavior:
 - `Critical Context` preserved the repo-specific fact that `npm test` is not a universal smoke test because provider-facing tests require `OPENCODE_API` / `OPENCODE_API_KEY`.
 - `Relevant Files` correctly included the already-changed file, the still-pending file, and the two provider-gated test files that justify the rule.
 
-Artifacts:
+**Artifacts:**
 
-- [SESSION_SUMMARY.md](/Users/masato/Dev/ai-util/openzerocode/SESSION_SUMMARY.md:1)
-- [README.md](/Users/masato/Dev/ai-util/openzerocode/README.md:1)
-- [docs/current-ui-notes.md](/Users/masato/Dev/ai-util/openzerocode/docs/current-ui-notes.md:1)
-- [AGENTS.md](/Users/masato/Dev/ai-util/openzerocode/AGENTS.md:1)
+- [SESSION_SUMMARY.md](./SESSION_SUMMARY.md:1)
+- [README.md](./README.md:1)
+- [docs/current-ui-notes.md](./docs/current-ui-notes.md:1)
+- [AGENTS.md](./AGENTS.md:1)
 
-Rubric Score:
+**Rubric Score:**
 
 - Goal Accuracy: 2/2
 - Next Steps Usefulness: 2/2
@@ -443,14 +439,14 @@ Rubric Score:
 - Continuation Value: 2/2 at artifact level
 - Total: 10/10 at artifact level
 
-Notes:
+**Notes:**
 
 - The working-memory artifact itself is strong enough to support continuation.
-- A provider-backed follow-up prompt asking “what should you do next?” returned an empty continuation response in this synthetic test harness.
+- A provider-backed follow-up prompt asking "what should you do next?" returned an empty continuation response in this synthetic test harness.
 - Because of that, this run should be marked:
   - artifact-level continuation: pass
   - agent-response-level continuation: inconclusive
 
-Follow-up:
+**Follow-up:**
 
 - Validate the same scenario in a real TUI cross-session run instead of only through synthetic provider calls.

@@ -45,6 +45,10 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "mode", description: "Switch mode: /mode build|plan" },
   { name: "sessions", description: "Open session list", aliases: ["s"] },
   { name: "session", description: "Manage sessions: /session new|open|delete|rename" },
+  { name: "tools", description: "Toggle completed tool details visibility", aliases: ["tool-details"] },
+  { name: "thinking", description: "Toggle thinking blocks visibility" },
+  { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
+  { name: "commit", description: "Generate a commit message from current changes" },
   { name: "exit", description: "Exit program", aliases: ["quit"] },
 ]
 

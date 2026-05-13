@@ -10,11 +10,17 @@ type GitFile = {
   deletions: number
 }
 
+type GitCommit = {
+  hash: string
+  subject: string
+}
+
 let lastGitRead = 0
+let lastGitResult: GitFile[] = []
 
 function readGitDiff(): GitFile[] {
   const now = Date.now()
-  if (now - lastGitRead < 2000) return []
+  if (now - lastGitRead < 2000) return lastGitResult
   lastGitRead = now
   try {
     const out = execFileSync("git", ["diff", "--numstat", "HEAD"], {
@@ -22,10 +28,42 @@ function readGitDiff(): GitFile[] {
       timeout: 1000,
       stdio: ["pipe", "pipe", "ignore"],
     })
-    return out.trim().split("\n").filter(Boolean).map((line) => {
+    lastGitResult = out.trim().split("\n").filter(Boolean).map((line) => {
       const [add = "0", del = "0", ...rest] = line.split("\t")
       const path = rest.join("\t")
       return { path, additions: parseInt(add) || 0, deletions: parseInt(del) || 0 }
+    })
+    return lastGitResult
+  } catch {
+    return []
+  }
+}
+
+function readGitBranch(): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      encoding: "utf-8",
+      timeout: 1000,
+      stdio: ["pipe", "pipe", "ignore"],
+    })
+    return out.trim() || null
+  } catch {
+    return null
+  }
+}
+
+function readRecentCommits(n: number): GitCommit[] {
+  try {
+    const out = execFileSync("git", ["log", "--oneline", `-${n}`], {
+      encoding: "utf-8",
+      timeout: 1000,
+      stdio: ["pipe", "pipe", "ignore"],
+    })
+    return out.trim().split("\n").filter(Boolean).map((line) => {
+      const spaceIdx = line.indexOf(" ")
+      const hash = spaceIdx >= 0 ? line.slice(0, spaceIdx) : line
+      const subject = spaceIdx >= 0 ? line.slice(spaceIdx + 1) : ""
+      return { hash, subject }
     })
   } catch {
     return []
@@ -61,12 +99,18 @@ export function Sidebar(props: {
   model: string
   provider: string
   sessionTitle?: string
+  cwd?: string
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
+  const [branch, setBranch] = createSignal<string | null>(readGitBranch())
+  const [commits, setCommits] = createSignal<GitCommit[]>(readRecentCommits(3))
+  const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
 
   createEffect(() => {
     props.messages()
     setGitFiles(readGitDiff())
+    setBranch(readGitBranch())
+    setCommits(readRecentCommits(3))
   })
 
   const modelCfg = createMemo(() => getModelConfig(props.model))
@@ -145,6 +189,47 @@ export function Sidebar(props: {
             <text style={{ fg: props.theme.muted }}>{fmtCost(sessionCost())} spent</text>
           </Show>
         </box>
+
+        <Show when={branch()}>
+          <box flexDirection="column">
+            <text style={{ fg: props.theme.accent }}>Branch</text>
+            <text style={{ fg: props.theme.muted }}>{branch()}</text>
+          </box>
+        </Show>
+
+        <Show when={props.cwd}>
+          <box flexDirection="column">
+            <text style={{ fg: props.theme.accent }}>Directory</text>
+            <text style={{ fg: props.theme.muted }} wrapMode="none">
+              {truncatePath(props.cwd ?? "", Math.max(1, props.width - 4))}
+            </text>
+          </box>
+        </Show>
+
+        <Show when={commits().length > 0}>
+          <box flexDirection="column">
+            <box flexDirection="row" gap={1}>
+              <text
+                style={{ fg: props.theme.accent }}
+                onMouseDown={() => setCommitsCollapsed(c => !c)}
+              >
+                {commitsCollapsed() ? "+" : "-"} Commits
+              </text>
+            </box>
+            <Show when={!commitsCollapsed()}>
+              <For each={commits()}>
+                {(commit) => (
+                  <box flexDirection="row" gap={1}>
+                    <text style={{ fg: "#d2a8ff" }}>{commit.hash}</text>
+                    <text style={{ fg: props.theme.muted }} wrapMode="none">
+                      {commit.subject.slice(0, Math.max(1, props.width - 10))}
+                    </text>
+                  </box>
+                )}
+              </For>
+            </Show>
+          </box>
+        </Show>
 
         <Show when={gitFiles().length > 0}>
           <box flexDirection="column">

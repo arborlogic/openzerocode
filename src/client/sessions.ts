@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "
 import { join } from "path"
 import { homedir } from "os"
 import type { Message } from "../provider/types"
+import type { PermissionRule } from "./permission-rules"
+import { sanitizeMessages } from "./message-sanitize"
 
 export type CompactionInfo = {
   summary: string
@@ -24,17 +26,24 @@ type SessionIndex = {
   current: string | null
 }
 
-const SESSION_DIR = join(homedir(), ".openzerocode", "sessions")
-const INDEX_FILE = join(SESSION_DIR, "index.json")
+function getSessionDir(): string {
+  return join(homedir(), ".openzerocode", "sessions")
+}
+
+function getIndexFile(): string {
+  return join(getSessionDir(), "index.json")
+}
 
 function ensureDir() {
-  if (!existsSync(SESSION_DIR)) mkdirSync(SESSION_DIR, { recursive: true })
+  const dir = getSessionDir()
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 }
 
 function readIndex(): SessionIndex {
   try {
-    if (!existsSync(INDEX_FILE)) return { sessions: [], current: null }
-    return JSON.parse(readFileSync(INDEX_FILE, "utf-8"))
+    const idxFile = getIndexFile()
+    if (!existsSync(idxFile)) return { sessions: [], current: null }
+    return JSON.parse(readFileSync(idxFile, "utf-8"))
   } catch {
     return { sessions: [], current: null }
   }
@@ -42,11 +51,11 @@ function readIndex(): SessionIndex {
 
 function writeIndex(index: SessionIndex) {
   ensureDir()
-  writeFileSync(INDEX_FILE, JSON.stringify(index, null, 2), "utf-8")
+  writeFileSync(getIndexFile(), JSON.stringify(index, null, 2), "utf-8")
 }
 
 function sessionPath(id: string): string {
-  return join(SESSION_DIR, `${id}.json`)
+  return join(getSessionDir(), `${id}.json`)
 }
 
 export function generateId(): string {
@@ -106,24 +115,36 @@ export function createSession(model: string, provider: string, messages?: Messag
   return meta
 }
 
-export function saveSession(id: string, messages: Message[], model: string, provider: string, mode?: string, compaction?: CompactionInfo) {
+export function saveSession(
+  id: string,
+  messages: Message[],
+  model: string,
+  provider: string,
+  mode?: string,
+  compaction?: CompactionInfo,
+  permissionRules?: PermissionRule[],
+  autoApprove?: boolean,
+) {
   ensureDir()
   const now = Date.now()
   const index = readIndex()
   const existing = index.sessions.find(s => s.id === id)
   const createdAt = existing?.createdAt ?? now
+  const sanitized = sanitizeMessages(messages)
 
   writeFileSync(sessionPath(id), JSON.stringify({
-    messages,
+    messages: sanitized,
     model,
     provider,
     mode,
     compaction,
+    permissionRules: permissionRules ?? [],
+    autoApprove: autoApprove ?? false,
     createdAt,
     updatedAt: now,
   }, null, 2), "utf-8")
 
-  const count = messages.length
+  const count = sanitized.length
   if (existing) {
     existing.messageCount = count
     existing.model = model
@@ -155,12 +176,20 @@ export function loadSession(id: string): Message[] | null {
   }
 }
 
-export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo } | null {
+export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo; permissionRules?: PermissionRule[]; autoApprove?: boolean } | null {
   try {
     const path = sessionPath(id)
     if (!existsSync(path)) return null
     const data = JSON.parse(readFileSync(path, "utf-8"))
-    return { messages: data.messages ?? [], model: data.model, provider: data.provider, mode: data.mode, compaction: data.compaction }
+    return {
+      messages: sanitizeMessages(data.messages ?? []),
+      model: data.model,
+      provider: data.provider,
+      mode: data.mode,
+      compaction: data.compaction,
+      permissionRules: data.permissionRules ?? [],
+      autoApprove: data.autoApprove ?? false,
+    }
   } catch {
     return null
   }

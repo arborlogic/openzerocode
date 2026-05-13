@@ -1,91 +1,90 @@
-# OpenZeroCode — Opencode-Inspired Memory: Implementation Spec
+# OpenZeroCode — Opencode-Inspired Memory: Implementation Retrospective
 
-本文件是 v1 實作規格，對照 opencode 的設計做法。
+> **Status: ✅ All v1 tasks completed — This is an implementation retrospective, not a TODO list.**
 
----
-
-## 對照 opencode 的三個核心
-
-### 1. Workspace Instruction（對應 opencode instruction.ts）
-
-opencode 做法：
-- 讀 `AGENTS.md` / `CLAUDE.md`
-- 全域 + 專案層
-- 每次 LLM call 都注入 system prompt
-
-OpenZeroCode v1 做法：
-- 只讀 workspace root 的 `AGENTS.md`
-- session 開始時載入，注入 system prompt
-- 不自動更新
-
-### 2. Session Persistence（對應 opencode SQLite session storage）
-
-opencode 做法：
-- SQLite 存 messages + parts + tool results
-- session 有 metadata（model / provider / timestamps）
-
-OpenZeroCode v1 做法：
-- JSON 存 messages + model + provider + mode + compaction
-- 路徑：`~/.openzerocode/sessions/<session-id>.json`
-
-### 3. Session Compaction（對應 opencode compaction.ts）
-
-opencode 做法：
-- context overflow 時觸發
-- 產生 anchored summary
-- summary 存 DB，不寫 repo 檔案
-- 保留最近 tail messages
-- 下次組 prompt 時：summary + tail + new message
-
-OpenZeroCode v1 做法：
-- context 超過門檻或 `/compact` 手動觸發
-- 產生 structured summary（Goal / Progress / Decisions / Files / Next Steps）
-- summary 存 `session.compaction.summary`，不寫 repo 檔案
-- 保留最近 tail messages
+This document reviews OpenZeroCode's working memory implementation, comparing design approaches with opencode, and recording completed implementation items.
 
 ---
 
-## 實作任務清單
+## Comparison with Opencode's Three Core Components
 
-### Task 1：移除 SESSION_SUMMARY.md 自動寫入（已完成部分）
+### 1. Workspace Instruction (corresponds to opencode instruction.ts)
 
-- [ ] 移除 `submit()` 後的 `generateSessionSummary(next)`
-- [ ] 移除 workspace-memory 對 SESSION_SUMMARY.md 的自動讀取注入
-- [ ] 保留檔案支援程式碼，但不進入自動 loop
+| Aspect | opencode | OpenZeroCode (implemented) |
+|--------|----------|----------------------------|
+| Read source | `AGENTS.md` / `CLAUDE.md` | `AGENTS.md` at workspace root |
+| Load timing | Every LLM call | Loaded at session start, injected into system prompt |
+| Auto-update | None | Not auto-updated (human-maintained) |
+| Implementation | `instruction.ts` | `src/client/workspace-memory.ts` |
 
-完成標準：10 turn 對話後，`git diff` 不出現 SESSION_SUMMARY.md 變動。
+### 2. Session Persistence (corresponds to opencode SQLite session storage)
 
-### Task 2：AGENTS.md 穩定載入
+| Aspect | opencode | OpenZeroCode (implemented) |
+|--------|----------|----------------------------|
+| Storage method | SQLite | JSON files |
+| Stored content | messages + parts + tool results | messages + model + provider + mode + compaction + permissionRules + autoApprove |
+| Path | SQLite DB | `~/.openzerocode/sessions/<session-id>.json` |
+| Implementation | session storage | `src/client/sessions.ts` |
 
-- [x] 找到 workspace root（git root / package.json root）
-- [x] 讀取 AGENTS.md（如果存在）
-- [x] 注入 system prompt
+### 3. Session Compaction (corresponds to opencode compaction.ts)
 
-完成標準：AGENTS.md 裡寫一條規則，下一輪 assistant 確實遵守。
-
-### Task 3：Compaction summary 存進 session JSON
-
-- [ ] 修改 session JSON schema 加入 `compaction` 欄位
-- [ ] `/compact` 執行後 summary 寫進 `session.compaction`
-- [ ] 組 prompt 時如果有 compaction，加在 AGENTS.md 之後、tail messages 之前
-
-完成標準：`/compact` 後切換 session 再切回來，context 仍有 compaction summary。
-
-### Task 4：Context budget 自動觸發
-
-- [ ] 每次 submit 前估算 token 數
-- [ ] 超過 model context limit 80% 時自動觸發 compact
-
-完成標準：長對話不需要手動 compact，自動在接近 limit 時壓縮。
+| Aspect | opencode | OpenZeroCode (implemented) |
+|--------|----------|----------------------------|
+| Trigger | Context overflow | Auto (80% threshold) or `/compact` manual |
+| Summary format | Anchored summary | Structured (Goal / Progress / Decisions / Files / Next Steps) |
+| Storage location | DB | `session.compaction.summary` in JSON |
+| Retain tail | ✅ | ✅ Retains most recent N messages |
+| Implementation | `compaction.ts` | `src/client/session-compact.ts` |
 
 ---
 
-## 不做的事（v1 明確排除）
+## Implementation Completion Confirmation
 
-- SESSION_SUMMARY.md 自動讀寫
-- 任何 repo 檔案的自動修改
-- `.zero/` 目錄
+### Task 1: Remove SESSION_SUMMARY.md Auto-Write ✅
+
+- [x] Removed auto `generateSessionSummary(next)` — session summary no longer auto-generated
+- [x] Removed auto-read injection of SESSION_SUMMARY.md
+- [x] Kept manual export command (`/export-summary`) for user discretion
+
+**Verification:** After a 10-turn conversation, `git diff` should not show SESSION_SUMMARY.md changes.
+
+### Task 2: Reliable AGENTS.md Loading ✅
+
+- [x] Find workspace root (git root / package.json root)
+- [x] Read AGENTS.md (if present)
+- [x] Inject into system prompt
+
+**Verification:** Rules in AGENTS.md are followed by the assistant in subsequent turns.
+
+**Implementation:** `src/client/workspace-memory.ts` — `loadAgentsInstruction()`
+
+### Task 3: Compaction Summary Stored in Session JSON ✅
+
+- [x] Session JSON schema includes `compaction` field (`saveSession()`)
+- [x] After `/compact` executes, summary written to `session.compaction`
+- [x] Prompt assembly order: system → AGENTS.md → compaction → tail → user message
+
+**Verification:** After `/compact`, switching sessions and back still shows compaction summary in context.
+
+**Implementation:** `src/client/sessions.ts` + `src/client/session-runner.ts`
+
+### Task 4: Context Budget Auto-Trigger ✅
+
+- [x] Estimate token count before each submit
+- [x] Auto-trigger compaction when exceeding 80% of model context limit
+
+**Verification:** Long conversations don't need manual compaction; auto-compression triggers near the limit.
+
+**Implementation:** `src/client/tui.tsx` — `estimateTokenCount()` + auto-compact check
+
+---
+
+## Things Not Done (v1 explicitly excluded, still holds)
+
+- SESSION_SUMMARY.md auto-read/write
+- Any auto-modification of repo files
+- `.zero/` directory
 - WORKSPACE_MEMORY.md / WORKSPACE_PROCEDURES.md
-- zero-api 整合
-- cross-session memory
-- directory-aware AGENTS.md（讀檔時沿目錄向上查找）
+- zero-api integration
+- Cross-session memory
+- Directory-aware AGENTS.md (traverse upward when reading files)

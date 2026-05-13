@@ -1,68 +1,58 @@
 # OpenZeroCode — Response Redesign Notes
 
-本文件保留 `opencode` 對照研究、目前已完成的 response redesign 項目，以及剩餘的改造方向。
+> **Status: ✅ Stable — The current phase of response redesign is complete.**
+
+This document records design principles extracted from studying opencode, the response redesign items that have been completed, and directions to consider for the future.
 
 ---
 
-## Why This Work Exists
+## Background
 
-最初的問題不是資料缺失，而是呈現模型過於扁平：
+The original problem wasn't missing data, but an overly flat presentation model:
 
-- 所有內容被壓成 `DisplayBlock[]`
-- 大部分 block 共用同一套視覺結構
-- assistant response 缺少 footer / summary / change context
-- user prompt、assistant parts、tool outputs 之間缺少視覺綁定
+- Everything was flattened into `DisplayBlock[]`
+- Most blocks shared the same visual structure
+- Assistant response lacked footer / summary / change context
+- No visual binding between user prompt, assistant parts, and tool outputs
 
-`opencode` 提供的主要參考點是：
+## Design Principles (adapted from opencode references)
 
-- turn-oriented transcript
-- part-specific renderer
-- assistant footer/meta
-- working/thinking 中間態
-- tool-specific high-signal cards
-- response-scoped diff summary
+- Use turns, not flat block lists
+- Use part-specific UI, not a generic block renderer
+- Put assistant metadata back at the end of the response
+- Give tool results higher visual weight
+- Tie code changes back to the turn's response
 
-## Current Reference Findings
+---
 
-對照來源：
+## Implemented
 
-- `submodules/opencode/packages/ui/src/components/session-turn.tsx`
-- `submodules/opencode/packages/ui/src/components/message-part.tsx`
+### Phase 1 — Turn Skeleton ✅
 
-最值得沿用的設計原則：
+- Response changed from flat block stream to turn-oriented transcript groups
+- User prompt becomes the turn start point
+- Assistant / tool / streaming parts are rendered within the same turn
 
-- 用 turn，而不是 flat block list
-- 用 part-specific UI，而不是 generic block renderer
-- 把 assistant metadata 放回 response 結尾
-- 讓 tool 結果有更高的視覺權重
-- 把 code changes 綁回該輪 response
+### Phase 2 — Basic Block Cleanup ✅
 
-## Completed
+- Plain `user` / `assistant` / `system` text no longer shows redundant headers
+- Reasoning / tool / error blocks have basic collapse behavior
 
-### Phase 1 — Turn Skeleton
+### Phase 3 — Basic Assistant Footer ✅
 
-已完成：
+- Assistant response has a first-version footer
+- Currently displays session-level `provider/model`
+- Has a copy hint
 
-- response 從 flat block 流改成 turn-oriented transcript group
-- user prompt 成為 turn 起點
-- assistant / tool / streaming parts 併入同一輪 render
+### Phase 4 — Permission / Auto-Approve UI ✅
 
-### Phase 2 — Basic Block Cleanup
+- Auto-approve toggle shows ON/OFF status in the palette
+- `/auto` command can toggle it
+- Dangerous bash commands trigger an approval dialog (even with auto-approve ON)
 
-已完成：
+---
 
-- 純 `user` / `assistant` / `system` 文字不再顯示冗餘 header
-- reasoning / tool / error block 已具備基本 collapse 行為
-
-### Phase 3 — Basic Assistant Footer
-
-已完成：
-
-- assistant response 已有第一版 footer
-- 目前先顯示 session-level `provider/model`
-- 有 copy hint，但還沒有獨立 copy button
-
-## Remaining
+## Not Implemented (future directions)
 
 ### P1 — Coding-Agent Clarity
 
@@ -72,35 +62,33 @@
 
 ### P2 — Interaction Polish
 
-- Working / thinking 中間態 polish
+- Working / thinking intermediate state polish
 - Paced streaming
 - Copy affordance button
 
-## Deferred
+### Deferred
 
-- 完整模仿 opencode 的 rich diff viewer
-- 過度複雜的 hover / tooltip interaction
-- 沒有明確使用價值前，不增加更重的 response chrome
+- Full opencode-style rich diff viewer
+- Overly complex hover / tooltip interactions
+- No heavier response chrome until there is clear usage value
+
+---
 
 ## Risks And Tradeoffs
 
-### Risk 1 — 現有資料模型沒有完整 per-message meta
+### Risk 1 — Current data model lacks per-message metadata
 
-影響：
+Impact: First version of footer can only show session-level provider/model
 
-- footer 第一版只能先顯示 session-level provider/model
+### Risk 2 — TUI imitating Web UI becomes too noisy
 
-### Risk 2 — TUI 過度模仿 Web UI 會變得太吵
+Impact: Terminal visual density can easily get out of control
 
-影響：
+### Risk 3 — Response redesign directly affects summary / memory quality
 
-- 終端視覺密度容易失控
+Impact: Future summary quality depends on whether the response structure is clear enough
 
-### Risk 3 — response 改造會直接影響 summary / memory quality
-
-影響：
-
-- future `SESSION_SUMMARY.md` 的品質會依賴 response 結構是否足夠清楚
+---
 
 ## Next Recommended Work
 

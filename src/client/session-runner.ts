@@ -15,6 +15,8 @@ type SessionUi = {
   abort: AbortSignal
   streamReasoningChunk: (text: string) => void
   streamAssistantChunk: (text: string) => void
+  streamToolCallChunk: (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => void
+  setStreamingToolResult: (input: { id?: string; tool?: string; output: string; error?: boolean }) => void
   addMessage: (msg: Message) => void
   notify: (text: string, kind: string) => void
   setStatus: (text: string) => void
@@ -39,6 +41,10 @@ export async function runSession(
 ): Promise<Message[]> {
   const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
   const retrySchedule = [2000, 5000, 10000]
+  const CONTINUE_AFTER_LENGTH: Message = {
+    role: "system",
+    content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
+  }
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(ui.mode) }
   const userMessage: Message = { role: "user", content: userInput }
   const compactionMessage: Message[] = runtime.compactionSummary
@@ -82,29 +88,40 @@ export async function runSession(
 
     if (!stream) {
       ui.setStatus("waiting for input")
-      ui.notify(formatProviderError(lastError), "error")
+      const errorText = formatProviderError(lastError)
+      ui.notify(errorText, "error")
+      // Add error as an assistant message so it persists in history after notice clears
+      const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
+      resultHistory.push(errorMsg)
+      ui.addMessage(errorMsg)
       return resultHistory
     }
 
     let content = ""
     let reasoning = ""
+    let hasReasoning = false
+    let finishReason: string | null | undefined
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
     while (true) {
       if (ui.abort.aborted) break
       const { done, value } = await reader.read()
       if (done) break
+      if (value.finish_reason) finishReason = value.finish_reason
       if (value.delta.content) {
         content += value.delta.content
         ui.streamAssistantChunk(value.delta.content)
         ui.setStatus("generating...")
         ui.scrollBottom()
       }
-      if (value.delta.reasoning_content) {
-        reasoning += value.delta.reasoning_content
-        ui.streamReasoningChunk(value.delta.reasoning_content)
-        ui.setStatus("reasoning...")
-        ui.scrollBottom()
+      if (value.delta.reasoning_content !== undefined) {
+        hasReasoning = true
+        if (value.delta.reasoning_content) {
+          reasoning += value.delta.reasoning_content
+          ui.streamReasoningChunk(value.delta.reasoning_content)
+          ui.setStatus("reasoning...")
+          ui.scrollBottom()
+        }
       }
       for (const tc of value.tool_calls ?? []) {
         const next = acc.get(tc.index ?? 0) ?? { name: "", arguments: "" }
@@ -113,6 +130,13 @@ export async function runSession(
         if (tc.function?.arguments) next.arguments += tc.function.arguments
         if (tc.index !== undefined) next.index = tc.index
         acc.set(tc.index ?? 0, next)
+        ui.streamToolCallChunk(tc.index ?? 0, {
+          id: tc.id,
+          tool: tc.function?.name,
+          argumentsChunk: tc.function?.arguments,
+        })
+        ui.setStatus(tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool...")
+        ui.scrollBottom()
       }
     }
 
@@ -131,7 +155,7 @@ export async function runSession(
 
     const assistantMessage: Message = createAssistantMessage({
       content: content || undefined,
-      reasoning_content: reasoning || undefined,
+      reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
       tool_calls: toolCalls,
     })
     allMessages.push(assistantMessage)
@@ -139,6 +163,12 @@ export async function runSession(
     ui.addMessage(assistantMessage)
 
     if (!toolCalls) {
+      if (finishReason === "length") {
+        allMessages.push(CONTINUE_AFTER_LENGTH)
+        ui.notify("response hit token limit, continuing...", "system")
+        ui.setStatus("continuing response...")
+        continue
+      }
       ui.setStatus("waiting for input")
       return resultHistory
     }
@@ -164,6 +194,8 @@ export async function runSession(
       }
 
       ui.setStatus(`running tool: ${name}`)
+      ui.setStreamingToolResult({ id: call.id, tool: name, output: "running..." })
+      ui.scrollBottom()
       const result = await Effect.runPromise(
         def.execute(runtime.parseJson(call.function.arguments ?? "{}"), new Context({
           abort: ui.abort,
@@ -178,6 +210,7 @@ export async function runSession(
       )
 
       const text = convertToolResult(result)
+      ui.setStreamingToolResult({ id: call.id, tool: name, output: text, error: result.title === "Error" })
       const toolMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: text })
       allMessages.push(toolMsg)
       resultHistory.push(toolMsg)

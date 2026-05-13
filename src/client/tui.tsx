@@ -22,19 +22,14 @@ import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
+import { buildSystemPrompt } from "./system-prompt"
+import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
+import { sanitizeMessages } from "./message-sanitize"
 
 let currentProvider = autoDetectProvider() ?? "openapi"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
-
-const SYSTEM_PROMPT = [
-  "You are OpenZeroCode, an AI coding assistant.",
-  "You have access to tools for reading, writing, searching files and running shell commands.",
-  "Use tools when the user asks you to perform actions like running commands or accessing files.",
-  "For simple conversation or questions, just respond directly without tools.",
-  "Be concise and helpful.",
-].join("\n")
 
 const THEME = {
   background: "#0d1117",
@@ -61,9 +56,15 @@ const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
   { scope: ["function"], style: { foreground: "#d2a8ff" } },
   { scope: ["type"], style: { foreground: "#ffa657" } },
 ])
+// Register a paste-marker style for extmarks (orange badge like opencode)
+MARKDOWN_SYNTAX.registerStyle("paste", {
+  fg: THEME.background,
+  bg: THEME.warning,
+  bold: true,
+})
 
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
-const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P palette"
+const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -102,6 +103,40 @@ function tryParseJSON(raw: string): Record<string, unknown> {
   try { return JSON.parse(raw) } catch { return {} }
 }
 
+/** Format a tool-call input for compact one-line display */
+function formatToolCallInput(tool: string, input: string): string {
+  const parsed = tryParseJSON(input)
+  if (tool === "bash" && typeof parsed.command === "string") {
+    return `$ ${parsed.command}`
+  }
+  if (tool === "read_file" && typeof parsed.filePath === "string") {
+    return parsed.filePath
+  }
+  if (tool === "write" && typeof parsed.filePath === "string") {
+    const contentLen = typeof parsed.content === "string" ? parsed.content.length : 0
+    return `${parsed.filePath}  (${contentLen} chars)`
+  }
+  if (tool === "glob" && typeof parsed.pattern === "string") {
+    return parsed.pattern
+  }
+  if (tool === "web_fetch" && typeof parsed.url === "string") {
+    return parsed.url
+  }
+  // Fallback: first line of input, truncated
+  const firstLine = input.split("\n")[0] ?? ""
+  return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine
+}
+
+/** Format a tool result for compact one-line preview */
+function formatToolResultPreview(text: string): string {
+  const lines = text.split("\n")
+  if (lines.length === 0) return ""
+  if (lines.length === 1 && lines[0]!.length <= 120) return lines[0]!
+  const firstLine = lines[0]!
+  const preview = firstLine.length > 100 ? firstLine.slice(0, 97) + "…" : firstLine
+  return `${preview}  (${lines.length} lines)`
+}
+
 function stripAnsi(str: string) {
   return str.replace(/\x1b\[[0-9;]*m/g, "")
 }
@@ -137,7 +172,7 @@ function modelHint(model: string) {
 }
 
 function isTransientPasteMarker(input: string) {
-  return /^\[Pasted ~.*$/.test(input.trim())
+  return /^\[Pasted ~\d+ lines(?: #\d+)?\]/.test(input.trim())
 }
 
 async function copyToClipboard(text: string) {
@@ -163,21 +198,7 @@ async function copyToClipboard(text: string) {
 }
 
 function systemPrompt(mode: RunMode) {
-  const parts = [SYSTEM_PROMPT]
-
-  if (mode === "plan") {
-    parts.push(
-      "You are currently in Plan mode.",
-      "Do not write code, do not call tools, and do not make changes.",
-      "Explain the approach, risks, and step-by-step plan only.",
-    )
-  }
-
-  if (agentsInstruction) {
-    parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)
-  }
-
-  return parts.join("\n\n")
+  return buildSystemPrompt(mode, agentsInstruction)
 }
 
 function refreshAgentsInstruction() {
@@ -224,12 +245,14 @@ const SIDEBAR_WIDTH = 34
 
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
-  const [collapsed, setCollapsed] = createSignal(collapsible())
-  const showHeader = () => props.entry.kind === "reasoning"
-    || props.entry.kind === "tool-call"
-    || props.entry.kind === "tool"
-    || props.entry.kind === "error"
-    || !!props.entry.title
+  const [collapsed, setCollapsed] = createSignal(
+    collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
+  )
+
+  const icon = () => props.entry.kind === "error" ? "✗"
+    : props.entry.kind === "tool" ? "✓"
+    : props.entry.kind === "tool-call" ? "▶"
+    : ""
 
   const label = () => props.entry.kind === "assistant" ? "assistant"
     : props.entry.kind === "user" ? "you"
@@ -253,6 +276,20 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
 
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
+  /** Compact one-line summary for collapsed tools */
+  const collapsedPreview = () => {
+    if (props.entry.kind === "tool-call" && props.entry.title) {
+      return formatToolCallInput(props.entry.title, props.entry.text)
+    }
+    if (props.entry.kind === "tool") {
+      return formatToolResultPreview(props.entry.text)
+    }
+    if (props.entry.kind === "reasoning") {
+      return props.entry.text.split("\n")[0] ?? ""
+    }
+    return ""
+  }
+
   if (props.entry.kind === "assistant") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
@@ -275,6 +312,10 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     )
   }
 
+  const tag = icon()
+    ? `${icon()} ${label()}`
+    : label()
+
   return (
     <box
       marginTop={props.isFirst ? 0 : 1}
@@ -286,22 +327,45 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
       borderColor={borderColor()}
     >
       <box flexDirection="column" gap={1}>
-        <Show when={showHeader()}>
-          <box
-            flexDirection="row"
-            gap={1}
-            onMouseDown={() => collapsible() && setCollapsed(c => !c)}
-          >
-            <Show when={collapsible()}>
-              <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
-            </Show>
-            <text style={{ fg: labelColor() }}>
-              {label()}{props.entry.title ? ` ${props.entry.title}` : ""}
-            </text>
-          </box>
+        {/* Header / toggle line */}
+        <box
+          flexDirection="row"
+          gap={1}
+          onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+        >
+          <Show when={collapsible()}>
+            <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
+          </Show>
+          <text style={{ fg: labelColor() }}>
+            {tag}{props.entry.title ? ` ${props.entry.title}` : ""}
+          </text>
+          {/* Show streaming spinner for in-flight tool calls */}
+          <Show when={props.entry.streaming && (props.entry.kind === "tool-call" || props.entry.kind === "tool")}>
+            <text style={{ fg: THEME.muted }}>{" …"}</text>
+          </Show>
+        </box>
+
+        {/* Collapsed: show compact one-line preview */}
+        <Show when={collapsed() && collapsedPreview()}>
+          <text style={{ fg: THEME.muted }}>{collapsedPreview()}</text>
         </Show>
+
+        {/* Expanded: show full content */}
         <Show when={!collapsed()}>
-          <text style={{ fg: textColor() }}>{props.entry.text}</text>
+          <Show when={props.entry.kind === "tool-call" && props.entry.title === "bash" && !props.entry.streaming}>
+            {/* For static (completed) bash calls, show a compact representation */}
+            <text style={{ fg: textColor() }}>
+              {(() => {
+                const parsed = tryParseJSON(props.entry.text)
+                return typeof parsed.command === "string"
+                  ? `$ ${parsed.command}`
+                  : props.entry.text
+              })()}
+            </text>
+          </Show>
+          <Show when={props.entry.kind !== "tool-call" || props.entry.title !== "bash" || !!props.entry.streaming}>
+            <text style={{ fg: textColor() }}>{props.entry.text}</text>
+          </Show>
         </Show>
       </box>
     </box>
@@ -356,6 +420,8 @@ function App() {
   let initialMessages: Message[] = []
   let initialMode: RunMode = "build"
   let initialCompaction: CompactionInfo | undefined
+  let initialPermissionRules: PermissionRule[] = []
+  let initialAutoApprove = false
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -366,6 +432,8 @@ function App() {
       if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
       if (loaded.mode === "plan") initialMode = "plan"
       initialCompaction = loaded.compaction
+      initialPermissionRules = loaded.permissionRules ?? []
+      initialAutoApprove = loaded.autoApprove ?? false
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -389,16 +457,23 @@ function App() {
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
-  type PendingApproval = { request: PermissionRequest; resolve: () => void; reject: (e: Error) => void }
+  const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
+  type PendingApproval = {
+    request: PermissionRequest
+    resolve: () => void
+    reject: (e: Error) => void
+    allowAlways: () => void
+  }
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
   const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
+  const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
@@ -407,6 +482,14 @@ function App() {
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
+  const [showCompletedTools, setShowCompletedTools] = createSignal(false)
+  const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
+const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [composerCollapsed, setComposerCollapsed] = createSignal(false)
+  const pastedContent = new Map<string, string>()
+  let pasteCounter = 0
+  const pasteStyleId = MARKDOWN_SYNTAX.getStyleId("paste")!
+  let pasteExtmarkTypeId = 0
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   createEffect(() => {
@@ -435,8 +518,13 @@ function App() {
     return index >= 0 ? index : 0
   }
 
+  // Return the correct visible items list for the current palette mode
+  // (respects filtering for non-rename/non-models modes)
+  const displayItems = () =>
+    paletteMode() === "models" ? paletteItems() : filteredPaletteItems()
+
   const movePaletteIndex = (delta: -1 | 1) => {
-    const items = paletteItems()
+    const items = displayItems()
     if (items.length === 0) return
     let next = paletteIndex()
     while (true) {
@@ -473,7 +561,7 @@ function App() {
       currentProvider = nextProvider
       currentModel = nextModel
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction())
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       refreshSessions()
       return true
     } catch (error) {
@@ -528,7 +616,87 @@ function App() {
     setPaletteIndex(0)
   }
 
-  const actionPaletteItems = createMemo<PaletteItem[]>(() => {
+  const timelineMsgs = createMemo(() => {
+    return messages().filter((msg) => msg.role === "user" && msg.content);
+  });
+
+  const formatTimelineHint = () => {
+    const count = timelineMsgs().length;
+    return count === 0 ? "empty" : String(count);
+  };
+
+  const timelinePaletteItems = createMemo<PaletteItem[]>(() => {
+    selectionRevision();
+    const msgs = timelineMsgs();
+    const items: PaletteItem[] = [];
+
+    if (msgs.length === 0) {
+      items.push({ label: "No user messages yet", kind: "section", onSelect: () => {} });
+    }
+
+    // If paletteMode is "timelineActions", show actions for the selected message
+    if (paletteMode() === "timelineActions") {
+      const targetMsg = msgs[timelineTargetMsgIdx()];
+      if (targetMsg) {
+        items.push({
+          label: "Edit this message",
+          hint: "set as draft input",
+          onSelect: () => {
+            setComposerText(targetMsg.content ?? "");
+            setShowPalette(false);
+            setPaletteMode("actions");
+          },
+        });
+        items.push({
+          label: "Fork from here",
+          hint: "create new session",
+          onSelect: () => {
+            doForkFromMessage(timelineTargetMsgIdx());
+            setShowPalette(false);
+            setPaletteMode("actions");
+          },
+        });
+        items.push({ label: "", onSelect: () => {} });
+        items.push({
+          label: "← Back to timeline",
+          onSelect: () => {
+            setPaletteMode("timeline");
+            setPaletteIndex(0);
+          },
+        });
+      }
+      return items;
+    }
+
+    for (let i = 0; i < msgs.length; i++) {
+      const msg = msgs[i];
+      const text = (msg.content ?? "").replace(/\n/g, " ").slice(0, 50);
+      const isActive = i === timelineTargetMsgIdx();
+      items.push({
+        label: (isActive ? ">" : " ") + " " + text,
+        hint: `msg #${i + 1}`,
+        onSelect: () => {
+          setTimelineTargetMsgIdx(i);
+          // Show actions for this message
+          setPaletteMode("timelineActions");
+          setPaletteIndex(0);
+        },
+      });
+    }
+
+    items.push({ label: "", onSelect: () => {} });
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("actions");
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()));
+      },
+    });
+    return items;
+  });
+
+
+const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
     return [
@@ -540,6 +708,59 @@ function App() {
       {
         label: "Focus input",
         onSelect: () => { setShowPalette(false) },
+      },
+      {
+        label: "DISPLAY",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Completed tools",
+        hint: showCompletedTools() ? "shown" : "hidden",
+        onSelect: () => { setShowCompletedTools(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Thinking blocks",
+        hint: showThinkingBlocks() ? "shown" : "hidden",
+        onSelect: () => { setShowThinkingBlocks(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Auto-approve",
+        hint: autoApprove() ? "ON" : "OFF",
+        onSelect: () => { setAutoApprove(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Reload config",
+        hint: "config files only (not source code)",
+        onSelect: () => {
+          refreshAgentsInstruction()
+          // Re-detect provider in case API keys changed
+          const detected = autoDetectProvider()
+          if (detected && detected !== currentProvider) {
+            currentProvider = detected
+            currentModel = defaultModelForCurrentProvider(currentProvider)
+          } else {
+            // Re-normalize model in case API key status changed
+            currentModel = normalizeBigPickleModel(currentModel)
+          }
+          rebuildLayer()
+          setProviderModels({})
+          setProviderModelsError({})
+          setProviderConfigRevision(v => v + 1)
+          setSelectionRevision(v => v + 1)
+          setStatus("config reloaded")
+          setShowPalette(false)
+        },
+      },
+      {
+        label: "Restart app",
+        hint: "exit (npm run dev for auto-reload)",
+        onSelect: () => {
+          doSaveCurrent()
+          setShowPalette(false)
+          // Exit so external watcher (bun --watch) can restart
+          setTimeout(() => process.exit(0), 100)
+        },
       },
       {
         label: "SESSION",
@@ -565,6 +786,25 @@ function App() {
       {
         label: "Compact session",
         onSelect: () => { void compactCurrentSession() },
+      },
+      {
+        label: "Timeline",
+        hint: formatTimelineHint(),
+        onSelect: () => {
+          setPalettePendingDelete(null);
+          setTimelineTargetMsgIdx(0);
+          setPaletteMode("timeline");
+          setPaletteIndex(0);
+        },
+      },
+      {
+        label: "Fork from timeline",
+        onSelect: () => {
+          setPalettePendingDelete(null);
+          setTimelineTargetMsgIdx(0);
+          setPaletteMode("timeline");
+          setPaletteIndex(0);
+        },
       },
       {
         label: "MODEL",
@@ -816,6 +1056,7 @@ function App() {
     return items
   })
 
+  
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
@@ -827,8 +1068,45 @@ function App() {
             ? providerKeyProviderPaletteItems()
             : paletteMode() === "providerKeys"
               ? providerKeyPaletteItems()
+          : paletteMode() === "timeline" || paletteMode() === "timelineActions"
+            ? timelinePaletteItems()
           : actionPaletteItems(),
   )
+
+  const filteredPaletteItems = createMemo<PaletteItem[]>(() => {
+    const items = paletteItems()
+    // rename mode: paletteInput is the name text, not a filter
+    // models mode: handles its own filtering internally
+    if (paletteMode() === "rename" || paletteMode() === "models") return items
+    const filter = paletteInput().trim().toLowerCase()
+    if (!filter) return items
+    return items.filter((item) => {
+      if (item.kind === "section") return true
+      if (item.label.toLowerCase().includes(filter)) return true
+      if (item.hint && item.hint.toLowerCase().includes(filter)) return true
+      return false
+    })
+  })
+
+  // Reset filter when switching to modes that need a clean state
+  createEffect(() => {
+    const mode = paletteMode()
+    if (mode !== "rename" && mode !== "models") {
+      setPaletteInput("")
+    }
+  })
+
+  // Keep palette index valid when filter narrows the visible items
+  createEffect(() => {
+    if (paletteMode() === "rename" || paletteMode() === "models") return
+    paletteInput() // depend on filter text
+    const items = displayItems()
+    const idx = paletteIndex()
+    if (items.length === 0) return
+    if (idx >= items.length || !isSelectablePaletteItem(items[idx])) {
+      setPaletteIndex(firstSelectablePaletteIndex(items))
+    }
+  })
 
   createEffect(() => {
     if (!showPalette()) return
@@ -842,6 +1120,26 @@ function App() {
     const result: DisplayTurn[] = []
     const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
     const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy`
+    let hiddenToolCount = 0
+    const hiddenToolNames = new Set<string>()
+
+    const shouldShowEntry = (entry: DisplayBlock): boolean => {
+      // Always show streaming entries
+      if (entry.streaming) return true
+      // Always show user, assistant, system, error
+      if (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "system" || entry.kind === "error") return true
+      // Hide completed tool-call and tool entries when showCompletedTools is off
+      if ((entry.kind === "tool-call" || entry.kind === "tool") && !showCompletedTools()) {
+        if (entry.title) hiddenToolNames.add(entry.title)
+        hiddenToolCount++
+        return false
+      }
+      // Hide completed thinking blocks when showThinkingBlocks is off
+      if (entry.kind === "reasoning" && !showThinkingBlocks()) {
+        return false
+      }
+      return true
+    }
 
     const ensureTurn = () => {
       const existing = result[result.length - 1]
@@ -860,13 +1158,35 @@ function App() {
         continue
       }
 
-      const entries = messageToBlocks(msg)
+      const entries = messageToBlocks(msg).filter(shouldShowEntry)
       if (entries.length === 0) continue
       ensureTurn().entries.push(...entries)
     }
 
-    for (const n of notices()) {
-      result.push({ entries: [n] })
+    // Add compact tool summary after the last turn that had hidden tools
+    if (hiddenToolCount > 0) {
+      const lastTurn = result[result.length - 1]
+      if (lastTurn) {
+        const toolList = [...hiddenToolNames].slice(0, 5).join(", ")
+        const summary = hiddenToolNames.size > 5
+          ? `⚙ ${hiddenToolCount} calls · ${toolList}, …  (/tools to show)`
+          : `⚙ ${hiddenToolCount} calls · ${toolList}  (/tools to show)`
+        lastTurn.entries.push({ kind: "system", text: summary, streaming: false })
+      }
+    }
+
+    // Attach recent notices to the last turn so they appear as part of the
+    // conversation rather than separate pinned blocks at the bottom.
+    const recentNotices = notices().slice(-3)
+    if (recentNotices.length > 0 && result.length > 0) {
+      const lastTurn = result[result.length - 1]
+      for (const n of recentNotices) {
+        lastTurn.entries.push(n)
+      }
+    } else if (recentNotices.length > 0) {
+      for (const n of recentNotices) {
+        result.push({ entries: [n] })
+      }
     }
 
 
@@ -891,19 +1211,19 @@ function App() {
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
 
-  const streamingText = createMemo(() =>
-    streamState.parts()
-      .filter(p => p.type === "text")
-      .map(p => p.text)
-      .join("")
-  )
-
-  const streamingReasoning = createMemo(() =>
-    streamState.parts()
-      .filter(p => p.type === "reasoning")
-      .map(p => stripAnsi(p.text))
-      .join("")
-      .trim()
+  const streamingEntries = createMemo<DisplayBlock[]>(() =>
+    streamState.parts().map((part) => {
+      switch (part.type) {
+        case "text":
+          return { kind: "assistant", text: part.text, streaming: true } satisfies DisplayBlock
+        case "reasoning":
+          return { kind: "reasoning", text: stripAnsi(part.text), title: "Thinking", streaming: true } satisfies DisplayBlock
+        case "tool-call":
+          return { kind: "tool-call", text: part.input || "{}", title: part.tool, streaming: true } satisfies DisplayBlock
+        case "tool-result":
+          return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool, streaming: true } satisfies DisplayBlock
+      }
+    }),
   )
 
   const scrollBottom = () => {
@@ -940,7 +1260,7 @@ function App() {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction())
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
   }
 
   const refreshSessions = () => {
@@ -955,6 +1275,8 @@ function App() {
     setMessages(loaded?.messages ?? [])
     setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
+    setPermissionRules(loaded?.permissionRules ?? [])
+    setAutoApprove(loaded?.autoApprove ?? false)
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -962,6 +1284,26 @@ function App() {
     setComposerText("")
     setDraft("")
   }
+
+  
+  const doForkFromMessage = (msgIdx: number) => {
+    doSaveCurrent();
+    const msgs = timelineMsgs();
+    if (msgIdx < 0 || msgIdx >= msgs.length) return;
+    const targetMsg = msgs[msgIdx];
+    // Create new session with messages up to and including the target message
+    const msgsUpToTarget = messages().slice(0, messages().indexOf(targetMsg) + 1);
+    const meta = createSession(currentModel, currentProvider, msgsUpToTarget);
+    setSessionId(meta.id);
+    setSessionMeta(meta);
+    setSessionRevision((v) => v + 1);
+    setMessages(msgsUpToTarget);
+    setNotices([]);
+    setPermissionRules(permissionRules());
+    setComposerText(targetMsg.content ?? "");
+    setDraft(targetMsg.content ?? "");
+    setStatus("forked session from message " + (msgIdx + 1));
+  };
 
   const doCreateNewSession = () => {
     doSaveCurrent()
@@ -971,6 +1313,7 @@ function App() {
     setSessionRevision((v) => v + 1)
     setMessages([])
     setNotices([])
+    setPermissionRules([])
     setComposerText("")
     setDraft("")
   }
@@ -1028,7 +1371,7 @@ function App() {
       }
       setMessages(tail)
       setCompaction(newCompaction)
-      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction)
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
       refreshSessions()
       setStatus("session compacted")
     } catch {
@@ -1042,8 +1385,17 @@ function App() {
       autocompleteApi.select()
       return
     }
-    const input = draft().trim()
-    if (!input) return
+    const rawInput = draft().trim()
+    if (!rawInput) return
+
+    // Expand pasted markers back to full content
+    let input = rawInput
+    for (const [marker, content] of pastedContent) {
+      if (input.includes(marker)) {
+        input = input.replace(marker, content)
+      }
+    }
+
     if (isTransientPasteMarker(input)) {
       setComposerText("")
       return
@@ -1128,6 +1480,37 @@ function App() {
         },
         refreshSessions,
       }
+      // Handle display toggles that need local signal access
+      const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
+      if (slashCmd === "tools" || slashCmd === "tool-details") {
+        setShowCompletedTools(c => !c)
+        const state = showCompletedTools() ? "shown" : "hidden"
+        setNotices((prev) => [...prev, { kind: "system", text: `Completed tool details: ${state}` }])
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+        return
+      }
+      if (slashCmd === "thinking") {
+        setShowThinkingBlocks(c => !c)
+        const state = showThinkingBlocks() ? "visible" : "hidden"
+        setNotices((prev) => [...prev, { kind: "system", text: `Thinking blocks: ${state}` }])
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+        return
+      }
+      if (slashCmd === "auto" || slashCmd === "auto-approve") {
+        setAutoApprove(c => !c)
+        const state = autoApprove() ? "ON" : "OFF"
+        setNotices((prev) => [...prev, { kind: "system", text: `Auto-approve: ${state}` }])
+        setComposerText("")
+        queueMicrotask(scrollBottom)
+        return
+      }
+      if (slashCmd === "commit") {
+        setComposerText("Please help generate a commit message and commit the changes")
+        queueMicrotask(scrollBottom)
+        return
+      }
       await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
         setComposerText("")
@@ -1152,18 +1535,31 @@ function App() {
     }
 
     runAbort = new AbortController()
-    streamState.reset()
-    refreshAgentsInstruction()
-    setRunning(true)
-    setStatus("thinking...")
+        streamState.reset()
+        refreshAgentsInstruction()
+        setRunning(true)
+        setStatus("thinking...")
+
+    // Clear notices only when streaming actually starts (first chunk received),
+    // so error notices from a failed stream persist until the next successful response.
+    let noticesCleared = false
+    const clearNoticesOnce = () => {
+      if (!noticesCleared) {
+        noticesCleared = true
+        setNotices([])
+      }
+    }
 
     try {
-      const next = await runSession(input, messages(), {
+      const next = await runSession(input, sanitizeMessages(messages()), {
         abort: runAbort.signal,
-        streamReasoningChunk: (text) => streamState.streamReasoningChunk(text),
-        streamAssistantChunk: (text) => streamState.streamAssistantChunk(text),
+        streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
+        streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
+        streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
+        setStreamingToolResult: (input) => streamState.setToolResult(input),
         addMessage: (msg) => {
           if (msg.role === "assistant") streamState.reset()
+          if (msg.role === "tool") streamState.reset()
           setMessages((prev) => [...prev, msg])
         },
         notify: (text, kind) => {
@@ -1179,14 +1575,43 @@ function App() {
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
-          const SAFE = ["read", "grep", "glob", "web-fetch"]
-          if (SAFE.includes(req.permission)) { resolve(); return }
-          setPendingApproval({ request: { ...req, id: `perm_${Date.now()}` }, resolve, reject })
+          if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
+          // Auto-approve mode: auto-approve non-bash permissions,
+          // and bash commands that are not destructive.
+          if (autoApprove()) {
+            if (req.permission === "bash") {
+              const dangerous = req.patterns.some((p) => isDangerousBashCommand(p))
+              if (dangerous) {
+                const request = { ...req, id: `perm_${Date.now()}` }
+                setPendingApproval({
+                  request,
+                  resolve,
+                  reject,
+                  allowAlways: () => {
+                    setPermissionRules((prev) => addPermissionRules(prev, req))
+                    resolve()
+                  },
+                })
+                return
+              }
+            }
+            resolve(); return
+          }
+          const request = { ...req, id: `perm_${Date.now()}` }
+          setPendingApproval({
+            request,
+            resolve,
+            reject,
+            allowAlways: () => {
+              setPermissionRules((prev) => addPermissionRules(prev, req))
+              resolve()
+            },
+          })
         }),
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction())
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
@@ -1202,6 +1627,9 @@ function App() {
       if (event.name === "y" || event.name === "return") {
         setPendingApproval(undefined)
         approval.resolve()
+      } else if (event.name === "a") {
+        setPendingApproval(undefined)
+        approval.allowAlways()
       } else if (event.name === "n" || event.name === "escape" || event.name === "q") {
         setPendingApproval(undefined)
         approval.reject(new Error("denied by user"))
@@ -1214,7 +1642,7 @@ function App() {
       event.preventDefault()
       return
     }
-    if (event.ctrl && event.name === "p") {
+    if ((event.ctrl && event.name === "p") || event.name === "f2") {
       setShowPalette((open) => !open)
       setPalettePendingDelete(null)
       setPaletteMode("actions")
@@ -1223,41 +1651,58 @@ function App() {
       return
     }
     if (showPalette()) {
-      if (paletteMode() === "rename" || paletteMode() === "models") {
-        if (event.name === "escape") {
-          if (paletteMode() === "rename") {
-            setPalettePendingDelete(null)
-            setPaletteMode("actions")
-            setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
-          } else {
-            const backMode = paletteModelBackMode()
-            setPaletteInput("")
-            setPaletteMode(backMode)
-            setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
-          }
-        } else if (event.name === "return") {
-          if (paletteMode() === "rename") {
-            const sid = sessionId()
-            updateSessionMeta(sid, { title: paletteInput() })
-            refreshSessions()
-            setShowPalette(false)
-            setPaletteMode("actions")
-          } else {
-            const item = paletteItems()[paletteIndex()]
-            if (isSelectablePaletteItem(item)) item?.onSelect()
-          }
-        } else if (event.name === "backspace") {
-          setPaletteInput(prev => prev.slice(0, -1))
-        } else if (event.name === "space") {
-          setPaletteInput(prev => prev + " ")
-        } else if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
-          setPaletteInput(prev => prev + event.name)
-        }
+      // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
+      if (event.name === "backspace") {
+        setPaletteInput(prev => prev.slice(0, -1))
         event.preventDefault()
         return
       }
+      if (event.name === "space") {
+        setPaletteInput(prev => prev + " ")
+        event.preventDefault()
+        return
+      }
+      if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
+        setPaletteInput(prev => prev + event.name)
+        event.preventDefault()
+        return
+      }
+      if (paletteMode() === "rename") {
+        if (event.name === "escape") {
+          setPalettePendingDelete(null)
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const sid = sessionId()
+          updateSessionMeta(sid, { title: paletteInput() })
+          refreshSessions()
+          setShowPalette(false)
+          setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "models") {
+        if (event.name === "escape") {
+          const backMode = paletteModelBackMode()
+          setPaletteInput("")
+          setPaletteMode(backMode)
+          setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const item = paletteItems()[paletteIndex()]
+          if (isSelectablePaletteItem(item)) item?.onSelect()
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "sessions" && event.ctrl && event.name === "d") {
-        const item = paletteItems()[paletteIndex()]
+        const item = displayItems()[paletteIndex()]
         const targetId = item?.sessionId
         if (!targetId) {
           setComposerText("")
@@ -1299,6 +1744,12 @@ function App() {
           setPaletteInput("")
           setPaletteMode(backMode)
           setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+        } else if (paletteMode() === "timelineActions") {
+          setPaletteMode("timeline")
+          setPaletteIndex(0)
+        } else if (paletteMode() === "timeline") {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else {
             setShowPalette(false)
           }
@@ -1316,7 +1767,7 @@ function App() {
         return
       }
       if (event.name === "return") {
-        const item = paletteItems()[paletteIndex()]
+        const item = displayItems()[paletteIndex()]
         if (isSelectablePaletteItem(item)) item?.onSelect()
         event.preventDefault()
         return
@@ -1440,23 +1891,11 @@ function App() {
         <For each={turns()}>
           {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
         </For>
-        <Show when={running()}>
+        <Show when={running() && streamingEntries().length > 0}>
           <box marginTop={1} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accentDim}>
-            <Show when={streamingReasoning()}>
-              <box paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accent} marginBottom={1}>
-                <text style={{ fg: THEME.muted }}>think  Thinking</text>
-                <text style={{ fg: THEME.muted }}>{streamingReasoning()}</text>
-              </box>
-            </Show>
-            <Show when={streamingText()}>
-              <markdown
-                content={streamingText()}
-                syntaxStyle={MARKDOWN_SYNTAX}
-                fg={THEME.text}
-                bg={THEME.background}
-                streaming={true}
-              />
-            </Show>
+            <For each={streamingEntries()}>
+              {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
+            </For>
           </box>
         </Show>
       </scrollbox>
@@ -1466,7 +1905,7 @@ function App() {
           <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#f85149" backgroundColor={THEME.surface}>
             <text style={{ fg: "#f85149" }}>PERMISSION REQUIRED</text>
             <text style={{ fg: THEME.text }}>{`${approval().request.permission}: ${approval().request.patterns.join("  ")}`}</text>
-            <text style={{ fg: THEME.muted }}>{"y / Enter = allow   n / Escape = deny"}</text>
+            <text style={{ fg: THEME.muted }}>{"y / Enter = allow once   a = always allow in this session   n / Escape = deny"}</text>
           </box>
         )}
       </Show>
@@ -1483,15 +1922,42 @@ function App() {
                 backgroundColor={THEME.surface}
                 cursorColor={THEME.text}
                 keyBindings={PROMPT_KEY_BINDINGS}
-                minHeight={1}
-                maxHeight={6}
+                syntaxStyle={MARKDOWN_SYNTAX}
+                minHeight={composerCollapsed() ? 1 : 1}
+                maxHeight={composerCollapsed() ? 1 : 12}
                 width="100%"
                 focused={!showPalette()}
                 ref={(node) => {
                   composer = node
+                  if (node && pasteExtmarkTypeId === 0) {
+                    pasteExtmarkTypeId = node.extmarks.registerType("paste")
+                  }
                 }}
                 onContentChange={() => setDraft(composer?.plainText ?? "")}
                 onSubmit={() => { void submit() }}
+                onPaste={(event) => {
+                  const text = new TextDecoder().decode(event.bytes)
+                    .replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
+                  if (!text) return
+                  const lineCount = (text.match(/\n/g)?.length ?? 0) + 1
+                  if (lineCount >= 3 || text.length > 200) {
+                    event.preventDefault()
+                    if (!composer || pasteExtmarkTypeId === 0) return
+                    pasteCounter++
+                    const marker = `[Pasted ~${lineCount} lines #${pasteCounter}]`
+                    const cursor = composer.visualCursor.offset
+                    composer.insertText(marker + " ")
+                    composer.extmarks.create({
+                      start: cursor,
+                      end: cursor + marker.length,
+                      virtual: true,
+                      styleId: pasteStyleId,
+                      typeId: pasteExtmarkTypeId,
+                    })
+                    pastedContent.set(marker, text)
+                    return
+                  }
+                }}
               />
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
@@ -1500,6 +1966,10 @@ function App() {
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
+              <Show when={autoApprove()}>
+                <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+                <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
+              </Show>
               <Show when={running()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
               }>
@@ -1524,6 +1994,7 @@ function App() {
         provider={providerLabel()}
         model={modelLabel()}
         sessionTitle={sessionMeta()?.title}
+        cwd={process.cwd()}
       />
       </box>
 
@@ -1532,7 +2003,7 @@ function App() {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
-          const noArgs = new Set(["help", "clear", "info", "exit", "quit"])
+          const noArgs = new Set(["help", "clear", "info", "exit", "quit", "commit"])
           if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })
@@ -1549,7 +2020,7 @@ function App() {
       <Show when={showPalette()}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : paletteItems().length + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={Math.floor((dimensions().width - 2 - 52) / 2)}
           width={PALETTE_WIDTH}
           zIndex={100}
@@ -1572,15 +2043,18 @@ function App() {
                         ? "Provider Keys"
                         : paletteMode() === "providerKeys"
                           ? `Provider Keys · ${paletteProviderKeyTarget()}`
+                      : paletteMode() === "timeline"
+                        ? "Timeline"
+                        : paletteMode() === "timelineActions"
+                          ? "Message Actions"
                       : "Command Palette"}
             </text>
-            <text style={{ fg: THEME.muted }}>  Ctrl+P</text>
+            <text style={{ fg: THEME.muted }}>  F2 / Ctrl+P</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <Show when={paletteMode() === "rename" || paletteMode() === "models"}>
-              <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
+            <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : "Filter models:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "models" ? "Filter models:" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -1594,9 +2068,8 @@ function App() {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            </Show>
             <Show when={paletteMode() !== "rename"}>
-              <For each={paletteItems()}>
+              <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
                     paddingLeft={2}
@@ -1642,12 +2115,12 @@ function App() {
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
                   : paletteMode() === "sessions"
-                  ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
                   : paletteMode() === "models"
                     ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providers"
-                      ? "↑↓ navigate  •  Enter select  •  Esc back"
-                    : "↑↓ navigate  •  Enter select  •  Esc close"}
+                      ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
+                    : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>
         </box>
