@@ -249,8 +249,7 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
   )
 
-  const icon = () => props.entry.kind === "reasoning" ? "💭"
-    : props.entry.kind === "error" ? "✗"
+  const icon = () => props.entry.kind === "error" ? "✗"
     : props.entry.kind === "tool" ? "✓"
     : props.entry.kind === "tool-call" ? "▶"
     : ""
@@ -1176,8 +1175,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }
 
-    for (const n of notices()) {
-      result.push({ entries: [n] })
+    // Attach recent notices to the last turn so they appear as part of the
+    // conversation rather than separate pinned blocks at the bottom.
+    const recentNotices = notices().slice(-3)
+    if (recentNotices.length > 0 && result.length > 0) {
+      const lastTurn = result[result.length - 1]
+      for (const n of recentNotices) {
+        lastTurn.entries.push(n)
+      }
+    } else if (recentNotices.length > 0) {
+      for (const n of recentNotices) {
+        result.push({ entries: [n] })
+      }
     }
 
 
@@ -1531,12 +1540,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setRunning(true)
         setStatus("thinking...")
 
+    // Clear notices only when streaming actually starts (first chunk received),
+    // so error notices from a failed stream persist until the next successful response.
+    let noticesCleared = false
+    const clearNoticesOnce = () => {
+      if (!noticesCleared) {
+        noticesCleared = true
+        setNotices([])
+      }
+    }
+
     try {
       const next = await runSession(input, sanitizeMessages(messages()), {
         abort: runAbort.signal,
-        streamReasoningChunk: (text) => streamState.streamReasoningChunk(text),
-        streamAssistantChunk: (text) => streamState.streamAssistantChunk(text),
-        streamToolCallChunk: (index, input) => streamState.streamToolCallChunk(index, input),
+        streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
+        streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
+        streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
         setStreamingToolResult: (input) => streamState.setToolResult(input),
         addMessage: (msg) => {
           if (msg.role === "assistant") streamState.reset()

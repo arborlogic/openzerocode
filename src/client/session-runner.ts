@@ -88,7 +88,12 @@ export async function runSession(
 
     if (!stream) {
       ui.setStatus("waiting for input")
-      ui.notify(formatProviderError(lastError), "error")
+      const errorText = formatProviderError(lastError)
+      ui.notify(errorText, "error")
+      // Add error as an assistant message so it persists in history after notice clears
+      const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
+      resultHistory.push(errorMsg)
+      ui.addMessage(errorMsg)
       return resultHistory
     }
 
