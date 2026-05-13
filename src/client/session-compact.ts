@@ -55,6 +55,13 @@ export function selectCompactionTail(messages: Message[], contextLimit: number):
     tailStart = i
   }
 
+  // Avoid splitting in the middle of a tool call cycle.
+  // If the tail starts with orphaned tool messages (their corresponding
+  // assistant is in the head), advance past them into the head.
+  while (tailStart < clean.length && clean[tailStart]?.role === "tool") {
+    tailStart++
+  }
+
   return {
     head: clean.slice(0, tailStart),
     tail: clean.slice(tailStart),
