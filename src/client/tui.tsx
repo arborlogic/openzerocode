@@ -25,6 +25,7 @@ import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfigur
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
+import { SplashScreen } from "./splash"
 
 // Version — injected at build time via scripts/build.ts, fallback to dev import
 const VERSION: string =
@@ -523,6 +524,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     dimensions().height > dimensions().width ? "vertical" : "horizontal"
   )
+  const [showSplash, setShowSplash] = createSignal(true)
+  const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
+  const splashSessions = listSessions()
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
     dimensions().height > dimensions().width
   )
@@ -1711,6 +1715,43 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       event.preventDefault()
       return
     }
+    // Splash screen input handling
+    if (showSplash()) {
+      if (event.name === "return" || event.name === "enter") {
+        const selIdx = splashSelectedIndex()
+        if (selIdx >= 0 && splashSessions[selIdx]) {
+          doSwitchSession(splashSessions[selIdx].id)
+        } else {
+          doCreateNewSession()
+        }
+        setShowSplash(false)
+        renderer.setTerminalTitle("openzerocode")
+        event.preventDefault()
+        return
+      }
+
+      if (event.name === "up") {
+        setSplashSelectedIndex(i => Math.max(-1, i - 1))
+        event.preventDefault()
+        return
+      }
+
+      if (event.name === "down") {
+        setSplashSelectedIndex(i => Math.min(splashSessions.length - 1, i + 1))
+        event.preventDefault()
+        return
+      }
+
+      if (event.name === "escape") {
+        setSplashSelectedIndex(-1)
+        event.preventDefault()
+        return
+      }
+
+      event.preventDefault()
+      return
+    }
+
     if (event.ctrl && event.name === "c") {
       void exitApp(0)
       event.preventDefault()
@@ -2023,6 +2064,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         void copySelection()
       }}
     >
+      {/* ── Splash screen (shown on first launch) ── */}
+      <Show when={showSplash()}>
+        <SplashScreen
+          selectedIndex={splashSelectedIndex()}
+          sessions={splashSessions}
+          layoutMode={layoutMode()}
+          model={modelLabel()}
+          provider={providerLabel()}
+        />
+      </Show>
+
+      {/* ── Main work UI (hidden while splash is shown) ── */}
+      <Show when={!showSplash()}>
 <box
         flexDirection={layoutMode() === "horizontal" ? "row" : "column"}
         flexGrow={1}
@@ -2334,6 +2388,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </text>
           </box>
         </box>
+      </Show>
+
+      {/* ── Close the `showSplash === false` block ── */}
       </Show>
 
     </box>
