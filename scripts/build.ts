@@ -50,6 +50,9 @@ const result = await Bun.build({
   minify: true,
   sourcemap: "external",
   target: "bun",
+  define: {
+    "process.env.__OPENZEROCODE_VERSION__": JSON.stringify(pkg.version),
+  },
   compile: {
     autoloadTsconfig: true,
     autoloadPackageJson: true,

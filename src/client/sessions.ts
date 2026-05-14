@@ -215,6 +215,9 @@ export function deleteSession(id: string): boolean {
     removed = true
   }
 
+  // Clean up activity marker if any
+  unmarkSessionActive(id)
+
   return removed
 }
 
@@ -230,4 +233,62 @@ export function updateSessionMeta(id: string, updates: Partial<Pick<SessionMeta,
   if (!meta) return
   Object.assign(meta, updates)
   writeIndex(index)
+}
+
+// ─── Lightweight active marker ──────────────────────────────────────────
+
+const ACTIVITY_DIR = join(homedir(), ".openzerocode", ".active")
+
+function ensureActivityDir() {
+  if (!existsSync(ACTIVITY_DIR)) mkdirSync(ACTIVITY_DIR, { recursive: true })
+}
+
+function activeMarkerPath(id: string): string {
+  const safe = id.replace(/[^a-zA-Z0-9._:-]/g, "_")
+  return join(ACTIVITY_DIR, safe)
+}
+
+/** Mark a session as actively being processed by this process. */
+export function markSessionActive(id: string) {
+  ensureActivityDir()
+  writeFileSync(activeMarkerPath(id), JSON.stringify({
+    pid: process.pid,
+    timestamp: Date.now(),
+  }), "utf-8")
+}
+
+/** Remove the active marker for a session. */
+export function unmarkSessionActive(id: string) {
+  const path = activeMarkerPath(id)
+  if (existsSync(path)) unlinkSync(path)
+}
+
+/**
+ * Check if a session has a recent active marker (written within the last 30s).
+ * Does NOT check PID — it's just a hint that *some* process recently touched it.
+ */
+export function isSessionActive(id: string): boolean {
+  const path = activeMarkerPath(id)
+  if (!existsSync(path)) return false
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8"))
+    return Date.now() - (data.timestamp ?? 0) < 30_000
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Get active marker info for display. Returns null if no recent marker.
+ */
+export function getSessionActiveInfo(id: string): { pid: number; timestamp: number } | null {
+  const path = activeMarkerPath(id)
+  if (!existsSync(path)) return null
+  try {
+    const data = JSON.parse(readFileSync(path, "utf-8"))
+    if (Date.now() - (data.timestamp ?? 0) >= 30_000) return null
+    return { pid: data.pid ?? 0, timestamp: data.timestamp ?? 0 }
+  } catch {
+    return null
+  }
 }

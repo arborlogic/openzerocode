@@ -17,7 +17,7 @@ import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, type CompactionInfo } from "./sessions"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
@@ -25,6 +25,32 @@ import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfigur
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
+import { SplashScreen } from "./splash"
+
+// Version — injected at build time via scripts/build.ts, fallback to dev import
+const VERSION: string =
+  (typeof process !== "undefined" && (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
+  "0.0.0-dev"
+
+// Handle CLI flags before anything else
+const args = process.argv.slice(2)
+if (args.includes("--version") || args.includes("-v")) {
+  console.log(`openzerocode v${VERSION}`)
+  process.exit(0)
+}
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`openzerocode v${VERSION}`)
+  console.log()
+  console.log("Usage: openzerocode [options] [prompt...]")
+  console.log()
+  console.log("Options:")
+  console.log("  -v, --version            Show version number")
+  console.log("  -h, --help               Show this help message")
+  console.log()
+  console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
+  console.log("Otherwise, the terminal UI is launched.")
+  process.exit(0)
+}
 
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
@@ -483,6 +509,7 @@ function App() {
   const [paletteNewKeyName, setPaletteNewKeyName] = createSignal("")
   const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
+  const [lockPollRevision, setLockPollRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
@@ -497,6 +524,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     dimensions().height > dimensions().width ? "vertical" : "horizontal"
   )
+  const [showSplash, setShowSplash] = createSignal(true)
+  const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
+  const splashSessions = listSessions()
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
     dimensions().height > dimensions().width
   )
@@ -847,15 +877,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const sessionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
+    lockPollRevision()
     const sid = sessionId()
     const sessions = listSessions()
     const items: PaletteItem[] = []
 
     for (const s of sessions) {
       const isCurrent = s.id === sid
+      const active = isSessionActive(s.id)
+      const ownActive = active ? getSessionActiveInfo(s.id)?.pid === process.pid : false
+      const prefix = isCurrent ? ">" : active ? (ownActive ? "~" : "⚡") : " "
+      const activeHint = active
+        ? ownActive ? "active" : "in use"
+        : String(s.messageCount)
       items.push({
-        label: (isCurrent ? ">" : " ") + " " + s.title.slice(0, 30),
-        hint: String(s.messageCount),
+        label: `${prefix} ${s.title.slice(0, 28)}`,
+        hint: activeHint,
         sessionId: s.id,
         onSelect: () => {
           if (!isCurrent) doSwitchSession(s.id)
@@ -1141,6 +1178,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     if (paletteMode() !== "models") return
     paletteInput()
     setPaletteIndex(firstSelectablePaletteIndex(paletteItems()))
+  })
+
+  // Poll lock status while session list palette is open
+  createEffect(() => {
+    if (!showPalette()) return
+    if (paletteMode() !== "sessions") return
+    const id = setInterval(() => setLockPollRevision(v => v + 1), 2000)
+    return () => clearInterval(id)
   })
 
   const turns = createMemo(() => {
@@ -1568,6 +1613,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setRunning(true)
         setStatus("thinking...")
 
+    // Mark session as active (visible to other processes)
+    const activeSessionId = sessionId()
+    markSessionActive(activeSessionId)
+
     // Clear notices only when streaming actually starts (first chunk received),
     // so error notices from a failed stream persist until the next successful response.
     let noticesCleared = false
@@ -1644,6 +1693,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
     } finally {
+      unmarkSessionActive(activeSessionId)
       runAbort = undefined
       setRunning(false)
     }
@@ -1665,6 +1715,43 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       event.preventDefault()
       return
     }
+    // Splash screen input handling
+    if (showSplash()) {
+      if (event.name === "return" || event.name === "enter") {
+        const selIdx = splashSelectedIndex()
+        if (selIdx >= 0 && splashSessions[selIdx]) {
+          doSwitchSession(splashSessions[selIdx].id)
+        } else {
+          doCreateNewSession()
+        }
+        setShowSplash(false)
+        renderer.setTerminalTitle("openzerocode")
+        event.preventDefault()
+        return
+      }
+
+      if (event.name === "up") {
+        setSplashSelectedIndex(i => Math.max(-1, i - 1))
+        event.preventDefault()
+        return
+      }
+
+      if (event.name === "down") {
+        setSplashSelectedIndex(i => Math.min(splashSessions.length - 1, i + 1))
+        event.preventDefault()
+        return
+      }
+
+      if (event.name === "escape") {
+        setSplashSelectedIndex(-1)
+        event.preventDefault()
+        return
+      }
+
+      event.preventDefault()
+      return
+    }
+
     if (event.ctrl && event.name === "c") {
       void exitApp(0)
       event.preventDefault()
@@ -1977,6 +2064,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         void copySelection()
       }}
     >
+      {/* ── Splash screen (shown on first launch) ── */}
+      <Show when={showSplash()}>
+        <SplashScreen
+          selectedIndex={splashSelectedIndex()}
+          sessions={splashSessions}
+          layoutMode={layoutMode()}
+          model={modelLabel()}
+          provider={providerLabel()}
+        />
+      </Show>
+
+      {/* ── Main work UI (hidden while splash is shown) ── */}
+      <Show when={!showSplash()}>
 <box
         flexDirection={layoutMode() === "horizontal" ? "row" : "column"}
         flexGrow={1}
@@ -2123,6 +2223,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           model={modelLabel()}
           sessionTitle={sessionMeta()?.title}
           cwd={process.cwd()}
+          sessionId={sessionId()}
         />
       </Show>
 
@@ -2146,6 +2247,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             model={modelLabel()}
             sessionTitle={sessionMeta()?.title}
             cwd={process.cwd()}
+            sessionId={sessionId()}
           />
         </box>
       </Show>
@@ -2286,6 +2388,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </text>
           </box>
         </box>
+      </Show>
+
+      {/* ── Close the `showSplash === false` block ── */}
       </Show>
 
     </box>

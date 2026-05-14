@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process"
 import type { Message } from "../provider/types"
 import { getModelConfig, estimateTokens, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage } from "./session-compact"
+import { isSessionActive, getSessionActiveInfo } from "./sessions"
 
 type GitFile = {
   path: string
@@ -23,16 +24,41 @@ function readGitDiff(): GitFile[] {
   if (now - lastGitRead < 2000) return lastGitResult
   lastGitRead = now
   try {
-    const out = execFileSync("git", ["diff", "--numstat", "HEAD"], {
+    // Use --name-status to get file list (handles binary files safely)
+    const out = execFileSync("git", ["diff", "--name-status", "HEAD"], {
       encoding: "utf-8",
-      timeout: 1000,
+      timeout: 2000,
       stdio: ["pipe", "pipe", "ignore"],
     })
-    lastGitResult = out.trim().split("\n").filter(Boolean).map((line) => {
-      const [add = "0", del = "0", ...rest] = line.split("\t")
-      const path = rest.join("\t")
-      return { path, additions: parseInt(add) || 0, deletions: parseInt(del) || 0 }
-    })
+    const lines = out.trim().split("\n").filter(Boolean)
+    const result: GitFile[] = []
+    for (const line of lines) {
+      const status = line.charAt(0)
+      const filePath = line.slice(1).trim()
+      if (filePath) {
+        let additions = 0
+        let deletions = 0
+        if (status === "M" || status === "A") {
+          // Try to get line counts per file — binary files will fail silently
+          try {
+            const stat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", filePath], {
+              encoding: "utf-8",
+              timeout: 1000,
+              stdio: ["pipe", "pipe", "ignore"],
+            })
+            const match = stat.trim().match(/^(\d+)\s+(\d+)/)
+            if (match) {
+              additions = parseInt(match[1]!) || 0
+              deletions = parseInt(match[2]!) || 0
+            }
+          } catch {
+            // binary file or other error — just show filename without counts
+          }
+        }
+        result.push({ path: filePath, additions, deletions })
+      }
+    }
+    lastGitResult = result
     return lastGitResult
   } catch {
     return []
@@ -99,12 +125,20 @@ export function Sidebar(props: {
   model: string
   provider: string
   sessionTitle?: string
+  sessionId?: string
   cwd?: string
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(readGitBranch())
   const [commits, setCommits] = createSignal<GitCommit[]>(readRecentCommits(3))
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
+
+  // Poll session lock status every 3s while sidebar is visible
+  const [lockTick, setLockTick] = createSignal(0)
+  createEffect(() => {
+    const id = setInterval(() => setLockTick(v => v + 1), 3000)
+    return () => clearInterval(id)
+  })
 
   createEffect(() => {
     props.messages()
@@ -169,7 +203,22 @@ export function Sidebar(props: {
       <box flexDirection="column" gap={1}>
         <box flexDirection="column">
           <Show when={props.sessionTitle}>
-            <text style={{ fg: props.theme.accent }}>Session</text>
+            <box flexDirection="row" gap={1}>
+              <text style={{ fg: props.theme.accent }}>Session</text>
+              <Show when={props.sessionId}>
+                {(() => {
+                  const active = isSessionActive(props.sessionId!)
+                  const info = active ? getSessionActiveInfo(props.sessionId!) : null
+                  const isOwn = info?.pid === process.pid
+                  // Read lockTick to create reactive dependency for auto-refresh
+                  void lockTick()
+                  if (active) {
+                    return <text style={{ fg: props.theme.muted }}>{isOwn ? "~ active" : "⚡ in use"}</text>
+                  }
+                  return <></>
+                })()}
+              </Show>
+            </box>
             <text style={{ fg: props.theme.muted }}>{props.sessionTitle}</text>
             <Show when={compacted()}>
               <text style={{ fg: props.theme.accent }}>Compacted</text>

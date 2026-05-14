@@ -13,6 +13,32 @@ const fs = require("fs")
 const path = require("path")
 const os = require("os")
 
+// Read package.json for version info
+let VERSION = "0.0.0-dev"
+try {
+  VERSION = require("../package.json").version || VERSION
+} catch {}
+const args = process.argv.slice(2)
+
+// Handle --version / -v
+if (args.includes("--version") || args.includes("-v")) {
+  console.log(`openzerocode v${VERSION}`)
+  process.exit(0)
+}
+
+// Handle --help / -h
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`openzerocode v${VERSION}`)
+  console.log()
+  console.log("Usage: openzerocode [options] [prompt...]")
+  console.log()
+  console.log("Options:")
+  console.log("  -v, --version            Show version number")
+  console.log("  -h, --help               Show this help message")
+  console.log()
+  process.exit(0)
+}
+
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
 
 function run(target) {
@@ -104,13 +130,13 @@ if (!fs.existsSync(entry)) {
 }
 
 const preload = path.resolve(rootDir, "node_modules", "@opentui", "solid", "scripts", "preload.ts")
-const args = ["run"]
+const devArgs = ["run"]
 if (fs.existsSync(preload)) {
-  args.push("--preload", preload)
+  devArgs.push("--preload", preload)
 }
-args.push(entry, ...process.argv.slice(2))
+devArgs.push(entry, ...process.argv.slice(2))
 
-const proc = childProcess.spawnSync(bun, args, {
+const proc = childProcess.spawnSync(bun, devArgs, {
   stdio: "inherit",
   env: { ...process.env, NODE_ENV: process.env.NODE_ENV || "production" },
 })
