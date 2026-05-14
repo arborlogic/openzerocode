@@ -24,16 +24,41 @@ function readGitDiff(): GitFile[] {
   if (now - lastGitRead < 2000) return lastGitResult
   lastGitRead = now
   try {
-    const out = execFileSync("git", ["diff", "--numstat", "HEAD"], {
+    // Use --name-status to get file list (handles binary files safely)
+    const out = execFileSync("git", ["diff", "--name-status", "HEAD"], {
       encoding: "utf-8",
-      timeout: 1000,
+      timeout: 2000,
       stdio: ["pipe", "pipe", "ignore"],
     })
-    lastGitResult = out.trim().split("\n").filter(Boolean).map((line) => {
-      const [add = "0", del = "0", ...rest] = line.split("\t")
-      const path = rest.join("\t")
-      return { path, additions: parseInt(add) || 0, deletions: parseInt(del) || 0 }
-    })
+    const lines = out.trim().split("\n").filter(Boolean)
+    const result: GitFile[] = []
+    for (const line of lines) {
+      const status = line.charAt(0)
+      const filePath = line.slice(1).trim()
+      if (filePath) {
+        let additions = 0
+        let deletions = 0
+        if (status === "M" || status === "A") {
+          // Try to get line counts per file — binary files will fail silently
+          try {
+            const stat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", filePath], {
+              encoding: "utf-8",
+              timeout: 1000,
+              stdio: ["pipe", "pipe", "ignore"],
+            })
+            const match = stat.trim().match(/^(\d+)\s+(\d+)/)
+            if (match) {
+              additions = parseInt(match[1]!) || 0
+              deletions = parseInt(match[2]!) || 0
+            }
+          } catch {
+            // binary file or other error — just show filename without counts
+          }
+        }
+        result.push({ path: filePath, additions, deletions })
+      }
+    }
+    lastGitResult = result
     return lastGitResult
   } catch {
     return []
