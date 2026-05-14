@@ -282,34 +282,14 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
   )
 
-  const icon = () => props.entry.kind === "error" ? "✗"
-    : props.entry.kind === "tool" ? "✓"
-    : props.entry.kind === "tool-call" ? "▶"
-    : ""
-
-  const label = () => props.entry.kind === "assistant" ? "assistant"
-    : props.entry.kind === "user" ? "you"
-    : props.entry.kind === "reasoning" ? "think"
-    : props.entry.kind === "error" ? "error"
-    : props.entry.kind === "tool" ? "tool"
-    : props.entry.kind === "tool-call" ? "call"
-    : "system"
-
   const labelColor = () => props.entry.kind === "user" ? THEME.user
     : props.entry.kind === "reasoning" ? THEME.accent
     : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
     : props.entry.kind === "error" ? THEME.error
     : THEME.muted
 
-  const borderColor = () => props.entry.kind === "user" ? THEME.user
-    : props.entry.kind === "reasoning" ? THEME.accent
-    : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
-    : props.entry.kind === "error" ? THEME.error
-    : THEME.border
-
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
-  /** Compact one-line summary for collapsed tools */
   const collapsedPreview = () => {
     if (props.entry.kind === "tool-call" && props.entry.title) {
       return formatToolCallInput(props.entry.title, props.entry.text)
@@ -317,20 +297,12 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     if (props.entry.kind === "tool") {
       return formatToolResultPreview(props.entry.text)
     }
-    if (props.entry.kind === "reasoning") {
-      return props.entry.text.split("\n")[0] ?? ""
-    }
     return ""
   }
 
   if (props.entry.kind === "assistant") {
     return (
-      <box
-        marginTop={props.isFirst ? 0 : 1}
-        paddingLeft={1}
-        border={["left"]}
-        borderColor={THEME.accentDim}
-      >
+      <box marginTop={props.isFirst ? 0 : 1}>
         <markdown
           content={props.entry.text}
           syntaxStyle={MARKDOWN_SYNTAX}
@@ -350,48 +322,59 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     )
   }
 
-  const tag = icon()
-    ? `${icon()} ${label()}`
-    : label()
-
-  return (
-    <box
-      marginTop={props.isFirst ? 0 : 1}
-      paddingLeft={1}
-      paddingRight={1}
-      paddingTop={1}
-      paddingBottom={1}
-      border={["left"]}
-      borderColor={borderColor()}
-    >
-      <box flexDirection="column" gap={1}>
-        {/* Header / toggle line */}
+  if (props.entry.kind === "reasoning") {
+    return (
+      <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
+        {/* Thinking header — always shown, click to toggle */}
         <box
           flexDirection="row"
           gap={1}
-          onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+          onMouseDown={() => setCollapsed(c => !c)}
         >
-          <Show when={collapsible()}>
-            <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
-          </Show>
-          <text style={{ fg: labelColor() }}>
-            {tag}{props.entry.title ? ` ${props.entry.title}` : ""}
-          </text>
-          {/* Show streaming spinner for in-flight tool calls */}
-          <Show when={props.entry.streaming && (props.entry.kind === "tool-call" || props.entry.kind === "tool")}>
-            <text style={{ fg: THEME.muted }}>{" …"}</text>
+          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
+          <text style={{ fg: labelColor() }}>Thinking</text>
+          <Show when={props.entry.streaming}>
+            <text style={{ fg: THEME.muted }}> …</text>
           </Show>
         </box>
-
-        {/* Collapsed: show compact one-line preview */}
-        <Show when={collapsed() && collapsedPreview()}>
-          <text style={{ fg: THEME.muted }}>{collapsedPreview()}</text>
-        </Show>
-
-        {/* Expanded: show full content */}
+        {/* Body — hidden when collapsed */}
         <Show when={!collapsed()}>
-          <Show when={props.entry.kind === "tool-call" && props.entry.title === "bash" && !props.entry.streaming}>
-            {/* For static (completed) bash calls, show a compact representation */}
+          <text style={{ fg: THEME.muted }}>{props.entry.text}</text>
+        </Show>
+      </box>
+    )
+  }
+
+  /* tool-call and tool entries */
+  const isBashCall = props.entry.kind === "tool-call" && props.entry.title === "bash"
+  const toolIcon = props.entry.kind === "tool" ? "✓" : props.entry.kind === "error" ? "✗" : "■"
+  const toolLabel = props.entry.title ?? (props.entry.kind === "tool" ? "result" : "tool")
+
+  return (
+    <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
+      {/* Header row */}
+      <box
+        flexDirection="row"
+        gap={1}
+        onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+      >
+        <Show when={collapsible()}>
+          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
+        </Show>
+        <text style={{ fg: labelColor() }}>{toolIcon}</text>
+        <text style={{ fg: labelColor() }}>{toolLabel}</text>
+        <Show when={props.entry.streaming}>
+          <text style={{ fg: THEME.muted }}> …</text>
+        </Show>
+        <Show when={collapsed() && collapsedPreview()}>
+          <text style={{ fg: THEME.muted }}>· {collapsedPreview()}</text>
+        </Show>
+      </box>
+
+      {/* Expanded body */}
+      <Show when={!collapsed()}>
+        <box paddingLeft={2}>
+          <Show when={isBashCall && !props.entry.streaming}>
             <text style={{ fg: textColor() }}>
               {(() => {
                 const parsed = tryParseJSON(props.entry.text)
@@ -401,11 +384,11 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
               })()}
             </text>
           </Show>
-          <Show when={props.entry.kind !== "tool-call" || props.entry.title !== "bash" || !!props.entry.streaming}>
+          <Show when={!isBashCall || !!props.entry.streaming}>
             <text style={{ fg: textColor() }}>{props.entry.text}</text>
           </Show>
-        </Show>
-      </box>
+        </box>
+      </Show>
     </box>
   )
 }
