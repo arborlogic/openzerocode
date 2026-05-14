@@ -103,7 +103,7 @@ if (!fs.existsSync(entry)) {
   process.exit(1)
 }
 
-const preload = path.resolve(rootDir, "node_modules", "@opentui", "solid", "preload.ts")
+const preload = path.resolve(rootDir, "node_modules", "@opentui", "solid", "scripts", "preload.ts")
 const args = ["run"]
 if (fs.existsSync(preload)) {
   args.push("--preload", preload)

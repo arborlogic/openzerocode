@@ -1,0 +1,12 @@
+FROM ubuntu:22.04
+
+# 最小環境
+RUN apt-get update && apt-get install -y curl git xz-utils
+
+# 裝 nvm + node (跟使用者的 Oracle ARM 環境一致)
+ENV NVM_DIR=/root/.nvm
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
+RUN bash -c "source $NVM_DIR/nvm.sh && nvm install v25.8.1 && nvm alias default v25.8.1"
+ENV PATH="/root/.nvm/versions/node/v25.8.1/bin:${PATH}"
+
+CMD ["bash"]
