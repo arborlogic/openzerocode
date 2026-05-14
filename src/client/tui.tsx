@@ -467,7 +467,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions" | "display">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
@@ -486,6 +486,12 @@ function App() {
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
+  const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
+    dimensions().height > dimensions().width ? "vertical" : "horizontal"
+  )
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
+    dimensions().height > dimensions().width
+  )
   const pastedContent = new Map<string, string>()
   let pasteCounter = 0
   const pasteStyleId = MARKDOWN_SYNTAX.getStyleId("paste")!
@@ -496,6 +502,20 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     if (!running()) return
     const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
     return () => clearInterval(id)
+  })
+  // Auto-detect vertical layout when terminal is portrait-oriented
+  let autoLayoutOverride = false
+  createEffect(() => {
+    const { width, height } = dimensions()
+    if (autoLayoutOverride) return
+    const shouldBeVertical = height > width
+    if (shouldBeVertical && layoutMode() !== "vertical") {
+      setLayoutMode("vertical")
+      setSidebarCollapsed(true)
+    } else if (!shouldBeVertical && layoutMode() !== "horizontal") {
+      setLayoutMode("horizontal")
+      setSidebarCollapsed(false)
+    }
   })
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
@@ -710,24 +730,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => { setShowPalette(false) },
       },
       {
+        label: "Auto-approve",
+        hint: autoApprove() ? "ON" : "OFF",
+        onSelect: () => { setAutoApprove(c => !c); setShowPalette(false) },
+      },
+      {
         label: "DISPLAY",
         kind: "section",
         onSelect: () => {},
       },
       {
-        label: "Completed tools",
-        hint: showCompletedTools() ? "shown" : "hidden",
-        onSelect: () => { setShowCompletedTools(c => !c); setShowPalette(false) },
-      },
-      {
-        label: "Thinking blocks",
-        hint: showThinkingBlocks() ? "shown" : "hidden",
-        onSelect: () => { setShowThinkingBlocks(c => !c); setShowPalette(false) },
-      },
-      {
-        label: "Auto-approve",
-        hint: autoApprove() ? "ON" : "OFF",
-        onSelect: () => { setAutoApprove(c => !c); setShowPalette(false) },
+        label: "Display settings",
+        hint: "tools, thinking, layout …",
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteMode("display")
+          setPaletteIndex(0)
+        },
       },
       {
         label: "Reload config",
@@ -750,16 +769,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setSelectionRevision(v => v + 1)
           setStatus("config reloaded")
           setShowPalette(false)
-        },
-      },
-      {
-        label: "Restart app",
-        hint: "exit (npm run dev for auto-reload)",
-        onSelect: () => {
-          doSaveCurrent()
-          setShowPalette(false)
-          // Exit so external watcher (bun --watch) can restart
-          setTimeout(() => process.exit(0), 100)
         },
       },
       {
@@ -1056,6 +1065,45 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return items
   })
 
+  const displayPaletteItems = createMemo<PaletteItem[]>(() => {
+    const items: PaletteItem[] = [
+      {
+        label: "DISPLAY SETTINGS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Completed tools",
+        hint: showCompletedTools() ? "shown" : "hidden",
+        onSelect: () => { setShowCompletedTools(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Thinking blocks",
+        hint: showThinkingBlocks() ? "shown" : "hidden",
+        onSelect: () => { setShowThinkingBlocks(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Layout mode",
+        hint: layoutMode() === "horizontal" ? "horizontal" : "vertical",
+        onSelect: () => {
+          autoLayoutOverride = true
+          setLayoutMode(m => m === "horizontal" ? "vertical" : "horizontal")
+          if (layoutMode() === "vertical") setSidebarCollapsed(true)
+          setShowPalette(false)
+        },
+      },
+      { label: "", onSelect: () => {} },
+      {
+        label: "← Back",
+        onSelect: () => {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        },
+      },
+    ]
+    return items
+  })
+
   
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
@@ -1070,6 +1118,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               ? providerKeyPaletteItems()
           : paletteMode() === "timeline" || paletteMode() === "timelineActions"
             ? timelinePaletteItems()
+          : paletteMode() === "display"
+            ? displayPaletteItems()
           : actionPaletteItems(),
   )
 
@@ -1650,6 +1700,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       event.preventDefault()
       return
     }
+    if (event.ctrl && event.name === "l") {
+      autoLayoutOverride = true
+      setLayoutMode(m => m === "horizontal" ? "vertical" : "horizontal")
+      if (layoutMode() === "vertical") setSidebarCollapsed(true)
+      event.preventDefault()
+      return
+    }
     if (showPalette()) {
       // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
       if (event.name === "backspace") {
@@ -1744,6 +1801,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteInput("")
           setPaletteMode(backMode)
           setPaletteIndex(firstSelectablePaletteIndex(backMode === "providers" ? providerPaletteItems() : actionPaletteItems()))
+        } else if (paletteMode() === "display") {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "timelineActions") {
           setPaletteMode("timeline")
           setPaletteIndex(0)
@@ -1871,7 +1931,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         void copySelection()
       }}
     >
-<box flexDirection="row" flexGrow={1} minHeight={0}>
+<box
+        flexDirection={layoutMode() === "horizontal" ? "row" : "column"}
+        flexGrow={1}
+        minHeight={0}
+        position={layoutMode() === "vertical" ? "relative" : undefined}
+      >
       <box flexDirection="column" flexGrow={1} minHeight={0}>
       <scrollbox
         ref={(node) => {
@@ -1970,6 +2035,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
               </Show>
+              {/* Sidebar toggle in vertical mode */}
+              <Show when={layoutMode() === "vertical"}>
+                <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+                <text
+                  style={{ fg: sidebarCollapsed() ? THEME.accent : THEME.muted }}
+                  onMouseDown={() => setSidebarCollapsed(c => !c)}
+                >
+                  {sidebarCollapsed() ? "[+sidebar]" : "[-sidebar]"}
+                </text>
+              </Show>
+              {/* Layout mode indicator */}
+              <Show when={layoutMode() === "vertical"}>
+                <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+                <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
+              </Show>
               <Show when={running()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
               }>
@@ -1987,15 +2067,42 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       </box>
       </box>
 
-      <Sidebar
-        messages={messages}
-        theme={THEME}
-        width={SIDEBAR_WIDTH}
-        provider={providerLabel()}
-        model={modelLabel()}
-        sessionTitle={sessionMeta()?.title}
-        cwd={process.cwd()}
-      />
+      {/* Horizontal mode: sidebar as flex sibling */}
+      <Show when={layoutMode() === "horizontal"}>
+        <Sidebar
+          messages={messages}
+          theme={THEME}
+          width={SIDEBAR_WIDTH}
+          provider={providerLabel()}
+          model={modelLabel()}
+          sessionTitle={sessionMeta()?.title}
+          cwd={process.cwd()}
+        />
+      </Show>
+
+      {/* Vertical mode: sidebar as absolute overlay (collapsible) */}
+      <Show when={layoutMode() === "vertical" && !sidebarCollapsed()}>
+        <box
+          position="absolute"
+          right={0}
+          top={0}
+          height="100%"
+          width={SIDEBAR_WIDTH + 1}
+          zIndex={50}
+          flexDirection="row"
+        >
+          <box width={1} backgroundColor={THEME.border} flexShrink={0} />
+          <Sidebar
+            messages={messages}
+            theme={THEME}
+            width={SIDEBAR_WIDTH}
+            provider={providerLabel()}
+            model={modelLabel()}
+            sessionTitle={sessionMeta()?.title}
+            cwd={process.cwd()}
+          />
+        </box>
+      </Show>
       </box>
 
       <SlashAutocomplete
@@ -2021,7 +2128,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         <box
           position="absolute"
           top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
-          left={Math.floor((dimensions().width - 2 - 52) / 2)}
+          left={layoutMode() === "horizontal"
+            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH) / 2)
+            : 2
+          }
           width={PALETTE_WIDTH}
           zIndex={100}
           backgroundColor={THEME.surface}
