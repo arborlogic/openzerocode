@@ -50,18 +50,37 @@ This repo is actively implemented. Current capabilities include:
 - **bun** ≥ 1.2 (for development)
 - **Node.js** ≥ 20 (for running pre-built binaries)
 
+### Install
+
+```bash
+npm install -g openzerocode
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/arborlogic/openzerocode.git
+cd openzerocode
+npm install
+npm link
+```
+
 ### Run
 
 ```bash
-# Install dependencies
-npm install
+openzerocode
+```
 
-# Start the TUI
-npm run start
+### Development mode
 
-# Development mode with hot-reload
+```bash
 npm run dev
 ```
+
+### Updating
+
+- **Published version**: `npm install -g openzerocode@latest`
+- **Local development build**: `git pull && npm install && npm run build && npm install -g .`
 
 ### Command-line flags
 

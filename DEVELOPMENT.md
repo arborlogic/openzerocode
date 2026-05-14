@@ -17,7 +17,16 @@ The `bin/openzerocode` script automatically detects which mode to use:
 
 ---
 
-## Prerequisites
+## Updating
+
+Two workflows depending on how you installed:
+
+| Install method | Update command |
+|----------------|----------------|
+| npm global (`npm install -g openzerocode`) | `npm install -g openzerocode@latest` |
+| Local source (git clone + `npm link`) | `git pull && npm install && npm run build && npm install -g .` |
+
+---
 
 - **bun** ≥ 1.2 — for running source and building the binary
   ```bash
