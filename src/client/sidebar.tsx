@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process"
 import type { Message } from "../provider/types"
 import { getModelConfig, estimateTokens, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage } from "./session-compact"
+import { isSessionActive, getSessionActiveInfo } from "./sessions"
 
 type GitFile = {
   path: string
@@ -99,12 +100,20 @@ export function Sidebar(props: {
   model: string
   provider: string
   sessionTitle?: string
+  sessionId?: string
   cwd?: string
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(readGitBranch())
   const [commits, setCommits] = createSignal<GitCommit[]>(readRecentCommits(3))
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
+
+  // Poll session lock status every 3s while sidebar is visible
+  const [lockTick, setLockTick] = createSignal(0)
+  createEffect(() => {
+    const id = setInterval(() => setLockTick(v => v + 1), 3000)
+    return () => clearInterval(id)
+  })
 
   createEffect(() => {
     props.messages()
@@ -169,7 +178,22 @@ export function Sidebar(props: {
       <box flexDirection="column" gap={1}>
         <box flexDirection="column">
           <Show when={props.sessionTitle}>
-            <text style={{ fg: props.theme.accent }}>Session</text>
+            <box flexDirection="row" gap={1}>
+              <text style={{ fg: props.theme.accent }}>Session</text>
+              <Show when={props.sessionId}>
+                {(() => {
+                  const active = isSessionActive(props.sessionId!)
+                  const info = active ? getSessionActiveInfo(props.sessionId!) : null
+                  const isOwn = info?.pid === process.pid
+                  // Read lockTick to create reactive dependency for auto-refresh
+                  void lockTick()
+                  if (active) {
+                    return <text style={{ fg: props.theme.muted }}>{isOwn ? "~ active" : "⚡ in use"}</text>
+                  }
+                  return <></>
+                })()}
+              </Show>
+            </box>
             <text style={{ fg: props.theme.muted }}>{props.sessionTitle}</text>
             <Show when={compacted()}>
               <text style={{ fg: props.theme.accent }}>Compacted</text>

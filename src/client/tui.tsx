@@ -17,7 +17,7 @@ import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, type CompactionInfo } from "./sessions"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
@@ -508,6 +508,7 @@ function App() {
   const [paletteNewKeyName, setPaletteNewKeyName] = createSignal("")
   const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
+  const [lockPollRevision, setLockPollRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
@@ -872,15 +873,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const sessionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
+    lockPollRevision()
     const sid = sessionId()
     const sessions = listSessions()
     const items: PaletteItem[] = []
 
     for (const s of sessions) {
       const isCurrent = s.id === sid
+      const active = isSessionActive(s.id)
+      const ownActive = active ? getSessionActiveInfo(s.id)?.pid === process.pid : false
+      const prefix = isCurrent ? ">" : active ? (ownActive ? "~" : "⚡") : " "
+      const activeHint = active
+        ? ownActive ? "active" : "in use"
+        : String(s.messageCount)
       items.push({
-        label: (isCurrent ? ">" : " ") + " " + s.title.slice(0, 30),
-        hint: String(s.messageCount),
+        label: `${prefix} ${s.title.slice(0, 28)}`,
+        hint: activeHint,
         sessionId: s.id,
         onSelect: () => {
           if (!isCurrent) doSwitchSession(s.id)
@@ -1166,6 +1174,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     if (paletteMode() !== "models") return
     paletteInput()
     setPaletteIndex(firstSelectablePaletteIndex(paletteItems()))
+  })
+
+  // Poll lock status while session list palette is open
+  createEffect(() => {
+    if (!showPalette()) return
+    if (paletteMode() !== "sessions") return
+    const id = setInterval(() => setLockPollRevision(v => v + 1), 2000)
+    return () => clearInterval(id)
   })
 
   const turns = createMemo(() => {
@@ -1593,6 +1609,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setRunning(true)
         setStatus("thinking...")
 
+    // Mark session as active (visible to other processes)
+    const activeSessionId = sessionId()
+    markSessionActive(activeSessionId)
+
     // Clear notices only when streaming actually starts (first chunk received),
     // so error notices from a failed stream persist until the next successful response.
     let noticesCleared = false
@@ -1669,6 +1689,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
     } finally {
+      unmarkSessionActive(activeSessionId)
       runAbort = undefined
       setRunning(false)
     }
@@ -2148,6 +2169,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           model={modelLabel()}
           sessionTitle={sessionMeta()?.title}
           cwd={process.cwd()}
+          sessionId={sessionId()}
         />
       </Show>
 
@@ -2171,6 +2193,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             model={modelLabel()}
             sessionTitle={sessionMeta()?.title}
             cwd={process.cwd()}
+            sessionId={sessionId()}
           />
         </box>
       </Show>
