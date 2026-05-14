@@ -78,3 +78,34 @@ export function setActiveConfiguredProviderKey(providerId: string, keyName: stri
   writeProviderConfig(config)
   return { ok: true, message: `Active key for ${providerId} -> ${keyName}` }
 }
+
+export function addConfiguredProviderKey(providerId: string, keyName: string, keyValue: string): { ok: boolean; message: string } {
+  if (!keyName.trim()) return { ok: false, message: "Key name cannot be empty" }
+  if (!keyValue.trim()) return { ok: false, message: "Key value cannot be empty" }
+  const config = readProviderConfig()
+  config.providers ??= {}
+  config.providers[providerId] ??= {}
+  config.providers[providerId].keys ??= {}
+  config.providers[providerId].keys![keyName] = keyValue
+  // If this is the first key, set it as active
+  const keyCount = Object.keys(config.providers[providerId].keys!).length
+  if (keyCount === 1) config.providers[providerId].activeKey = keyName
+  writeProviderConfig(config)
+  return { ok: true, message: `Added key "${keyName}" for ${providerId}` }
+}
+
+export function removeConfiguredProviderKey(providerId: string, keyName: string): { ok: boolean; message: string } {
+  const config = readProviderConfig()
+  const provider = config.providers?.[providerId]
+  if (!provider?.keys?.[keyName]) {
+    return { ok: false, message: `Key "${keyName}" not found for ${providerId}` }
+  }
+  delete provider.keys[keyName]
+  // If active key was removed, reset activeKey
+  if (provider.activeKey === keyName) {
+    const remaining = Object.keys(provider.keys)
+    provider.activeKey = remaining.length > 0 ? remaining.sort()[0] : undefined
+  }
+  writeProviderConfig(config)
+  return { ok: true, message: `Removed key "${keyName}" for ${providerId}` }
+}

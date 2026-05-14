@@ -9,7 +9,7 @@ if (!API_KEY) throw new Error("OPENCODE_API env var required")
 
 const testLayer = layer({ apiKey: API_KEY })
 
-describe("openapi provider", () => {
+describe("opencode-zen provider", () => {
   it("models returns a list", async () => {
     const models = await Effect.runPromise(
       Effect.gen(function* () {

@@ -13,7 +13,7 @@ export type ProviderDef = {
 }
 
 export const PROVIDERS: Record<string, ProviderDef> = {
-  openapi: bigPickle,
+  "opencode-zen": bigPickle,
   openrouter,
 }
 
