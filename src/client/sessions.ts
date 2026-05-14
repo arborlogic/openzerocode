@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 import type { Message } from "../provider/types"
@@ -51,7 +51,10 @@ function readIndex(): SessionIndex {
 
 function writeIndex(index: SessionIndex) {
   ensureDir()
-  writeFileSync(getIndexFile(), JSON.stringify(index, null, 2), "utf-8")
+  const target = getIndexFile()
+  const tmp = target + ".tmp"
+  writeFileSync(tmp, JSON.stringify(index, null, 2), "utf-8")
+  renameSync(tmp, target)  // atomic on POSIX; prevents half-written index
 }
 
 function sessionPath(id: string): string {

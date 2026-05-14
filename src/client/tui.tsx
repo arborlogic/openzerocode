@@ -487,6 +487,7 @@ function App() {
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
+  let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   type PendingApproval = {
     request: PermissionRequest
@@ -1324,7 +1325,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     await copyToClipboard(text)
     renderer.clearSelection?.()
     setCopyNotice(true)
-    setTimeout(() => setCopyNotice(false), 2000)
+    clearTimeout(copyNoticeTimer)
+    copyNoticeTimer = setTimeout(() => setCopyNotice(false), 2000)
   }
 
   const doSaveCurrent = () => {
@@ -1341,7 +1343,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const doSwitchSession = (id: string) => {
     doSaveCurrent()
     const loaded = loadSessionState(id)
-    if (loaded?.provider && loaded.model) applyProviderModel(loaded.provider, loaded.model)
+    if (loaded?.provider && loaded.model) {
+      applyProviderModel(loaded.provider, loaded.model)
+    } else {
+      // No provider/model in session — UI labels still need refreshing
+      setSelectionRevision((v) => v + 1)
+    }
     setMessages(loaded?.messages ?? [])
     setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
@@ -1361,8 +1368,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const msgs = timelineMsgs();
     if (msgIdx < 0 || msgIdx >= msgs.length) return;
     const targetMsg = msgs[msgIdx];
-    // Create new session with messages up to and including the target message
-    const msgsUpToTarget = messages().slice(0, messages().indexOf(targetMsg) + 1);
+    const targetIdx = messages().indexOf(targetMsg)
+    if (targetIdx < 0) return  // reference not found in current message list
+    const msgsUpToTarget = messages().slice(0, targetIdx + 1);
     const meta = createSession(currentModel, currentProvider, msgsUpToTarget);
     setSessionId(meta.id);
     setSessionMeta(meta);
@@ -1689,6 +1697,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
+    } catch (err) {
+      // AbortError = user cancelled — no noise needed
+      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
+      if (!isAbort) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
+        setStatus("error")
+      }
     } finally {
       unmarkSessionActive(activeSessionId)
       runAbort = undefined
