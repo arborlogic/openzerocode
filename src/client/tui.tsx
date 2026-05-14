@@ -26,6 +26,7 @@ import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
+import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 
 // Version — injected at build time via scripts/build.ts, fallback to dev import
 const VERSION: string =
@@ -110,6 +111,7 @@ type DisplayTurn = {
   user?: DisplayBlock
   entries: DisplayBlock[]
   footer?: string
+  userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
 function rebuildLayer() {
@@ -279,7 +281,7 @@ const SIDEBAR_WIDTH = 34
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(
-    collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
+    collapsible() && !(props.entry.streaming ?? false)
   )
 
   const labelColor = () => props.entry.kind === "user" ? THEME.user
@@ -303,13 +305,18 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   if (props.entry.kind === "assistant") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
-        <markdown
-          content={props.entry.text}
-          syntaxStyle={MARKDOWN_SYNTAX}
-          fg={THEME.text}
-          bg={THEME.background}
-          streaming={props.entry.streaming ?? false}
-        />
+        <Show
+          when={!props.entry.streaming}
+          fallback={<text style={{ fg: THEME.text }}>{props.entry.text}</text>}
+        >
+          <markdown
+            content={props.entry.text}
+            syntaxStyle={MARKDOWN_SYNTAX}
+            fg={THEME.text}
+            bg={THEME.background}
+            streaming={false}
+          />
+        </Show>
       </box>
     )
   }
@@ -335,6 +342,9 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
           <text style={{ fg: labelColor() }}>Thinking</text>
           <Show when={props.entry.streaming}>
             <text style={{ fg: THEME.muted }}> …</text>
+          </Show>
+          <Show when={collapsed() && !props.entry.streaming}>
+            <text style={{ fg: THEME.muted }}>· {props.entry.text.split("\n")[0]}</text>
           </Show>
         </box>
         {/* Body — hidden when collapsed */}
@@ -384,7 +394,16 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
               })()}
             </text>
           </Show>
-          <Show when={!isBashCall || !!props.entry.streaming}>
+          <Show when={props.entry.kind === "tool" && !props.entry.streaming}>
+            <text style={{ fg: THEME.muted }}>
+              {(() => {
+                const lines = props.entry.text.split("\n")
+                const preview = lines.slice(0, 20).join("\n")
+                return lines.length > 20 ? `${preview}\n… (${lines.length - 20} more lines)` : preview
+              })()}
+            </text>
+          </Show>
+          <Show when={(props.entry.kind !== "tool" && !isBashCall) || !!props.entry.streaming}>
             <text style={{ fg: textColor() }}>{props.entry.text}</text>
           </Show>
         </box>
@@ -393,7 +412,14 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   )
 }
 
-function TurnEntry(props: { turn: DisplayTurn; isFirst: boolean }) {
+function TurnEntry(props: {
+  turn: DisplayTurn
+  isFirst: boolean
+  onUserClick?: (msgIndex: number, text: string) => void
+  isRunning?: boolean
+}) {
+  const canClick = () => !props.isRunning && props.turn.userMsgIndex !== undefined && !!props.onUserClick
+
   return (
     <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1}>
       <Show when={props.turn.user}>
@@ -404,8 +430,18 @@ function TurnEntry(props: { turn: DisplayTurn; isFirst: boolean }) {
           paddingBottom={1}
           border={["left"]}
           borderColor={THEME.user}
+          onMouseDown={() => {
+            if (canClick()) {
+              props.onUserClick!(props.turn.userMsgIndex!, props.turn.user?.text ?? "")
+            }
+          }}
         >
-          <text style={{ fg: THEME.text }}>{props.turn.user?.text ?? ""}</text>
+          <box flexDirection="row" gap={1}>
+            <text style={{ fg: THEME.text, flexGrow: 1 }}>{props.turn.user?.text ?? ""}</text>
+            <Show when={canClick()}>
+              <text style={{ fg: THEME.muted }}>⋯</text>
+            </Show>
+          </box>
         </box>
       </Show>
 
@@ -481,7 +517,8 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions" | "display" | "addProviderKeyName" | "addProviderKeyValue">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions">("actions")
+  const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
@@ -498,12 +535,13 @@ function App() {
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
-  const [showCompletedTools, setShowCompletedTools] = createSignal(false)
-  const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
+  const _uiPrefs = loadUIPrefs()
+  const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
+  const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
-    dimensions().height > dimensions().width ? "vertical" : "horizontal"
+    _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
   )
   const [showSplash, setShowSplash] = createSignal(true)
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
@@ -522,6 +560,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
     return () => clearInterval(id)
   })
+  createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
+  createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
+  createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -674,42 +715,14 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
       items.push({ label: "No user messages yet", kind: "section", onSelect: () => {} });
     }
 
-    // If paletteMode is "timelineActions", show actions for the selected message
-    if (paletteMode() === "timelineActions") {
-      const targetMsg = msgs[timelineTargetMsgIdx()];
-      if (targetMsg) {
-        items.push({
-          label: "Edit this message",
-          hint: "set as draft input",
-          onSelect: () => {
-            setComposerText(targetMsg.content ?? "");
-            setShowPalette(false);
-            setPaletteMode("actions");
-          },
-        });
-        items.push({
-          label: "Fork from here",
-          hint: "create new session",
-          onSelect: () => {
-            doForkFromMessage(timelineTargetMsgIdx());
-            setShowPalette(false);
-            setPaletteMode("actions");
-          },
-        });
-        items.push({ label: "", onSelect: () => {} });
-        items.push({
-          label: "← Back to timeline",
-          onSelect: () => {
-            setPaletteMode("timeline");
-            setPaletteIndex(0);
-          },
-        });
-      }
-      return items;
-    }
+    // Newest first, cap at 50 (filter narrows further)
+    const TIMELINE_MAX = 10
+    const visible = [...msgs].reverse().slice(0, TIMELINE_MAX)
+    const total = msgs.length
 
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
+    for (let vi = 0; vi < visible.length; vi++) {
+      const msg = visible[vi];
+      const i = total - 1 - vi  // original index (for display numbering)
       const text = (msg.content ?? "").replace(/\n/g, " ").slice(0, 50);
       const isActive = i === timelineTargetMsgIdx();
       items.push({
@@ -717,11 +730,19 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
         hint: `msg #${i + 1}`,
         onSelect: () => {
           setTimelineTargetMsgIdx(i);
-          // Show actions for this message
-          setPaletteMode("timelineActions");
+          // Open unified message actions (Revert / Copy / Fork)
+          const actualIdx = messages().indexOf(msg)
+          if (actualIdx >= 0) {
+            setUserMsgActionTarget({ index: actualIdx, text: msg.content ?? "" })
+          }
+          setPaletteMode("userMessageActions");
           setPaletteIndex(0);
         },
       });
+    }
+
+    if (total > TIMELINE_MAX) {
+      items.push({ label: `… ${total - TIMELINE_MAX} older messages (use filter to search)`, kind: "section", onSelect: () => {} })
     }
 
     items.push({ label: "", onSelect: () => {} });
@@ -819,15 +840,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       {
         label: "Timeline",
         hint: formatTimelineHint(),
-        onSelect: () => {
-          setPalettePendingDelete(null);
-          setTimelineTargetMsgIdx(0);
-          setPaletteMode("timeline");
-          setPaletteIndex(0);
-        },
-      },
-      {
-        label: "Fork from timeline",
         onSelect: () => {
           setPalettePendingDelete(null);
           setTimelineTargetMsgIdx(0);
@@ -1104,6 +1116,39 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   
+  const userMessageActionItems = createMemo<PaletteItem[]>(() => {
+    const target = userMsgActionTarget()
+    return [
+      {
+        label: "Revert",
+        hint: "undo messages and file changes",
+        onSelect: () => {
+          if (target) doEditUserMessage(target.index, target.text)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      },
+      {
+        label: "Copy",
+        hint: "message text to clipboard",
+        onSelect: async () => {
+          if (target) await copyToClipboard(target.text)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      },
+      {
+        label: "Fork",
+        hint: "create new session from here",
+        onSelect: () => {
+          if (target) doForkFromMessageIndex(target.index)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      },
+    ]
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
@@ -1113,10 +1158,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           ? modelPaletteItems()
           : paletteMode() === "providerKeys"
             ? providerKeyPaletteItems()
-          : paletteMode() === "timeline" || paletteMode() === "timelineActions"
+          : paletteMode() === "timeline"
             ? timelinePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
+          : paletteMode() === "userMessageActions"
+            ? userMessageActionItems()
           : actionPaletteItems(),
   )
 
@@ -1204,11 +1251,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return created
     }
 
-    for (const msg of messages()) {
+    const allMsgs = messages()
+    for (let msgIdx = 0; msgIdx < allMsgs.length; msgIdx++) {
+      const msg = allMsgs[msgIdx]
       if (msg.role === "user" && msg.content) {
         result.push({
           user: { kind: "user", text: msg.content },
           entries: [],
+          userMsgIndex: msgIdx,
         })
         continue
       }
@@ -1347,24 +1397,39 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   
+  const doEditUserMessage = (msgIndex: number, text: string) => {
+    // Truncate messages up to (not including) the target user message,
+    // then put its content back in the composer for re-editing
+    setMessages(prev => prev.slice(0, msgIndex))
+    setComposerText(text)
+    setStatus("editing message — press Enter to resubmit")
+  }
+
+  // Fork from a specific index in messages() array
+  const doForkFromMessageIndex = (messagesIdx: number) => {
+    const allMsgs = messages()
+    if (messagesIdx < 0 || messagesIdx >= allMsgs.length) return
+    doSaveCurrent()
+    const msgsUpToTarget = allMsgs.slice(0, messagesIdx + 1)
+    const targetMsg = allMsgs[messagesIdx]
+    const meta = createSession(currentModel, currentProvider, msgsUpToTarget)
+    setSessionId(meta.id)
+    setSessionMeta(meta)
+    setSessionRevision((v) => v + 1)
+    setMessages(msgsUpToTarget)
+    setNotices([])
+    setPermissionRules(permissionRules())
+    setComposerText(targetMsg.content ?? "")
+    setDraft(targetMsg.content ?? "")
+    setStatus("forked session from message")
+  }
+
+  // Fork from a timeline message index (index into timelineMsgs())
   const doForkFromMessage = (msgIdx: number) => {
-    doSaveCurrent();
-    const msgs = timelineMsgs();
-    if (msgIdx < 0 || msgIdx >= msgs.length) return;
-    const targetMsg = msgs[msgIdx];
-    const targetIdx = messages().indexOf(targetMsg)
-    if (targetIdx < 0) return  // reference not found in current message list
-    const msgsUpToTarget = messages().slice(0, targetIdx + 1);
-    const meta = createSession(currentModel, currentProvider, msgsUpToTarget);
-    setSessionId(meta.id);
-    setSessionMeta(meta);
-    setSessionRevision((v) => v + 1);
-    setMessages(msgsUpToTarget);
-    setNotices([]);
-    setPermissionRules(permissionRules());
-    setComposerText(targetMsg.content ?? "");
-    setDraft(targetMsg.content ?? "");
-    setStatus("forked session from message " + (msgIdx + 1));
+    const msgs = timelineMsgs()
+    if (msgIdx < 0 || msgIdx >= msgs.length) return
+    const targetIdx = messages().indexOf(msgs[msgIdx])
+    doForkFromMessageIndex(targetIdx)
   };
 
   const doCreateNewSession = () => {
@@ -1934,15 +1999,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         } else if (paletteMode() === "display") {
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
-        } else if (paletteMode() === "timelineActions") {
-          setPaletteMode("timeline")
-          setPaletteIndex(0)
         } else if (paletteMode() === "timeline") {
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else if (paletteMode() === "userMessageActions") {
+          setUserMsgActionTarget(null)
+          setShowPalette(false)
         } else {
-            setShowPalette(false)
-          }
+          setShowPalette(false)
+        }
         event.preventDefault()
         return
       }
@@ -2097,7 +2162,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         scrollY={true}
       >
         <For each={turns()}>
-          {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
+          {(turn, index) => (
+            <TurnEntry
+              turn={turn}
+              isFirst={index() === 0}
+              onUserClick={(msgIndex, text) => {
+                setUserMsgActionTarget({ index: msgIndex, text })
+                setPaletteMode("userMessageActions")
+                setPaletteIndex(0)
+                setShowPalette(true)
+              }}
+              isRunning={running()}
+            />
+          )}
         </For>
         <Show when={running() && streamingEntries().length > 0}>
           <box marginTop={1} flexDirection="column">
@@ -2302,7 +2379,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                         ? `Key Value · ${paletteNewKeyName()}`
                       : paletteMode() === "timeline"
                         ? "Timeline"
-                        : paletteMode() === "timelineActions"
+                        : paletteMode() === "userMessageActions"
                           ? "Message Actions"
                       : "Command Palette"}
             </text>
