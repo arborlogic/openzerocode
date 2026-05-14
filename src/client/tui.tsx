@@ -325,7 +325,12 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
 
   if (props.entry.kind === "assistant") {
     return (
-      <box marginTop={props.isFirst ? 0 : 1}>
+      <box
+        marginTop={props.isFirst ? 0 : 1}
+        paddingLeft={1}
+        border={["left"]}
+        borderColor={THEME.accentDim}
+      >
         <markdown
           content={props.entry.text}
           syntaxStyle={MARKDOWN_SYNTAX}
@@ -422,15 +427,7 @@ function TurnEntry(props: { turn: DisplayTurn; isFirst: boolean }) {
       </Show>
 
       <Show when={props.turn.entries.length > 0}>
-        <box
-          flexDirection="column"
-          paddingLeft={2}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-          border={["left"]}
-          borderColor={THEME.accentDim}
-        >
+        <box flexDirection="column">
           <For each={props.turn.entries}>
             {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
           </For>
@@ -2103,7 +2100,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
         </For>
         <Show when={running() && streamingEntries().length > 0}>
-          <box marginTop={1} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accentDim}>
+          <box marginTop={1} flexDirection="column">
             <For each={streamingEntries()}>
               {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
             </For>
