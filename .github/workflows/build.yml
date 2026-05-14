@@ -1,0 +1,67 @@
+name: build
+
+on:
+  push:
+    tags: "v*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            binary: openzerocode
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            binary: openzerocode
+          - os: macos-15
+            target: darwin-arm64
+            binary: openzerocode
+          - os: macos-13
+            target: darwin-x64
+            binary: openzerocode
+          - os: windows-latest
+            target: win32-x64
+            binary: openzerocode.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build binary
+        run: bun run scripts/build.ts
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: openzerocode-${{ matrix.target }}
+          path: dist/openzerocode-${{ matrix.target }}
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/openzerocode-linux-x64/bin/openzerocode
+            artifacts/openzerocode-linux-arm64/bin/openzerocode
+            artifacts/openzerocode-darwin-arm64/bin/openzerocode
+            artifacts/openzerocode-darwin-x64/bin/openzerocode
+            artifacts/openzerocode-win32-x64/bin/openzerocode.exe
