@@ -631,7 +631,8 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     setProviderModelsLoading(providerId)
     setProviderModelsError((prev) => ({ ...prev, [providerId]: "" }))
     try {
-      const layer = Layer.merge(buildLayer(providerId, currentModel), toolLayer)
+      const defaultModel = defaultModelForProvider(providerId)
+      const layer = Layer.merge(buildLayer(providerId, defaultModel), toolLayer)
       const models = await Effect.runPromise(
         Effect.gen(function* () {
           const provider = yield* Provider
@@ -639,7 +640,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
         }).pipe(Effect.provide(layer)),
       )
       const unique = [...new Set(models)].sort((a, b) => a.localeCompare(b))
-      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [currentModel] }))
+      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [defaultModel] }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setProviderModelsError((prev) => ({ ...prev, [providerId]: message }))
