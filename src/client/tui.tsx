@@ -26,6 +26,31 @@ import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 
+// Version — injected at build time via scripts/build.ts, fallback to dev import
+const VERSION: string =
+  (typeof process !== "undefined" && (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
+  "0.0.0-dev"
+
+// Handle CLI flags before anything else
+const args = process.argv.slice(2)
+if (args.includes("--version") || args.includes("-v")) {
+  console.log(`openzerocode v${VERSION}`)
+  process.exit(0)
+}
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`openzerocode v${VERSION}`)
+  console.log()
+  console.log("Usage: openzerocode [options] [prompt...]")
+  console.log()
+  console.log("Options:")
+  console.log("  -v, --version            Show version number")
+  console.log("  -h, --help               Show this help message")
+  console.log()
+  console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
+  console.log("Otherwise, the terminal UI is launched.")
+  process.exit(0)
+}
+
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
