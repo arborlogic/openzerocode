@@ -21,12 +21,12 @@ import { createSession, deleteSession, getCurrentSessionId, loadSessionState, sa
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
-import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey } from "../provider/config"
+import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 
-let currentProvider = autoDetectProvider() ?? "openapi"
+let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
@@ -92,7 +92,7 @@ function rebuildLayer() {
 
 function defaultModelForCurrentProvider(providerId: string) {
   const configured = process.env.OPENZERO_MODEL ?? defaultModelForProvider(providerId)
-  return providerId === "openapi" ? normalizeBigPickleModel(configured) : configured
+  return providerId === "opencode-zen" ? normalizeBigPickleModel(configured) : configured
 }
 
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
@@ -173,6 +173,13 @@ function modelHint(model: string) {
 
 function isTransientPasteMarker(input: string) {
   return /^\[Pasted ~\d+ lines(?: #\d+)?\]/.test(input.trim())
+}
+
+function maskKey(value: string): string {
+  if (value.length <= 8) return value.slice(0, 1) + "***" + value.slice(-1)
+  const prefix = value.slice(0, 5)
+  const suffix = value.slice(-3)
+  return `${prefix}***${suffix}`
 }
 
 async function copyToClipboard(text: string) {
@@ -429,18 +436,18 @@ function App() {
     if (loaded) {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
-      if (loaded.model) currentModel = loaded.provider === "openapi" ? normalizeBigPickleModel(loaded.model) : loaded.model
+      if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
       if (loaded.mode === "plan") initialMode = "plan"
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
     }
     if (meta?.provider) currentProvider = meta.provider
-    if (meta?.model) currentModel = meta.provider === "openapi" ? normalizeBigPickleModel(meta.model) : meta.model
+    if (meta?.model) currentModel = meta.provider === "opencode-zen" ? normalizeBigPickleModel(meta.model) : meta.model
     try {
       rebuildLayer()
     } catch {
-      currentProvider = autoDetectProvider() ?? "openapi"
+      currentProvider = autoDetectProvider() ?? "opencode-zen"
       currentModel = defaultModelForCurrentProvider(currentProvider)
       rebuildLayer()
     }
@@ -467,12 +474,13 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions" | "display">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions" | "display" | "addProviderKeyName" | "addProviderKeyValue">("actions")
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
   const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
+  const [paletteNewKeyName, setPaletteNewKeyName] = createSignal("")
   const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
@@ -576,7 +584,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const applyProviderModel = (providerId: string, model: string, persist = false) => {
     try {
       const nextProvider = providerId
-      const nextModel = nextProvider === "openapi" ? normalizeBigPickleModel(model) : model
+      const nextModel = nextProvider === "opencode-zen" ? normalizeBigPickleModel(model) : model
       currentLayer = Layer.merge(buildLayer(nextProvider, nextModel), toolLayer)
       currentProvider = nextProvider
       currentModel = nextModel
@@ -834,15 +842,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: truncateText(modelLabel(), PALETTE_HINT_MAX),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
-      {
-        label: "Provider keys",
-        hint: truncateText(`${providerLabel()} • ${activeProviderKeyLabel()}`, PALETTE_HINT_MAX),
-        onSelect: () => {
-          setPalettePendingDelete(null)
-          setPaletteMode("providerKeyProviders")
-          setPaletteIndex(0)
-        },
-      },
     ]
   })
 
@@ -885,7 +884,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }).map<PaletteItem>((provider) => ({
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
       hint: truncateText(provider.id, PALETTE_HINT_MAX),
-      onSelect: () => openModelsPalette(provider.id, "providers"),
+      onSelect: () => {
+        const keys = listConfiguredProviderKeys(provider.id)
+        if (keys.length === 0) {
+          openModelsPalette(provider.id, "providers")
+        } else {
+          openProviderKeyPalette(provider.id)
+        }
+      },
     }))
 
     items.push({ label: "", onSelect: () => {} })
@@ -974,36 +980,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return items
   })
 
-  const providerKeyProviderPaletteItems = createMemo<PaletteItem[]>(() => {
-    selectionRevision()
-    providerConfigRevision()
-    const seen = new Set<string>()
-    const items = Object.values(PROVIDERS).filter((provider) => {
-      if (seen.has(provider.id)) return false
-      seen.add(provider.id)
-      return true
-    }).map<PaletteItem>((provider) => {
-      const active = getActiveConfiguredProviderKeyName(provider.id) ?? "env"
-      const resolved = getActiveConfiguredProviderKeyName(provider.id) ?? "none"
-      const isCurrent = provider.id === providerLabel()
-      return {
-        label: `${isCurrent ? ">" : " "} ${provider.name}`,
-        hint: truncateText(`${provider.id} • ${resolved}`, PALETTE_HINT_MAX),
-        onSelect: () => openProviderKeyPalette(provider.id),
-      }
-    })
-
-    items.push({ label: "", onSelect: () => {} })
-    items.push({
-      label: "← Back",
-      onSelect: () => {
-        setPaletteMode("actions")
-        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
-      },
-    })
-    return items
-  })
-
   const providerKeyPaletteItems = createMemo<PaletteItem[]>(() => {
     providerConfigRevision()
     const providerId = paletteProviderKeyTarget()
@@ -1012,23 +988,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items: PaletteItem[] = []
 
     items.push({
-      label: `Config: ${getProviderConfigPath()}`,
+      label: `Keys for ${providerId}`,
       kind: "section",
       onSelect: () => {},
     })
 
-    if (keys.length === 0) {
-      items.push({
-        label: "No configured keys",
-        kind: "section",
-        onSelect: () => {},
-      })
-    }
-
     for (const key of keys) {
+      const cfg = getStoredProviderConfig(providerId)
+      const rawValue = cfg?.keys?.[key] ?? ""
+      const masked = maskKey(rawValue)
       items.push({
         label: `${key === active ? ">" : " "} ${key}`,
-        hint: truncateText(providerId, PALETTE_HINT_MAX),
+        hint: masked,
+        sessionId: key,
         onSelect: () => {
           const result = setActiveConfiguredProviderKey(providerId, key)
           if (!result.ok) {
@@ -1047,19 +1019,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             return next
           })
           if (providerId === currentProvider) rebuildLayer()
-          setStatus(result.message)
-          setShowPalette(false)
-          setPaletteMode("actions")
+          openModelsPalette(providerId, "providers")
         },
       })
     }
 
     items.push({ label: "", onSelect: () => {} })
     items.push({
+      label: "Add key...",
+      onSelect: () => {
+        setPaletteNewKeyName("")
+        setPaletteInput("")
+        setPaletteMode("addProviderKeyName")
+        setPaletteIndex(0)
+      },
+    })
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
       label: "← Back",
       onSelect: () => {
-        setPaletteMode("providerKeyProviders")
-        setPaletteIndex(firstSelectablePaletteIndex(providerKeyProviderPaletteItems()))
+        setPaletteMode("providers")
+        setPaletteIndex(firstSelectablePaletteIndex(providerPaletteItems()))
       },
     })
     return items
@@ -1112,10 +1092,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ? providerPaletteItems()
         : paletteMode() === "models"
           ? modelPaletteItems()
-          : paletteMode() === "providerKeyProviders"
-            ? providerKeyProviderPaletteItems()
-            : paletteMode() === "providerKeys"
-              ? providerKeyPaletteItems()
+          : paletteMode() === "providerKeys"
+            ? providerKeyPaletteItems()
           : paletteMode() === "timeline" || paletteMode() === "timelineActions"
             ? timelinePaletteItems()
           : paletteMode() === "display"
@@ -1127,7 +1105,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "models") return items
+    if (paletteMode() === "rename" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1141,14 +1119,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "models") {
+    if (mode !== "rename" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "models") return
+    if (paletteMode() === "rename" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -1742,6 +1720,54 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "addProviderKeyName") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const name = paletteInput().trim()
+          if (!name) {
+            setStatus("key name cannot be empty")
+            return
+          }
+          setPaletteNewKeyName(name)
+          setPaletteInput("")
+          setPaletteMode("addProviderKeyValue")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "addProviderKeyValue") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = paletteInput().trim()
+          if (!value) {
+            setStatus("key value cannot be empty")
+            return
+          }
+          const result = addConfiguredProviderKey(paletteProviderKeyTarget(), paletteNewKeyName(), value)
+          setStatus(result.message)
+          if (result.ok) {
+            setProviderConfigRevision(v => v + 1)
+            setPaletteInput("")
+            setPaletteMode("providerKeys")
+            setPaletteIndex(0)
+          }
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "models") {
         if (event.name === "escape") {
           const backMode = paletteModelBackMode()
@@ -1788,6 +1814,26 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setPalettePendingDelete(targetId)
         setStatus(`press ctrl+d again to delete ${targetId}`)
         setComposerText("")
+        event.preventDefault()
+        return
+      }
+      if (paletteMode() === "providerKeys" && event.ctrl && event.name === "d") {
+        const item = displayItems()[paletteIndex()]
+        const keyName = item?.sessionId
+        if (!keyName) {
+          event.preventDefault()
+          return
+        }
+        if (palettePendingDelete() === keyName) {
+          const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
+          setStatus(result.message)
+          if (result.ok) setProviderConfigRevision(v => v + 1)
+          setPalettePendingDelete(null)
+          event.preventDefault()
+          return
+        }
+        setPalettePendingDelete(keyName)
+        setStatus(`press ctrl+d again to remove key "${keyName}"`)
         event.preventDefault()
         return
       }
@@ -2127,7 +2173,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette()}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH) / 2)
             : 2
@@ -2149,10 +2195,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     ? "Switch Provider"
                     : paletteMode() === "models"
                       ? `Switch Model · ${paletteProviderTarget()}`
-                      : paletteMode() === "providerKeyProviders"
-                        ? "Provider Keys"
-                        : paletteMode() === "providerKeys"
-                          ? `Provider Keys · ${paletteProviderKeyTarget()}`
+                      : paletteMode() === "providerKeys"
+                        ? `Keys · ${paletteProviderKeyTarget()}`
+                      : paletteMode() === "addProviderKeyName"
+                        ? `Add Key · ${paletteProviderKeyTarget()}`
+                      : paletteMode() === "addProviderKeyValue"
+                        ? `Key Value · ${paletteNewKeyName()}`
                       : paletteMode() === "timeline"
                         ? "Timeline"
                         : paletteMode() === "timelineActions"
@@ -2164,7 +2212,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "models" ? "Filter models:" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -2178,7 +2226,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            <Show when={paletteMode() !== "rename"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -2224,12 +2272,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
+                  : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
+                  ? "Enter confirm  •  Esc back"
                   : paletteMode() === "sessions"
                   ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
                   : paletteMode() === "models"
                     ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providers"
                       ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
+                    : paletteMode() === "providerKeys"
+                      ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>

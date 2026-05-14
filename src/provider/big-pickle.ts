@@ -13,7 +13,7 @@ const ANONYMOUS_MODELS = [
 ]
 
 export function hasBigPickleApiKey() {
-  return Boolean(resolveConfiguredProviderApiKey("openapi"))
+  return Boolean(resolveConfiguredProviderApiKey("opencode-zen"))
 }
 
 export function filterBigPickleModels(models: string[]) {
@@ -164,8 +164,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
   )
 
 export const def: ProviderDef = {
-  id: "openapi",
-  name: "OpenAPI",
+  id: "opencode-zen",
+  name: "OpenCode Zen",
   defaultModel: "big-pickle",
   authOptional: true,
   factory: (cfg) => layer({ apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model }),

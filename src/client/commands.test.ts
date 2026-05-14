@@ -139,7 +139,7 @@ describe("executeCommand", () => {
 
     it("switches provider with argument", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/provider openapi", ctx)
+      const result = await executeCommand("/provider opencode-zen", ctx)
       assert.ok(result)
       assert.ok((ctx.setCurrentProvider as any).mock.calls.length > 0)
     })
