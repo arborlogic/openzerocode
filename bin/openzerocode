@@ -114,4 +114,10 @@ const proc = childProcess.spawnSync(bun, args, {
   stdio: "inherit",
   env: { ...process.env, NODE_ENV: process.env.NODE_ENV || "development" },
 })
+if (proc.error) {
+  console.error(`OpenZeroCode requires \`bun\` to run from source.`)
+  console.error(`Install bun: curl -fsSL https://bun.sh/install | bash`)
+  console.error(`Or install the pre-built release: npm install -g openzerocode`)
+  process.exit(1)
+}
 process.exit(proc.status ?? 0)
