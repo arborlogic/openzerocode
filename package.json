@@ -18,6 +18,7 @@
   },
   "files": [
     "bin/openzerocode",
+    "bin/package.json",
     "src/",
     "scripts/",
     "tsconfig.json",
