@@ -1,7 +1,8 @@
 import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import type { Message } from "../provider/types"
-import { getModelConfig, estimateTokens, estimateCost } from "../provider/models"
+import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 
@@ -16,84 +17,74 @@ type GitCommit = {
   subject: string
 }
 
+type GitSnapshot = {
+  files: GitFile[]
+  branch: string | null
+  commits: GitCommit[]
+}
+
+const execFileAsync = promisify(execFile)
+const EMPTY_GIT_SNAPSHOT: GitSnapshot = { files: [], branch: null, commits: [] }
+
 let lastGitRead = 0
-let lastGitResult: GitFile[] = []
+let lastGitSnapshot = EMPTY_GIT_SNAPSHOT
+let pendingGitSnapshot: Promise<GitSnapshot> | undefined
 
-function readGitDiff(): GitFile[] {
+async function runGit(args: string[], timeout = 1000): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      encoding: "utf-8",
+      timeout,
+      maxBuffer: 1024 * 1024,
+    })
+    return stdout.trim()
+  } catch {
+    return ""
+  }
+}
+
+function parseGitDiffNumstat(out: string): GitFile[] {
+  if (!out) return []
+  return out.split("\n").filter(Boolean).map((line) => {
+    const parts = line.split("\t")
+    const additions = Number.parseInt(parts[0] ?? "0", 10) || 0
+    const deletions = Number.parseInt(parts[1] ?? "0", 10) || 0
+    const filePath = parts.at(-1)?.trim() ?? ""
+    return { path: filePath, additions, deletions }
+  }).filter((file) => file.path.length > 0)
+}
+
+function parseRecentCommits(out: string): GitCommit[] {
+  if (!out) return []
+  return out.split("\n").filter(Boolean).map((line) => {
+    const spaceIdx = line.indexOf(" ")
+    const hash = spaceIdx >= 0 ? line.slice(0, spaceIdx) : line
+    const subject = spaceIdx >= 0 ? line.slice(spaceIdx + 1) : ""
+    return { hash, subject }
+  })
+}
+
+async function readGitSnapshot(): Promise<GitSnapshot> {
   const now = Date.now()
-  if (now - lastGitRead < 2000) return lastGitResult
+  if (pendingGitSnapshot) return pendingGitSnapshot
+  if (now - lastGitRead < 2000) return lastGitSnapshot
+
   lastGitRead = now
-  try {
-    // Use --name-status to get file list (handles binary files safely)
-    const out = execFileSync("git", ["diff", "--name-status", "HEAD"], {
-      encoding: "utf-8",
-      timeout: 2000,
-      stdio: ["pipe", "pipe", "ignore"],
-    })
-    const lines = out.trim().split("\n").filter(Boolean)
-    const result: GitFile[] = []
-    for (const line of lines) {
-      const status = line.charAt(0)
-      const filePath = line.slice(1).trim()
-      if (filePath) {
-        let additions = 0
-        let deletions = 0
-        if (status === "M" || status === "A") {
-          // Try to get line counts per file — binary files will fail silently
-          try {
-            const stat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", filePath], {
-              encoding: "utf-8",
-              timeout: 1000,
-              stdio: ["pipe", "pipe", "ignore"],
-            })
-            const match = stat.trim().match(/^(\d+)\s+(\d+)/)
-            if (match) {
-              additions = parseInt(match[1]!) || 0
-              deletions = parseInt(match[2]!) || 0
-            }
-          } catch {
-            // binary file or other error — just show filename without counts
-          }
-        }
-        result.push({ path: filePath, additions, deletions })
-      }
+  pendingGitSnapshot = Promise.all([
+    runGit(["diff", "--numstat", "HEAD"], 2000),
+    runGit(["rev-parse", "--abbrev-ref", "HEAD"], 1000),
+    runGit(["log", "--oneline", "-3"], 1000),
+  ]).then(([diff, branch, commits]) => {
+    lastGitSnapshot = {
+      files: parseGitDiffNumstat(diff),
+      branch: branch || null,
+      commits: parseRecentCommits(commits),
     }
-    lastGitResult = result
-    return lastGitResult
-  } catch {
-    return []
-  }
-}
-
-function readGitBranch(): string | null {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-      encoding: "utf-8",
-      timeout: 1000,
-      stdio: ["pipe", "pipe", "ignore"],
-    })
-    return out.trim() || null
-  } catch {
-    return null
-  }
-}
-
-function readRecentCommits(n: number): GitCommit[] {
-  try {
-    const out = execFileSync("git", ["log", "--oneline", `-${n}`], {
-      encoding: "utf-8",
-      timeout: 1000,
-      stdio: ["pipe", "pipe", "ignore"],
-    })
-    return out.trim().split("\n").filter(Boolean).map((line) => {
-      const spaceIdx = line.indexOf(" ")
-      const hash = spaceIdx >= 0 ? line.slice(0, spaceIdx) : line
-      const subject = spaceIdx >= 0 ? line.slice(spaceIdx + 1) : ""
-      return { hash, subject }
-    })
-  } catch {
-    return []
-  }
+    return lastGitSnapshot
+  }).finally(() => {
+    pendingGitSnapshot = undefined
+  })
+  return pendingGitSnapshot
 }
 
 function truncatePath(path: string, maxLen: number): string {
@@ -129,9 +120,10 @@ export function Sidebar(props: {
   cwd?: string
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
-  const [branch, setBranch] = createSignal<string | null>(readGitBranch())
-  const [commits, setCommits] = createSignal<GitCommit[]>(readRecentCommits(3))
+  const [branch, setBranch] = createSignal<string | null>(null)
+  const [commits, setCommits] = createSignal<GitCommit[]>([])
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
+  let gitRefreshSeq = 0
 
   // Poll session lock status every 3s while sidebar is visible
   const [lockTick, setLockTick] = createSignal(0)
@@ -141,33 +133,37 @@ export function Sidebar(props: {
   })
 
   createEffect(() => {
-    props.messages()
-    setGitFiles(readGitDiff())
-    setBranch(readGitBranch())
-    setCommits(readRecentCommits(3))
+    props.messages().length
+    const seq = ++gitRefreshSeq
+    const id = setTimeout(() => {
+      void readGitSnapshot().then((snapshot) => {
+        if (seq !== gitRefreshSeq) return
+        setGitFiles(snapshot.files)
+        setBranch(snapshot.branch)
+        setCommits(snapshot.commits)
+      })
+    }, 100)
+    return () => clearTimeout(id)
   })
 
   const modelCfg = createMemo(() => getModelConfig(props.model))
 
-  const totalInputTokens = createMemo(() =>
-    estimateTokens(
-      props.messages()
-        .filter(m => m.role === "user" || m.role === "system")
-        .map(m => m.content ?? "")
-        .join("")
-    )
-  )
+  const tokenUsage = createMemo(() => {
+    let inputChars = 0
+    let outputChars = 0
+    for (const msg of props.messages()) {
+      const length = (msg.content ?? "").length
+      if (msg.role === "user" || msg.role === "system") inputChars += length
+      if (msg.role === "assistant") outputChars += length
+    }
+    const input = Math.max(0, Math.round(inputChars / 4))
+    const output = Math.max(0, Math.round(outputChars / 4))
+    return { input, output, total: input + output }
+  })
 
-  const totalOutputTokens = createMemo(() =>
-    estimateTokens(
-      props.messages()
-        .filter(m => m.role === "assistant")
-        .map(m => m.content ?? "")
-        .join("")
-    )
-  )
-
-  const totalTokens = createMemo(() => totalInputTokens() + totalOutputTokens())
+  const totalInputTokens = createMemo(() => tokenUsage().input)
+  const totalOutputTokens = createMemo(() => tokenUsage().output)
+  const totalTokens = createMemo(() => tokenUsage().total)
   const contextPercent = createMemo(() => {
     const limit = modelCfg().contextLimit
     if (!limit) return 0
