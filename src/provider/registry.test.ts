@@ -1,5 +1,8 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
+import { mkdtempSync, rmSync } from "fs"
+import { join } from "path"
+import { tmpdir } from "os"
 import { autoDetectProvider, defaultModelForProvider, PROVIDERS, resolveProviderApiKey } from "./registry"
 
 describe("provider registry", () => {
@@ -36,10 +39,13 @@ describe("provider registry", () => {
       openrouter: process.env.OPENROUTER_API_KEY,
       opencode: process.env.OPENCODE_API,
       opencodeKey: process.env.OPENCODE_API_KEY,
+      providerConfig: process.env.OPENZEROCODE_PROVIDER_CONFIG,
     }
+    const tempDir = mkdtempSync(join(tmpdir(), "openzerocode-registry-"))
     delete process.env.OPENROUTER_API_KEY
     delete process.env.OPENCODE_API
     delete process.env.OPENCODE_API_KEY
+    process.env.OPENZEROCODE_PROVIDER_CONFIG = join(tempDir, "providers.json")
     process.env.OPENAI_API_KEY = "sk-test-openai"
     try {
       assert.equal(resolveProviderApiKey("openai"), "sk-test-openai")
@@ -54,6 +60,9 @@ describe("provider registry", () => {
       else process.env.OPENCODE_API = previous.opencode
       if (previous.opencodeKey === undefined) delete process.env.OPENCODE_API_KEY
       else process.env.OPENCODE_API_KEY = previous.opencodeKey
+      if (previous.providerConfig === undefined) delete process.env.OPENZEROCODE_PROVIDER_CONFIG
+      else process.env.OPENZEROCODE_PROVIDER_CONFIG = previous.providerConfig
+      rmSync(tempDir, { recursive: true, force: true })
     }
   })
 })

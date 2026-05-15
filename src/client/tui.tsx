@@ -23,7 +23,7 @@ import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
-import { hasCodexAuth, startCodexDeviceAuthorization } from "../provider/codex-auth"
+import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
@@ -249,6 +249,17 @@ async function readClipboard(): Promise<string> {
     child.on("error", () => resolve(""))
     child.on("close", () => resolve(output))
   })
+}
+
+function openExternalUrl(url: string) {
+  const command = platform() === "darwin"
+    ? ["open", url]
+    : platform() === "win32"
+      ? ["cmd", "/c", "start", "", url]
+      : ["xdg-open", url]
+  const child = spawn(command[0]!, command.slice(1), { stdio: "ignore", detached: true })
+  child.on("error", () => {})
+  child.unref()
 }
 
 function systemPrompt(mode: RunMode) {
@@ -718,6 +729,82 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     setPaletteIndex(0)
   }
 
+  let pendingCodexBrowserAuth: Awaited<ReturnType<typeof startCodexBrowserAuthorization>> | undefined
+
+  const markCodexAuthorized = () => {
+    setProviderConfigRevision((value) => value + 1)
+    setProviderModels((prev) => {
+      const next = { ...prev }
+      delete next["openai-codex"]
+      return next
+    })
+    setStatus("Codex authorized")
+  }
+
+  const completeCodexAuthAndSwitch = async () => {
+    setProviderConfigRevision((value) => value + 1)
+    await ensureModelsForProvider("openai-codex")
+    const model = defaultModelForCurrentProvider("openai-codex")
+    applyProviderModel("openai-codex", model, true)
+    setStatus("Codex authorized — switched to openai-codex")
+    setNotices((prev) => [...prev, {
+      kind: "system",
+      text: "Codex authorized! Using openai-codex provider with ChatGPT Pro/Plus.",
+    }])
+  }
+
+  const runCodexLogin = async (method: "browser" | "headless" | "code" = "browser", value?: string) => {
+    try {
+      if (method === "code") {
+        if (!pendingCodexBrowserAuth) {
+          return { ok: false, message: "No pending browser authorization. Run /codex-login first, then paste the callback URL or code directly." }
+        }
+        if (!value?.trim()) {
+          return { ok: false, message: "Usage: /codex-login code <callback-url-or-code>  (or just paste the URL directly)" }
+        }
+        await pendingCodexBrowserAuth.complete(value)
+        pendingCodexBrowserAuth = undefined
+        await completeCodexAuthAndSwitch()
+        return { ok: true, message: "Codex authorization saved — switched to openai-codex." }
+      }
+
+      if (method === "browser") {
+        const auth = await startCodexBrowserAuthorization()
+        pendingCodexBrowserAuth = auth
+        setNotices((prev) => [...prev, {
+          kind: "system",
+          text: `Complete Codex authorization in your browser. If it does not return automatically, paste the callback URL or authorization code here.`,
+        }])
+        setStatus("waiting for Codex browser authorization...")
+        openExternalUrl(auth.url)
+        void auth.waitForAuth().then(async () => {
+          if (pendingCodexBrowserAuth !== auth) return // already handled by paste
+          pendingCodexBrowserAuth = undefined
+          await completeCodexAuthAndSwitch()
+        }).catch((error) => {
+          if (pendingCodexBrowserAuth === auth) pendingCodexBrowserAuth = undefined
+          setStatus("Codex authorization failed")
+          setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+        })
+        return { ok: true, message: `Browser opened for Codex authorization. Paste the callback URL here to complete if it doesn't auto-close.` }
+      } else {
+        const device = await startCodexDeviceAuthorization()
+        setNotices((prev) => [...prev, {
+          kind: "system",
+          text: `Open ${device.url} and enter code: ${device.userCode}`,
+        }])
+        setStatus("waiting for Codex device authorization...")
+        await device.waitForAuth()
+      }
+
+      await completeCodexAuthAndSwitch()
+      return { ok: true, message: "Codex authorization saved — switched to openai-codex." }
+    } catch (error) {
+      setStatus("Codex authorization failed")
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   const timelineMsgs = createMemo(() => {
     return messages().filter((msg) => msg.role === "user" && msg.content);
   });
@@ -1062,12 +1149,43 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     if (providerId === "openai-codex") {
-      items.push({
-        label: detectedAuth ? "Codex auth active" : "Codex auth missing",
-        hint: detectedAuth ? "oauth" : "run /codex-login",
-        kind: "section",
-        onSelect: () => {},
-      })
+      // List all stored Codex auth entries
+      const authEntries = listCodexAuths()
+      if (authEntries.length > 0) {
+        for (const entry of authEntries) {
+          const isActive = entry.isActive && currentProvider === "openai-codex"
+          const displayLabel = entry.auth.accountId
+            ? `Account: ${entry.auth.accountId.slice(0, 12)}`
+            : `Key: ${entry.tokenPreview}`
+          items.push({
+            label: `${isActive ? ">" : " "} ${displayLabel}${entry.isActive ? " (active)" : ""}`,
+            hint: entry.tokenPreview,
+            sessionId: entry.label,
+            onSelect: async () => {
+              if (!entry.isActive) {
+                activateCodexAuth(entry.label)
+                setProviderConfigRevision((value) => value + 1)
+              }
+              await ensureModelsForProvider("openai-codex")
+              const model = defaultModelForCurrentProvider("openai-codex")
+              if (!applyProviderModel("openai-codex", model, true)) {
+                setStatus("Failed to activate Codex auth")
+                return
+              }
+              setStatus("Codex activated")
+              setShowPalette(false)
+              setPaletteMode("actions")
+            },
+          })
+        }
+      } else {
+        items.push({
+          label: "Codex auth missing",
+          hint: "run /codex-login",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
     }
 
     for (const key of keys) {
@@ -1102,6 +1220,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     items.push({ label: "", onSelect: () => {} })
+    if (providerId === "openai-codex") {
+      items.push({
+        label: detectedAuth ? "Re-authorize Codex (browser)" : "Authorize ChatGPT Pro/Plus (browser)",
+        hint: "oauth",
+        onSelect: async () => {
+          const result = await runCodexLogin("browser")
+          setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+        },
+      })
+      items.push({
+        label: "Manually enter API Key",
+        hint: "OpenAI provider",
+        onSelect: () => {
+          setPaletteProviderKeyTarget("openai")
+          setPaletteNewKeyName("default")
+          setPaletteInput("")
+          setPaletteMode("addProviderKeyValue")
+          setPaletteIndex(0)
+        },
+      })
+    }
     items.push({
       label: "Continue to models",
       hint: keys.length > 0
@@ -1110,10 +1249,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           ? "using env"
           : detectedAuth
             ? "using oauth"
-            : provider?.authOptional
-              ? "no key"
-              : "no key configured",
+            : providerId === "openai-codex"
+              ? "authorize first"
+              : provider?.authOptional
+                ? "no key"
+                : "no key configured",
       onSelect: () => {
+        if (providerId === "openai-codex" && !detectedAuth) {
+          setStatus("Authorize Codex before choosing a model")
+          return
+        }
         if (!provider?.authOptional && keys.length === 0 && envKeys.length === 0 && !detectedAuth) {
           setStatus(`Add a key for ${providerId} before choosing a model`)
           return
@@ -1121,66 +1266,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         openModelsPalette(providerId, "providers")
       },
     })
-    if (providerId === "openai-codex" && !hasCodexAuth()) {
+    items.push({ label: "", onSelect: () => {} })
+    if (providerId !== "openai-codex") {
       items.push({
-        label: "Authorize Codex...",
-        hint: "/codex-login",
-        onSelect: async () => {
-          const result = await executeCommand("/codex-login", {
-            currentProvider,
-            setCurrentProvider: async (id) => {
-              const provider = PROVIDERS[id]
-              if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
-              return { ok: true, message: `Provider ready: ${id}` }
-            },
-            currentModel,
-            setCurrentModel: async () => ({ ok: false, message: "Not available here" }),
-            mode: mode(),
-            setMode,
-            messages,
-            setMessages,
-            setDraft: setComposerText,
-            setNotices,
-            exitApp,
-            scrollBottom,
-            switchSession: doSwitchSession,
-            createNewSession: doCreateNewSession,
-            currentSessionId: sessionId,
-            openSessionList: () => {},
-            openProviderList: () => {},
-            openModelList: () => {},
-            openHelp: () => {},
-            refreshSessions,
-            codexLogin: async () => {
-              try {
-                const device = await startCodexDeviceAuthorization()
-                setNotices((prev) => [...prev, { kind: "system", text: `Open ${device.url} and enter code: ${device.userCode}` }])
-                setStatus("waiting for Codex authorization...")
-                await device.waitForAuth()
-                setProviderConfigRevision((value) => value + 1)
-                setStatus("Codex authorized")
-                return { ok: true, message: "Codex authorization saved. You can now continue to models." }
-              } catch (error) {
-                setStatus("Codex authorization failed")
-                return { ok: false, message: error instanceof Error ? error.message : String(error) }
-              }
-            },
-          })
-          if (result) setPaletteMode("providerKeys")
+        label: "Add key...",
+        onSelect: () => {
+          setPaletteNewKeyName("")
+          setPaletteInput("")
+          setPaletteMode("addProviderKeyName")
+          setPaletteIndex(0)
         },
       })
+      items.push({ label: "", onSelect: () => {} })
     }
-    items.push({ label: "", onSelect: () => {} })
-    items.push({
-      label: "Add key...",
-      onSelect: () => {
-        setPaletteNewKeyName("")
-        setPaletteInput("")
-        setPaletteMode("addProviderKeyName")
-        setPaletteIndex(0)
-      },
-    })
-    items.push({ label: "", onSelect: () => {} })
     items.push({
       label: "← Back",
       onSelect: () => {
@@ -1649,6 +1747,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
+    // If there's a pending Codex browser auth, check if input is a callback URL or code
+    if (pendingCodexBrowserAuth && isOAuthCallbackUrl(input)) {
+      try {
+        await pendingCodexBrowserAuth.complete(input)
+        pendingCodexBrowserAuth = undefined
+        await completeCodexAuthAndSwitch()
+      } catch (error) {
+        setStatus("Codex authorization failed")
+        setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+      }
+      setComposerText("")
+      return
+    }
+
     if (input.startsWith("/")) {
       const ctx: CommandContext = {
         currentProvider,
@@ -1712,28 +1824,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteIndex(0)
         },
         refreshSessions,
-        codexLogin: async () => {
-          try {
-            const device = await startCodexDeviceAuthorization()
-            setNotices((prev) => [...prev, {
-              kind: "system",
-              text: `Open ${device.url} and enter code: ${device.userCode}`,
-            }])
-            setStatus("waiting for Codex authorization...")
-            await device.waitForAuth()
-            setProviderConfigRevision((value) => value + 1)
-            setProviderModels((prev) => {
-              const next = { ...prev }
-              delete next["openai-codex"]
-              return next
-            })
-            setStatus("Codex authorized")
-            return { ok: true, message: "Codex authorization saved. You can now use provider openai-codex." }
-          } catch (error) {
-            setStatus("Codex authorization failed")
-            return { ok: false, message: error instanceof Error ? error.message : String(error) }
-          }
-        },
+        codexLogin: runCodexLogin,
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -2142,15 +2233,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
         if (palettePendingDelete() === keyName) {
-          const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
-          setStatus(result.message)
-          if (result.ok) setProviderConfigRevision(v => v + 1)
+          if (paletteProviderKeyTarget() === "openai-codex" && (keyName === "openai" || keyName.startsWith("openai@"))) {
+            const ok = deleteCodexAuth(keyName)
+            setStatus(ok ? `removed Codex auth "${keyName}"` : `failed to remove Codex auth "${keyName}"`)
+            if (ok) setProviderConfigRevision(v => v + 1)
+          } else {
+            const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
+            setStatus(result.message)
+            if (result.ok) setProviderConfigRevision(v => v + 1)
+          }
           setPalettePendingDelete(null)
           event.preventDefault()
           return
         }
         setPalettePendingDelete(keyName)
-        setStatus(`press ctrl+d again to remove key "${keyName}"`)
+        setStatus(
+          paletteProviderKeyTarget() === "openai-codex" && (keyName === "openai" || keyName.startsWith("openai@"))
+            ? `press ctrl+d again to remove Codex auth "${keyName}"`
+            : `press ctrl+d again to remove key "${keyName}"`
+        )
         event.preventDefault()
         return
       }
@@ -2290,6 +2391,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     if (!showPalette()) return
     const text = new TextDecoder().decode(event.bytes)
     if (!text) return
+    // Auto-complete Codex OAuth if user pastes a callback URL while palette is open
+    if (pendingCodexBrowserAuth && isOAuthCallbackUrl(text)) {
+      event.preventDefault()
+      void (async () => {
+        try {
+          await pendingCodexBrowserAuth.complete(text)
+          pendingCodexBrowserAuth = undefined
+          await completeCodexAuthAndSwitch()
+        } catch (error) {
+          setStatus("Codex authorization failed")
+          setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+        }
+      })()
+      return
+    }
     setPaletteInput((prev) => prev + text)
   })
 
@@ -2429,6 +2545,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   const text = new TextDecoder().decode(event.bytes)
                     .replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
                   if (!text) return
+
+                  // Auto-complete Codex OAuth if user pastes a callback URL or code
+                  if (pendingCodexBrowserAuth && isOAuthCallbackUrl(text)) {
+                    event.preventDefault()
+                    void (async () => {
+                      try {
+                        await pendingCodexBrowserAuth.complete(text)
+                        pendingCodexBrowserAuth = undefined
+                        await completeCodexAuthAndSwitch()
+                      } catch (error) {
+                        setStatus("Codex authorization failed")
+                        setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+                      }
+                    })()
+                    return
+                  }
+
                   const lineCount = (text.match(/\n/g)?.length ?? 0) + 1
                   if (lineCount >= 3 || text.length > 200) {
                     event.preventDefault()

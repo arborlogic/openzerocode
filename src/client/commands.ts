@@ -30,7 +30,7 @@ export type CommandContext = {
   openModelList: () => void
   openHelp: () => void
   refreshSessions: () => void
-  codexLogin: () => Promise<{ ok: boolean; message: string }>
+  codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
@@ -69,7 +69,10 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
   }
 
   if (cmd === "codex-login") {
-    const result = await ctx.codexLogin()
+    const [first, ...rest] = arg.split(/\s+/)
+    const method = first === "headless" || first === "code" ? first : "browser"
+    const value = method === "code" ? rest.join(" ") : undefined
+    const result = await ctx.codexLogin(method, value)
     ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
     return true
   }

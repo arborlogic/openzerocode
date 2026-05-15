@@ -161,6 +161,15 @@ describe("executeCommand", () => {
       const result = await executeCommand("/codex-login", ctx)
       assert.ok(result)
       assert.ok((ctx.codexLogin as any).mock.calls.length > 0)
+      assert.equal((ctx.codexLogin as any).mock.calls[0][0], "browser")
+    })
+
+    it("authorizes Codex with callback code", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/codex-login code http://localhost:1455/auth/callback?code=abc", ctx)
+      assert.ok(result)
+      assert.equal((ctx.codexLogin as any).mock.calls[0][0], "code")
+      assert.equal((ctx.codexLogin as any).mock.calls[0][1], "http://localhost:1455/auth/callback?code=abc")
     })
   })
 
