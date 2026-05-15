@@ -1,8 +1,48 @@
 import { createSignal } from "solid-js"
 import type { Part } from "../provider/types"
 
+const FLUSH_INTERVAL_MS = 32 // ~30fps
+
 export function createStreamState() {
   const [parts, setParts] = createSignal<Part[]>([])
+
+  // Pending buffers — flushed on next tick rather than on every chunk
+  let assistantBuffer = ""
+  let reasoningBuffer = ""
+  let flushTimer: ReturnType<typeof setTimeout> | undefined
+
+  function scheduleFlush() {
+    if (flushTimer !== undefined) return
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined
+      const aText = assistantBuffer
+      const rText = reasoningBuffer
+      assistantBuffer = ""
+      reasoningBuffer = ""
+      if (!aText && !rText) return
+      setParts((prev) => {
+        let next = prev
+        if (rText) {
+          const last = next[next.length - 1]
+          if (last?.type === "reasoning") {
+            next = [...next.slice(0, -1), { type: "reasoning", text: last.text + rText }]
+          } else {
+            next = [...next, { type: "reasoning", text: rText }]
+          }
+        }
+        if (aText) {
+          const last = next[next.length - 1]
+          if (last?.type === "text") {
+            next = [...next.slice(0, -1), { type: "text", text: last.text + aText }]
+          } else {
+            next = [...next, { type: "text", text: aText }]
+          }
+        }
+        return next
+      })
+    }, FLUSH_INTERVAL_MS)
+  }
+
   const streamToolCallChunk = (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => {
     const fallbackId = `stream_tool_call_${index}`
     setParts((prev) => {
@@ -49,29 +89,30 @@ export function createStreamState() {
     })
   }
 
+  const reset = () => {
+    // Discard any pending buffered text before clearing parts
+    if (flushTimer !== undefined) {
+      clearTimeout(flushTimer)
+      flushTimer = undefined
+    }
+    assistantBuffer = ""
+    reasoningBuffer = ""
+    setParts([])
+  }
+
   return {
     parts,
     setParts,
     streamReasoningChunk: (text: string) => {
-      setParts((prev) => {
-        const last = prev[prev.length - 1]
-        if (last?.type === "reasoning") {
-          return [...prev.slice(0, -1), { type: "reasoning", text: last.text + text }]
-        }
-        return [...prev, { type: "reasoning", text }]
-      })
+      reasoningBuffer += text
+      scheduleFlush()
     },
     streamAssistantChunk: (text: string) => {
-      setParts((prev) => {
-        const last = prev[prev.length - 1]
-        if (last?.type === "text") {
-          return [...prev.slice(0, -1), { type: "text", text: last.text + text }]
-        }
-        return [...prev, { type: "text", text }]
-      })
+      assistantBuffer += text
+      scheduleFlush()
     },
     streamToolCallChunk,
     setToolResult,
-    reset: () => setParts([]),
+    reset,
   }
 }

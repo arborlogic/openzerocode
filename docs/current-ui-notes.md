@@ -43,6 +43,21 @@ This document records the current UI interactions that have been implemented, ga
   - copy hint
 - Selection copy implemented (onMouseUp → renderer selection → clipboard)
 
+#### Entry Left-Border Color Scheme
+
+Each entry type has a dedicated left border color for visual hierarchy.
+There is no outer wrapper border — borders are applied per-entry only.
+
+| Entry kind   | Border color       | Hex       |
+|--------------|--------------------|-----------|
+| `assistant`  | `accentDim`        | `#1f6feb` |
+| `reasoning`  | `accent`           | `#58a6ff` |
+| `tool-call`  | `tool`             | `#d2a8ff` |
+| `tool`       | `tool`             | `#d2a8ff` |
+| `error`      | `error`            | `#f85149` |
+| `user`       | `user`             | `#7ee787` |
+| `system`     | none               | —         |
+
 ### Sidebar
 
 - Shows context, estimated cost, git diff summary

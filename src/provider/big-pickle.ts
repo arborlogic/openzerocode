@@ -69,7 +69,7 @@ function sanitizeMessages(messages: Message[]): Message[] {
 
 const DEFAULT_BASE = "https://opencode.ai/zen/v1"
 
-export const layer = (input: { apiKey: string; baseURL?: string; model?: string }) =>
+export const layer = (input: { apiKey: string; baseURL?: string; model?: string; filterModels?: boolean }) =>
   Layer.effect(
     Provider,
     Effect.gen(function* () {
@@ -156,7 +156,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             fetch(`${baseURL}/models`, { headers: headers() })
           )
           const json = yield* Effect.promise(() => res.json()) as Effect.Effect<any>
-          return filterBigPickleModels((json.data ?? []).map((m: any) => m.id) as string[])
+          const ids = (json.data ?? []).map((m: any) => m.id) as string[]
+          return (input.filterModels ?? true) ? filterBigPickleModels(ids) : ids
         }).pipe(Effect.orDie)
 
       return { complete, stream, models }

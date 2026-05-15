@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 import type { Message } from "../provider/types"
@@ -19,6 +19,7 @@ export type SessionMeta = {
   messageCount: number
   createdAt: number
   updatedAt: number
+  directory?: string  // cwd when the session was created
 }
 
 type SessionIndex = {
@@ -51,7 +52,10 @@ function readIndex(): SessionIndex {
 
 function writeIndex(index: SessionIndex) {
   ensureDir()
-  writeFileSync(getIndexFile(), JSON.stringify(index, null, 2), "utf-8")
+  const target = getIndexFile()
+  const tmp = target + ".tmp"
+  writeFileSync(tmp, JSON.stringify(index, null, 2), "utf-8")
+  renameSync(tmp, target)  // atomic on POSIX; prevents half-written index
 }
 
 function sessionPath(id: string): string {
@@ -71,8 +75,24 @@ function defaultSessionTitle(time = Date.now()): string {
   return `New Session - ${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
 }
 
-export function listSessions(): SessionMeta[] {
-  return readIndex().sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+export function isDefaultTitle(title: string): boolean {
+  return /^New Session - \d{4}-\d{2}-\d{2}/.test(title)
+}
+
+export function deriveTitle(text: string, maxLen = 60): string {
+  // Take first non-empty line, strip markdown, trim whitespace
+  const firstLine = text.split("\n").map(l => l.trim()).find(l => l.length > 0) ?? text
+  const stripped = firstLine.replace(/^[#*`>\-\s]+/, "").trim()
+  const clean = stripped || firstLine.trim()
+  return clean.length > maxLen ? clean.slice(0, maxLen - 1) + "…" : clean
+}
+
+export function listSessions(opts: { directory?: string | null } = {}): SessionMeta[] {
+  const all = readIndex().sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+  // When directory is explicitly null, return all sessions (cross-project view)
+  if (opts.directory === null) return all
+  const dir = opts.directory ?? process.cwd()
+  return all.filter(s => !s.directory || s.directory === dir)
 }
 
 export function getCurrentSessionId(): string | null {
@@ -96,6 +116,7 @@ export function createSession(model: string, provider: string, messages?: Messag
     messageCount: messages?.length ?? 0,
     createdAt: now,
     updatedAt: now,
+    directory: process.cwd(),
   }
   const index = readIndex()
   index.sessions.push(meta)
@@ -159,6 +180,7 @@ export function saveSession(
       messageCount: count,
       createdAt,
       updatedAt: now,
+      directory: process.cwd(),
     })
   }
   index.current = id

@@ -11,5 +11,6 @@ export const def: ProviderDef = {
     apiKey: cfg.apiKey,
     baseURL: cfg.baseURL ?? DEFAULT_BASE,
     model: cfg.model,
+    filterModels: false,
   }),
 }

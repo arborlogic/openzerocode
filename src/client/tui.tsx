@@ -16,8 +16,9 @@ import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
+import { HELP_CONTENT } from "./help-content"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, type CompactionInfo } from "./sessions"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
@@ -26,11 +27,13 @@ import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
+import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import pkg from "../../package.json" with { type: "json" }
 
-// Version — injected at build time via scripts/build.ts, fallback to dev import
+// Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
 const VERSION: string =
   (typeof process !== "undefined" && (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
-  "0.0.0-dev"
+  pkg.version
 
 // Handle CLI flags before anything else
 const args = process.argv.slice(2)
@@ -110,6 +113,7 @@ type DisplayTurn = {
   user?: DisplayBlock
   entries: DisplayBlock[]
   footer?: string
+  userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
 function rebuildLayer() {
@@ -279,21 +283,8 @@ const SIDEBAR_WIDTH = 34
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(
-    collapsible() && !(props.entry.streaming ?? false) && props.entry.kind !== "reasoning"
+    collapsible() && !(props.entry.streaming ?? false)
   )
-
-  const icon = () => props.entry.kind === "error" ? "✗"
-    : props.entry.kind === "tool" ? "✓"
-    : props.entry.kind === "tool-call" ? "▶"
-    : ""
-
-  const label = () => props.entry.kind === "assistant" ? "assistant"
-    : props.entry.kind === "user" ? "you"
-    : props.entry.kind === "reasoning" ? "think"
-    : props.entry.kind === "error" ? "error"
-    : props.entry.kind === "tool" ? "tool"
-    : props.entry.kind === "tool-call" ? "call"
-    : "system"
 
   const labelColor = () => props.entry.kind === "user" ? THEME.user
     : props.entry.kind === "reasoning" ? THEME.accent
@@ -301,15 +292,8 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     : props.entry.kind === "error" ? THEME.error
     : THEME.muted
 
-  const borderColor = () => props.entry.kind === "user" ? THEME.user
-    : props.entry.kind === "reasoning" ? THEME.accent
-    : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
-    : props.entry.kind === "error" ? THEME.error
-    : THEME.border
-
   const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
 
-  /** Compact one-line summary for collapsed tools */
   const collapsedPreview = () => {
     if (props.entry.kind === "tool-call" && props.entry.title) {
       return formatToolCallInput(props.entry.title, props.entry.text)
@@ -317,22 +301,24 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     if (props.entry.kind === "tool") {
       return formatToolResultPreview(props.entry.text)
     }
-    if (props.entry.kind === "reasoning") {
-      return props.entry.text.split("\n")[0] ?? ""
-    }
     return ""
   }
 
   if (props.entry.kind === "assistant") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
-        <markdown
-          content={props.entry.text}
-          syntaxStyle={MARKDOWN_SYNTAX}
-          fg={THEME.text}
-          bg={THEME.background}
-          streaming={props.entry.streaming ?? false}
-        />
+        <Show
+          when={!props.entry.streaming}
+          fallback={<text style={{ fg: THEME.text }}>{props.entry.text}</text>}
+        >
+          <markdown
+            content={props.entry.text}
+            syntaxStyle={MARKDOWN_SYNTAX}
+            fg={THEME.text}
+            bg={THEME.background}
+            streaming={false}
+          />
+        </Show>
       </box>
     )
   }
@@ -345,48 +331,62 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
     )
   }
 
-  const tag = icon()
-    ? `${icon()} ${label()}`
-    : label()
-
-  return (
-    <box
-      marginTop={props.isFirst ? 0 : 1}
-      paddingLeft={1}
-      paddingRight={1}
-      paddingTop={1}
-      paddingBottom={1}
-      border={["left"]}
-      borderColor={borderColor()}
-    >
-      <box flexDirection="column" gap={1}>
-        {/* Header / toggle line */}
+  if (props.entry.kind === "reasoning") {
+    return (
+      <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
+        {/* Thinking header — always shown, click to toggle */}
         <box
           flexDirection="row"
           gap={1}
-          onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+          onMouseDown={() => setCollapsed(c => !c)}
         >
-          <Show when={collapsible()}>
-            <text style={{ fg: labelColor() }}>{collapsed() ? "+" : "-"}</text>
+          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
+          <text style={{ fg: labelColor() }}>Thinking</text>
+          <Show when={props.entry.streaming}>
+            <text style={{ fg: THEME.muted }}> …</text>
           </Show>
-          <text style={{ fg: labelColor() }}>
-            {tag}{props.entry.title ? ` ${props.entry.title}` : ""}
-          </text>
-          {/* Show streaming spinner for in-flight tool calls */}
-          <Show when={props.entry.streaming && (props.entry.kind === "tool-call" || props.entry.kind === "tool")}>
-            <text style={{ fg: THEME.muted }}>{" …"}</text>
+          <Show when={collapsed() && !props.entry.streaming}>
+            <text style={{ fg: THEME.muted }}>· {props.entry.text.split("\n")[0]}</text>
           </Show>
         </box>
-
-        {/* Collapsed: show compact one-line preview */}
-        <Show when={collapsed() && collapsedPreview()}>
-          <text style={{ fg: THEME.muted }}>{collapsedPreview()}</text>
-        </Show>
-
-        {/* Expanded: show full content */}
+        {/* Body — hidden when collapsed */}
         <Show when={!collapsed()}>
-          <Show when={props.entry.kind === "tool-call" && props.entry.title === "bash" && !props.entry.streaming}>
-            {/* For static (completed) bash calls, show a compact representation */}
+          <text style={{ fg: THEME.muted }}>{props.entry.text}</text>
+        </Show>
+      </box>
+    )
+  }
+
+  /* tool-call and tool entries */
+  const isBashCall = props.entry.kind === "tool-call" && props.entry.title === "bash"
+  const toolIcon = props.entry.kind === "tool" ? "✓" : props.entry.kind === "error" ? "✗" : "■"
+  const toolLabel = props.entry.title ?? (props.entry.kind === "tool" ? "result" : "tool")
+
+  return (
+    <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
+      {/* Header row */}
+      <box
+        flexDirection="row"
+        gap={1}
+        onMouseDown={() => collapsible() && setCollapsed(c => !c)}
+      >
+        <Show when={collapsible()}>
+          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
+        </Show>
+        <text style={{ fg: labelColor() }}>{toolIcon}</text>
+        <text style={{ fg: labelColor() }}>{toolLabel}</text>
+        <Show when={props.entry.streaming}>
+          <text style={{ fg: THEME.muted }}> …</text>
+        </Show>
+        <Show when={collapsed() && collapsedPreview()}>
+          <text style={{ fg: THEME.muted }}>· {collapsedPreview()}</text>
+        </Show>
+      </box>
+
+      {/* Expanded body */}
+      <Show when={!collapsed()}>
+        <box paddingLeft={2}>
+          <Show when={isBashCall && !props.entry.streaming}>
             <text style={{ fg: textColor() }}>
               {(() => {
                 const parsed = tryParseJSON(props.entry.text)
@@ -396,16 +396,32 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
               })()}
             </text>
           </Show>
-          <Show when={props.entry.kind !== "tool-call" || props.entry.title !== "bash" || !!props.entry.streaming}>
+          <Show when={props.entry.kind === "tool" && !props.entry.streaming}>
+            <text style={{ fg: THEME.muted }}>
+              {(() => {
+                const lines = props.entry.text.split("\n")
+                const preview = lines.slice(0, 20).join("\n")
+                return lines.length > 20 ? `${preview}\n… (${lines.length - 20} more lines)` : preview
+              })()}
+            </text>
+          </Show>
+          <Show when={(props.entry.kind !== "tool" && !isBashCall) || !!props.entry.streaming}>
             <text style={{ fg: textColor() }}>{props.entry.text}</text>
           </Show>
-        </Show>
-      </box>
+        </box>
+      </Show>
     </box>
   )
 }
 
-function TurnEntry(props: { turn: DisplayTurn; isFirst: boolean }) {
+function TurnEntry(props: {
+  turn: DisplayTurn
+  isFirst: boolean
+  onUserClick?: (msgIndex: number, text: string) => void
+  isRunning?: boolean
+}) {
+  const canClick = () => !props.isRunning && props.turn.userMsgIndex !== undefined && !!props.onUserClick
+
   return (
     <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1}>
       <Show when={props.turn.user}>
@@ -416,21 +432,23 @@ function TurnEntry(props: { turn: DisplayTurn; isFirst: boolean }) {
           paddingBottom={1}
           border={["left"]}
           borderColor={THEME.user}
+          onMouseDown={() => {
+            if (canClick()) {
+              props.onUserClick!(props.turn.userMsgIndex!, props.turn.user?.text ?? "")
+            }
+          }}
         >
-          <text style={{ fg: THEME.text }}>{props.turn.user?.text ?? ""}</text>
+          <box flexDirection="row" gap={1}>
+            <text style={{ fg: THEME.text, flexGrow: 1 }}>{props.turn.user?.text ?? ""}</text>
+            <Show when={canClick()}>
+              <text style={{ fg: THEME.muted }}>⋯</text>
+            </Show>
+          </box>
         </box>
       </Show>
 
       <Show when={props.turn.entries.length > 0}>
-        <box
-          flexDirection="column"
-          paddingLeft={2}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-          border={["left"]}
-          borderColor={THEME.accentDim}
-        >
+        <box flexDirection="column">
           <For each={props.turn.entries}>
             {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
           </For>
@@ -490,6 +508,7 @@ function App() {
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
+  let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   type PendingApproval = {
     request: PermissionRequest
@@ -500,7 +519,8 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "timelineActions" | "display" | "addProviderKeyName" | "addProviderKeyValue">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help">("actions")
+  const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
@@ -517,16 +537,19 @@ function App() {
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
-  const [showCompletedTools, setShowCompletedTools] = createSignal(false)
-  const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(true)
+  const _uiPrefs = loadUIPrefs()
+  const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
+  const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
-    dimensions().height > dimensions().width ? "vertical" : "horizontal"
+    _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
   )
   const [showSplash, setShowSplash] = createSignal(true)
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
-  const splashSessions = listSessions()
+  const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
+  const splashSessions = listSessions({ directory: process.cwd() })
+  const splashSessionsAll = listSessions({ directory: null })
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
     dimensions().height > dimensions().width
   )
@@ -541,6 +564,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
     return () => clearInterval(id)
   })
+  createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
+  createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
+  createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -563,9 +589,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
-  const PALETTE_WIDTH = 52
-  const PALETTE_LABEL_MAX = 34
-  const PALETTE_HINT_MAX = 12
+  const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
+  const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
+  const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
   type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
 
@@ -633,7 +659,8 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     setProviderModelsLoading(providerId)
     setProviderModelsError((prev) => ({ ...prev, [providerId]: "" }))
     try {
-      const layer = Layer.merge(buildLayer(providerId, currentModel), toolLayer)
+      const defaultModel = defaultModelForProvider(providerId)
+      const layer = Layer.merge(buildLayer(providerId, defaultModel), toolLayer)
       const models = await Effect.runPromise(
         Effect.gen(function* () {
           const provider = yield* Provider
@@ -641,7 +668,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
         }).pipe(Effect.provide(layer)),
       )
       const unique = [...new Set(models)].sort((a, b) => a.localeCompare(b))
-      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [currentModel] }))
+      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [defaultModel] }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setProviderModelsError((prev) => ({ ...prev, [providerId]: message }))
@@ -692,42 +719,14 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
       items.push({ label: "No user messages yet", kind: "section", onSelect: () => {} });
     }
 
-    // If paletteMode is "timelineActions", show actions for the selected message
-    if (paletteMode() === "timelineActions") {
-      const targetMsg = msgs[timelineTargetMsgIdx()];
-      if (targetMsg) {
-        items.push({
-          label: "Edit this message",
-          hint: "set as draft input",
-          onSelect: () => {
-            setComposerText(targetMsg.content ?? "");
-            setShowPalette(false);
-            setPaletteMode("actions");
-          },
-        });
-        items.push({
-          label: "Fork from here",
-          hint: "create new session",
-          onSelect: () => {
-            doForkFromMessage(timelineTargetMsgIdx());
-            setShowPalette(false);
-            setPaletteMode("actions");
-          },
-        });
-        items.push({ label: "", onSelect: () => {} });
-        items.push({
-          label: "← Back to timeline",
-          onSelect: () => {
-            setPaletteMode("timeline");
-            setPaletteIndex(0);
-          },
-        });
-      }
-      return items;
-    }
+    // Newest first, cap at 50 (filter narrows further)
+    const TIMELINE_MAX = 10
+    const visible = [...msgs].reverse().slice(0, TIMELINE_MAX)
+    const total = msgs.length
 
-    for (let i = 0; i < msgs.length; i++) {
-      const msg = msgs[i];
+    for (let vi = 0; vi < visible.length; vi++) {
+      const msg = visible[vi];
+      const i = total - 1 - vi  // original index (for display numbering)
       const text = (msg.content ?? "").replace(/\n/g, " ").slice(0, 50);
       const isActive = i === timelineTargetMsgIdx();
       items.push({
@@ -735,11 +734,19 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
         hint: `msg #${i + 1}`,
         onSelect: () => {
           setTimelineTargetMsgIdx(i);
-          // Show actions for this message
-          setPaletteMode("timelineActions");
+          // Open unified message actions (Revert / Copy / Fork)
+          const actualIdx = messages().indexOf(msg)
+          if (actualIdx >= 0) {
+            setUserMsgActionTarget({ index: actualIdx, text: msg.content ?? "" })
+          }
+          setPaletteMode("userMessageActions");
           setPaletteIndex(0);
         },
       });
+    }
+
+    if (total > TIMELINE_MAX) {
+      items.push({ label: `… ${total - TIMELINE_MAX} older messages (use filter to search)`, kind: "section", onSelect: () => {} })
     }
 
     items.push({ label: "", onSelect: () => {} });
@@ -820,7 +827,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch session",
-        onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setPaletteMode("sessions") },
+        onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setSessionScope("cwd"); setPaletteMode("sessions") },
       },
       {
         label: "Rename session",
@@ -845,18 +852,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
-        label: "Fork from timeline",
-        onSelect: () => {
-          setPalettePendingDelete(null);
-          setTimelineTargetMsgIdx(0);
-          setPaletteMode("timeline");
-          setPaletteIndex(0);
-        },
-      },
-      {
         label: "MODEL",
         kind: "section",
         onSelect: () => {},
+      },
+      {
+        label: "Switch mode",
+        hint: mode() === "build" ? "build → plan" : "plan → build",
+        onSelect: () => {
+          setMode(m => m === "build" ? "plan" : "build")
+          setShowPalette(false)
+        },
       },
       {
         label: "Switch provider",
@@ -869,7 +875,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch model",
-        hint: truncateText(modelLabel(), PALETTE_HINT_MAX),
+        hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
     ]
@@ -879,7 +885,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     lockPollRevision()
     const sid = sessionId()
-    const sessions = listSessions()
+    const sessions = listSessions({ directory: sessionScope() === "global" ? null : process.cwd() })
     const items: PaletteItem[] = []
 
     for (const s of sessions) {
@@ -920,7 +926,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return true
     }).map<PaletteItem>((provider) => ({
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
-      hint: truncateText(provider.id, PALETTE_HINT_MAX),
+      hint: truncateText(provider.id, PALETTE_HINT_MAX()),
       onSelect: () => {
         const keys = listConfiguredProviderKeys(provider.id)
         if (keys.length === 0) {
@@ -995,7 +1001,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const isCurrent = providerId === providerLabel() && model === modelLabel()
       items.push({
         label: `${isCurrent ? ">" : " "} ${model}`,
-        hint: truncateText(modelHint(model), PALETTE_HINT_MAX),
+        hint: truncateText(modelHint(model), PALETTE_HINT_MAX()),
         onSelect: () => {
           if (!applyProviderModel(providerId, model, true)) return
           setStatus(`provider/model -> ${providerId}/${model}`)
@@ -1122,6 +1128,39 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   
+  const userMessageActionItems = createMemo<PaletteItem[]>(() => {
+    const target = userMsgActionTarget()
+    return [
+      {
+        label: "Revert",
+        hint: "undo messages and file changes",
+        onSelect: () => {
+          if (target) doEditUserMessage(target.index, target.text)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      },
+      {
+        label: "Copy",
+        hint: "message text to clipboard",
+        onSelect: async () => {
+          if (target) await copyToClipboard(target.text)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      },
+      {
+        label: "Fork",
+        hint: "create new session from here",
+        onSelect: () => {
+          if (target) doForkFromMessageIndex(target.index)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      },
+    ]
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
@@ -1131,10 +1170,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           ? modelPaletteItems()
           : paletteMode() === "providerKeys"
             ? providerKeyPaletteItems()
-          : paletteMode() === "timeline" || paletteMode() === "timelineActions"
+          : paletteMode() === "timeline"
             ? timelinePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
+          : paletteMode() === "userMessageActions"
+            ? userMessageActionItems()
           : actionPaletteItems(),
   )
 
@@ -1222,11 +1263,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return created
     }
 
-    for (const msg of messages()) {
+    const allMsgs = messages()
+    for (let msgIdx = 0; msgIdx < allMsgs.length; msgIdx++) {
+      const msg = allMsgs[msgIdx]
       if (msg.role === "user" && msg.content) {
         result.push({
           user: { kind: "user", text: msg.content },
           entries: [],
+          userMsgIndex: msgIdx,
         })
         continue
       }
@@ -1327,7 +1371,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     await copyToClipboard(text)
     renderer.clearSelection?.()
     setCopyNotice(true)
-    setTimeout(() => setCopyNotice(false), 2000)
+    clearTimeout(copyNoticeTimer)
+    copyNoticeTimer = setTimeout(() => setCopyNotice(false), 2000)
   }
 
   const doSaveCurrent = () => {
@@ -1344,7 +1389,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const doSwitchSession = (id: string) => {
     doSaveCurrent()
     const loaded = loadSessionState(id)
-    if (loaded?.provider && loaded.model) applyProviderModel(loaded.provider, loaded.model)
+    if (loaded?.provider && loaded.model) {
+      applyProviderModel(loaded.provider, loaded.model)
+    } else {
+      // No provider/model in session — UI labels still need refreshing
+      setSelectionRevision((v) => v + 1)
+    }
     setMessages(loaded?.messages ?? [])
     setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
@@ -1359,23 +1409,39 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   
+  const doEditUserMessage = (msgIndex: number, text: string) => {
+    // Truncate messages up to (not including) the target user message,
+    // then put its content back in the composer for re-editing
+    setMessages(prev => prev.slice(0, msgIndex))
+    setComposerText(text)
+    setStatus("editing message — press Enter to resubmit")
+  }
+
+  // Fork from a specific index in messages() array
+  const doForkFromMessageIndex = (messagesIdx: number) => {
+    const allMsgs = messages()
+    if (messagesIdx < 0 || messagesIdx >= allMsgs.length) return
+    doSaveCurrent()
+    const msgsUpToTarget = allMsgs.slice(0, messagesIdx + 1)
+    const targetMsg = allMsgs[messagesIdx]
+    const meta = createSession(currentModel, currentProvider, msgsUpToTarget)
+    setSessionId(meta.id)
+    setSessionMeta(meta)
+    setSessionRevision((v) => v + 1)
+    setMessages(msgsUpToTarget)
+    setNotices([])
+    setPermissionRules(permissionRules())
+    setComposerText(targetMsg.content ?? "")
+    setDraft(targetMsg.content ?? "")
+    setStatus("forked session from message")
+  }
+
+  // Fork from a timeline message index (index into timelineMsgs())
   const doForkFromMessage = (msgIdx: number) => {
-    doSaveCurrent();
-    const msgs = timelineMsgs();
-    if (msgIdx < 0 || msgIdx >= msgs.length) return;
-    const targetMsg = msgs[msgIdx];
-    // Create new session with messages up to and including the target message
-    const msgsUpToTarget = messages().slice(0, messages().indexOf(targetMsg) + 1);
-    const meta = createSession(currentModel, currentProvider, msgsUpToTarget);
-    setSessionId(meta.id);
-    setSessionMeta(meta);
-    setSessionRevision((v) => v + 1);
-    setMessages(msgsUpToTarget);
-    setNotices([]);
-    setPermissionRules(permissionRules());
-    setComposerText(targetMsg.content ?? "");
-    setDraft(targetMsg.content ?? "");
-    setStatus("forked session from message " + (msgIdx + 1));
+    const msgs = timelineMsgs()
+    if (msgIdx < 0 || msgIdx >= msgs.length) return
+    const targetIdx = messages().indexOf(msgs[msgIdx])
+    doForkFromMessageIndex(targetIdx)
   };
 
   const doCreateNewSession = () => {
@@ -1474,6 +1540,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
+    // Allow bare "exit" / "quit" without the slash
+    if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
+      void exitApp(0)
+      return
+    }
+
     if (input.startsWith("/")) {
       const ctx: CommandContext = {
         currentProvider,
@@ -1488,27 +1560,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
           if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
           return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
-        },
-        currentProviderKeyName: (providerId) => getActiveConfiguredProviderKeyName(providerId ?? currentProvider),
-        listProviderKeys: (providerId) => listConfiguredProviderKeys(providerId),
-        getProviderKeyConfigPath: () => getProviderConfigPath(),
-        setProviderKey: async (providerId, keyName) => {
-          const result = setActiveConfiguredProviderKey(providerId, keyName)
-          if (!result.ok) return result
-          setProviderModels((prev) => {
-            const next = { ...prev }
-            delete next[providerId]
-            return next
-          })
-          setProviderModelsError((prev) => {
-            const next = { ...prev }
-            delete next[providerId]
-            return next
-          })
-          if (providerId === currentProvider) {
-            rebuildLayer()
-          }
-          return result
         },
         currentModel,
         setCurrentModel: async (name) => {
@@ -1549,6 +1600,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowPalette(true)
           setPalettePendingDelete(null)
           setPaletteMode("sessions")
+          setPaletteIndex(0)
+          setSessionScope("cwd")
+        },
+        openHelp: () => {
+          setShowPalette(true)
+          setPaletteMode("help")
           setPaletteIndex(0)
         },
         refreshSessions,
@@ -1595,6 +1652,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
     historyIndex = -1
     historyDraft = ""
+
+    // Auto-title: if this is the first user message and title is still default, derive from input
+    if (messages().length === 0) {
+      const meta = currentSessionMeta()
+      if (meta && isDefaultTitle(meta.title)) {
+        const title = deriveTitle(input)
+        if (title) {
+          updateSessionMeta(meta.id, { title })
+          refreshSessions()
+        }
+      }
+    }
 
     queueMicrotask(scrollBottom)
 
@@ -1692,6 +1761,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setComposerText("")
       setStatus("waiting for input")
       queueMicrotask(scrollBottom)
+    } catch (err) {
+      // AbortError = user cancelled — no noise needed
+      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
+      if (!isAbort) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
+        setStatus("error")
+      }
     } finally {
       unmarkSessionActive(activeSessionId)
       runAbort = undefined
@@ -1717,15 +1794,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     // Splash screen input handling
     if (showSplash()) {
+      const EXIT_IDX = splashSessions.length
+
       if (event.name === "return" || event.name === "enter") {
         const selIdx = splashSelectedIndex()
-        if (selIdx >= 0 && splashSessions[selIdx]) {
+        if (selIdx === EXIT_IDX) {
+          void exitApp(0)
+        } else if (selIdx >= 0 && splashSessions[selIdx]) {
           doSwitchSession(splashSessions[selIdx].id)
+          setShowSplash(false)
+          renderer.setTerminalTitle("openzerocode")
         } else {
           doCreateNewSession()
+          setShowSplash(false)
+          renderer.setTerminalTitle("openzerocode")
         }
-        setShowSplash(false)
-        renderer.setTerminalTitle("openzerocode")
         event.preventDefault()
         return
       }
@@ -1737,13 +1820,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
 
       if (event.name === "down") {
-        setSplashSelectedIndex(i => Math.min(splashSessions.length - 1, i + 1))
+        setSplashSelectedIndex(i => Math.min(EXIT_IDX, i + 1))
         event.preventDefault()
         return
       }
 
       if (event.name === "escape") {
         setSplashSelectedIndex(-1)
+        event.preventDefault()
+        return
+      }
+
+      // q / Q = quick exit from splash
+      if (event.name === "q" || event.name === "Q") {
+        void exitApp(0)
         event.preventDefault()
         return
       }
@@ -1871,6 +1961,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "sessions" && event.ctrl && event.name === "s") {
+        setSessionScope(s => s === "cwd" ? "global" : "cwd")
+        setPaletteIndex(0)
+        setComposerText("")
+        event.preventDefault()
+        return
+      }
       if (paletteMode() === "sessions" && event.ctrl && event.name === "d") {
         const item = displayItems()[paletteIndex()]
         const targetId = item?.sessionId
@@ -1937,15 +2034,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         } else if (paletteMode() === "display") {
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
-        } else if (paletteMode() === "timelineActions") {
-          setPaletteMode("timeline")
-          setPaletteIndex(0)
         } else if (paletteMode() === "timeline") {
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else if (paletteMode() === "userMessageActions") {
+          setUserMsgActionTarget(null)
+          setShowPalette(false)
+        } else if (paletteMode() === "help") {
+          setShowPalette(false)
+          setPaletteMode("actions")
         } else {
-            setShowPalette(false)
-          }
+          setShowPalette(false)
+        }
         event.preventDefault()
         return
       }
@@ -2069,9 +2169,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         <SplashScreen
           selectedIndex={splashSelectedIndex()}
           sessions={splashSessions}
+          totalSessions={splashSessionsAll.length}
           layoutMode={layoutMode()}
           model={modelLabel()}
           provider={providerLabel()}
+          version={VERSION}
+          onSelectSession={(id) => {
+            doSwitchSession(id)
+            setShowSplash(false)
+            renderer.setTerminalTitle("openzerocode")
+          }}
+          onNewSession={() => {
+            doCreateNewSession()
+            setShowSplash(false)
+            renderer.setTerminalTitle("openzerocode")
+          }}
+          onExit={() => void exitApp(0)}
         />
       </Show>
 
@@ -2100,10 +2213,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         scrollY={true}
       >
         <For each={turns()}>
-          {(turn, index) => <TurnEntry turn={turn} isFirst={index() === 0} />}
+          {(turn, index) => (
+            <TurnEntry
+              turn={turn}
+              isFirst={index() === 0}
+              onUserClick={(msgIndex, text) => {
+                setUserMsgActionTarget({ index: msgIndex, text })
+                setPaletteMode("userMessageActions")
+                setPaletteIndex(0)
+                setShowPalette(true)
+              }}
+              isRunning={running()}
+            />
+          )}
         </For>
         <Show when={running() && streamingEntries().length > 0}>
-          <box marginTop={1} paddingLeft={2} paddingRight={1} paddingTop={1} paddingBottom={1} border={["left"]} borderColor={THEME.accentDim}>
+          <box marginTop={1} flexDirection="column">
             <For each={streamingEntries()}>
               {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
             </For>
@@ -2116,7 +2241,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#f85149" backgroundColor={THEME.surface}>
             <text style={{ fg: "#f85149" }}>PERMISSION REQUIRED</text>
             <text style={{ fg: THEME.text }}>{`${approval().request.permission}: ${approval().request.patterns.join("  ")}`}</text>
-            <text style={{ fg: THEME.muted }}>{"y / Enter = allow once   a = always allow in this session   n / Escape = deny"}</text>
+            <box flexDirection="row" gap={2} marginTop={0}>
+              <text
+                style={{ fg: THEME.accent }}
+                onMouseDown={() => { const a = pendingApproval(); if (a) { setPendingApproval(undefined); a.resolve() } }}
+              >{"[y] allow once"}</text>
+              <text
+                style={{ fg: THEME.muted }}
+                onMouseDown={() => { const a = pendingApproval(); if (a) { setPendingApproval(undefined); a.allowAlways() } }}
+              >{"[a] always allow"}</text>
+              <text
+                style={{ fg: "#f85149" }}
+                onMouseDown={() => { const a = pendingApproval(); if (a) { setPendingApproval(undefined); a.reject(new Error("denied by user")) } }}
+              >{"[n] deny"}</text>
+            </box>
           </box>
         )}
       </Show>
@@ -2172,7 +2310,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               />
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
-              <text style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}>
+              <text
+                style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+              >
                 {mode() === "build" ? "Build" : "Plan"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
@@ -2202,7 +2343,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
                   <text style={{ fg: THEME.muted }}>{`${status()}  •  `}</text>
-                  <text style={{ fg: "#f85149" }}>Esc interrupt</text>
+                  <text
+                    style={{ fg: "#f85149" }}
+                    onMouseDown={() => { if (runAbort) runAbort.abort() }}
+                  >Esc interrupt</text>
                 </box>
               </Show>
             </box>
@@ -2258,11 +2402,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
-          const noArgs = new Set(["help", "clear", "info", "exit", "quit", "commit"])
-          if (noArgs.has(name)) {
+          // Commands that execute immediately with no arguments
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto"])
+          if (name === "mode") {
+            // Toggle immediately — no text input needed
+            setComposerText("")
+            setMode(m => m === "build" ? "plan" : "build")
+            setStatus(`Mode: ${mode()}`)
+          } else if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })
           } else {
+            // Commands that need an argument — fill the prefix and let user type
             setComposerText("/" + name + " ")
           }
         }}
@@ -2272,27 +2423,53 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         width={dimensions().width - 8}
       />
 
-      <Show when={showPalette()}>
+      <Show when={showPalette() && paletteMode() === "help"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
-          left={layoutMode() === "horizontal"
-            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH) / 2)
-            : 2
-          }
-          width={PALETTE_WIDTH}
+          top={2}
+          left={layoutMode() === "horizontal" ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2) : 2}
+          width={PALETTE_WIDTH()}
+          height={dimensions().height - 4}
           zIndex={100}
           backgroundColor={THEME.surface}
           border={["top", "left", "right", "bottom"]}
           borderColor={THEME.accent}
           flexDirection="column"
         >
-          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-            <text style={{ fg: THEME.accent }}>
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
+            <text style={{ fg: THEME.accent, flexGrow: 1 }}>Help</text>
+            <text
+              style={{ fg: THEME.muted }}
+              onMouseDown={() => setShowPalette(false)}
+            >Esc / tap to close</text>
+          </box>
+          <scrollbox flexGrow={1} scrollY={true} paddingLeft={2} paddingRight={2} paddingBottom={1}>
+            <text style={{ fg: THEME.muted }}>{HELP_CONTENT}</text>
+          </scrollbox>
+        </box>
+      </Show>
+
+      <Show when={showPalette() && paletteMode() !== "help"}>
+        <box
+          position="absolute"
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          left={layoutMode() === "horizontal"
+            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
+            : 2
+          }
+          width={PALETTE_WIDTH()}
+          zIndex={100}
+          backgroundColor={THEME.surface}
+          border={["top", "left", "right", "bottom"]}
+          borderColor={THEME.accent}
+          flexDirection="column"
+        >
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
+            <text style={{ fg: THEME.accent, flexGrow: 1 }}>
               {paletteMode() === "rename"
                 ? "Rename Session"
                 : paletteMode() === "sessions"
-                  ? "Switch Session"
+                  ? `Switch Session`
                   : paletteMode() === "providers"
                     ? "Switch Provider"
                     : paletteMode() === "models"
@@ -2305,11 +2482,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                         ? `Key Value · ${paletteNewKeyName()}`
                       : paletteMode() === "timeline"
                         ? "Timeline"
-                        : paletteMode() === "timelineActions"
+                        : paletteMode() === "userMessageActions"
                           ? "Message Actions"
                       : "Command Palette"}
             </text>
-            <text style={{ fg: THEME.muted }}>  F2 / Ctrl+P</text>
+            <text
+              style={{ fg: THEME.muted }}
+              onMouseDown={() => setShowPalette(false)}
+            >  Esc / ✕</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
@@ -2355,14 +2535,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     gap={2}
                   >
                     <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
-                      {truncateText(item.label, PALETTE_LABEL_MAX)}
+                      {truncateText(item.label, PALETTE_LABEL_MAX())}
                     </text>
                     <Show when={item.hint && item.kind !== "section"}>
                       <text
                         style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
                         wrapMode="none"
                       >
-                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX)}
+                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX())}
                       </text>
                     </Show>
                   </box>
@@ -2370,7 +2550,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               </For>
             </Show>
           </box>
-          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border}>
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border} flexDirection="column" gap={1}>
+            <Show when={paletteMode() === "sessions"}>
+              <box flexDirection="row" gap={1}>
+                <text
+                  style={{ fg: THEME.accent }}
+                  onMouseDown={() => { setSessionScope(s => s === "cwd" ? "global" : "cwd"); setPaletteIndex(0); setComposerText("") }}
+                >{sessionScope() === "cwd" ? "Scoped" : "Global"}</text>
+                <text style={{ fg: THEME.border }}>{"· Ctrl+S"}</text>
+              </box>
+            </Show>
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"

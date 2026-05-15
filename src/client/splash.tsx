@@ -1,11 +1,16 @@
 import type { SessionMeta } from "./sessions"
 
 export type SplashProps = {
-  selectedIndex: number  // -1 = none, 0+ = session row highlighted
-  sessions: SessionMeta[]
+  selectedIndex: number  // -1 = none, 0+ = session row, sessions.length = exit
+  sessions: SessionMeta[]       // sessions for current cwd
+  totalSessions: number         // total across all directories
   layoutMode: "horizontal" | "vertical"
   model: string
   provider: string
+  version: string
+  onSelectSession?: (id: string) => void
+  onNewSession?: () => void
+  onExit?: () => void
 }
 
 const T = {
@@ -19,6 +24,7 @@ const T = {
   border:      "#21262d",
   borderBright:"#30363d",
   selected:    "#161b22",
+  danger:      "#f85149",
 }
 
 const OPEN_ART = [
@@ -53,12 +59,13 @@ function timeAgo(ts: number): string {
   return new Date(ts).toLocaleDateString()
 }
 
-export function SplashScreen(props: SplashProps) {
-  const version =
-    (typeof process !== "undefined" &&
-      (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
-    "0.0.0-dev"
+function msgCountLabel(n: number): string {
+  if (n === 0) return "no msgs"
+  if (n === 1) return "1 msg"
+  return `${n} msgs`
+}
 
+export function SplashScreen(props: SplashProps) {
   const recent = () => props.sessions.slice(0, MAX_SESSIONS)
 
   // Content column width — narrower on vertical (portrait) terminals
@@ -66,6 +73,9 @@ export function SplashScreen(props: SplashProps) {
 
   const inputBorderColor = () =>
     props.selectedIndex === -1 ? T.accent : T.borderBright
+
+  // EXIT row index = after all sessions
+  const EXIT_IDX = () => recent().length
 
   return (
     <box
@@ -108,7 +118,14 @@ export function SplashScreen(props: SplashProps) {
         paddingTop={1}
         paddingBottom={1}
         gap={1}
+        onMouseDown={() => props.onNewSession?.()}
       >
+        {/* cwd row */}
+        <box flexDirection="row" alignItems="center" gap={1}>
+          <text style={{ fg: T.border }}>{"  ~"}</text>
+          <text style={{ fg: T.borderBright }}>{process.cwd().replace(process.env.HOME ?? "", "~")}</text>
+        </box>
+
         {/* Prompt row */}
         <box flexDirection="row" alignItems="center">
           <text style={{ fg: inputBorderColor() }}>{"›  "}</text>
@@ -139,6 +156,10 @@ export function SplashScreen(props: SplashProps) {
             </box>
           )
           : null}
+        <box flexDirection="row" gap={1}>
+          <text style={{ fg: T.warning }}>{"q"}</text>
+          <text style={{ fg: T.muted }}>{"exit"}</text>
+        </box>
       </box>
 
       {/* ── Recent sessions ── */}
@@ -148,6 +169,8 @@ export function SplashScreen(props: SplashProps) {
             {/* Header */}
             <box flexDirection="row" paddingLeft={1} paddingRight={1} marginBottom={0}>
               <text style={{ fg: T.borderBright }}>{"Recent"}</text>
+              <text style={{ fg: T.border, flexGrow: 1 }}>{"  (this dir)"}</text>
+              <text style={{ fg: T.border }}>{props.totalSessions > props.sessions.length ? `${props.sessions.length} / ${props.totalSessions}` : String(props.sessions.length)}</text>
             </box>
             <box border={["bottom"]} borderColor={T.border} />
 
@@ -160,6 +183,7 @@ export function SplashScreen(props: SplashProps) {
                   backgroundColor={active() ? T.selected : undefined}
                   paddingLeft={1}
                   paddingRight={1}
+                  onMouseDown={() => props.onSelectSession?.(session.id)}
                 >
                   {/* Index hint */}
                   <text style={{ fg: active() ? T.warning : T.border }}>
@@ -169,11 +193,15 @@ export function SplashScreen(props: SplashProps) {
                   {/* Title */}
                   <box flexGrow={1}>
                     <text style={{ fg: active() ? T.text : T.muted }}>
-                      {session.title.length > W() - 18
-                        ? session.title.slice(0, W() - 21) + "…"
+                      {session.title.length > W() - 22
+                        ? session.title.slice(0, W() - 25) + "…"
                         : session.title}
                     </text>
                   </box>
+                  {/* Message count */}
+                  <text style={{ fg: active() ? T.borderBright : T.border }}>
+                    {`${msgCountLabel(session.messageCount)}  `}
+                  </text>
                   {/* Time */}
                   <text style={{ fg: T.border }}>
                     {timeAgo(session.updatedAt)}
@@ -181,13 +209,49 @@ export function SplashScreen(props: SplashProps) {
                 </box>
               )
             })}
+
+            {/* ── Exit row ── */}
+            <box border={["top"]} borderColor={T.border} />
+            <box
+              flexDirection="row"
+              backgroundColor={props.selectedIndex === EXIT_IDX() ? T.selected : undefined}
+              paddingLeft={1}
+              paddingRight={1}
+              onMouseDown={() => props.onExit?.()}
+            >
+              <text style={{ fg: props.selectedIndex === EXIT_IDX() ? T.danger : T.border }}>
+                {props.selectedIndex === EXIT_IDX() ? "› " : "  "}
+              </text>
+              <text style={{ fg: props.selectedIndex === EXIT_IDX() ? T.danger : T.muted }}>
+                {"Exit"}
+              </text>
+            </box>
           </box>
         )
-        : null}
+        : (
+          /* No sessions yet — still show Exit */
+          <box flexDirection="column" width={W()} marginTop={1}>
+            <box border={["bottom"]} borderColor={T.border} />
+            <box
+              flexDirection="row"
+              backgroundColor={props.selectedIndex === EXIT_IDX() ? T.selected : undefined}
+              paddingLeft={1}
+              paddingRight={1}
+              onMouseDown={() => props.onExit?.()}
+            >
+              <text style={{ fg: props.selectedIndex === EXIT_IDX() ? T.danger : T.border }}>
+                {props.selectedIndex === EXIT_IDX() ? "› " : "  "}
+              </text>
+              <text style={{ fg: props.selectedIndex === EXIT_IDX() ? T.danger : T.muted }}>
+                {"Exit"}
+              </text>
+            </box>
+          </box>
+        )}
 
       <box flexGrow={4} />
 
-      <text style={{ fg: T.border }}>{`v${version}`}</text>
+      <text style={{ fg: T.muted }}>{`v${props.version}`}</text>
       <box flexGrow={1} />
     </box>
   )

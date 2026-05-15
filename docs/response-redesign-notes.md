@@ -38,6 +38,13 @@ The original problem wasn't missing data, but an overly flat presentation model:
 - Plain `user` / `assistant` / `system` text no longer shows redundant headers
 - Reasoning / tool / error blocks have basic collapse behavior
 
+### Phase 5 — Per-Entry Border Cleanup ✅
+
+- Removed outer `TurnEntry` wrapper border (was `accentDim` blue wrapping all assistant entries)
+- Each entry type now carries its own left border only — no double-border nesting
+- `assistant` markdown entries gained their own `accentDim` left border
+- Border color scheme: `assistant` → `#1f6feb`, `reasoning` → `#58a6ff`, `tool`/`tool-call` → `#d2a8ff`, `error` → `#f85149`
+
 ### Phase 3 — Basic Assistant Footer ✅
 
 - Assistant response has a first-version footer
