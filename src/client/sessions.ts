@@ -75,6 +75,18 @@ function defaultSessionTitle(time = Date.now()): string {
   return `New Session - ${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
 }
 
+export function isDefaultTitle(title: string): boolean {
+  return /^New Session - \d{4}-\d{2}-\d{2}/.test(title)
+}
+
+export function deriveTitle(text: string, maxLen = 60): string {
+  // Take first non-empty line, strip markdown, trim whitespace
+  const firstLine = text.split("\n").map(l => l.trim()).find(l => l.length > 0) ?? text
+  const stripped = firstLine.replace(/^[#*`>\-\s]+/, "").trim()
+  const clean = stripped || firstLine.trim()
+  return clean.length > maxLen ? clean.slice(0, maxLen - 1) + "…" : clean
+}
+
 export function listSessions(opts: { directory?: string | null } = {}): SessionMeta[] {
   const all = readIndex().sessions.sort((a, b) => b.updatedAt - a.updatedAt)
   // When directory is explicitly null, return all sessions (cross-project view)

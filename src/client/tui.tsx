@@ -18,7 +18,7 @@ import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar } from "./sidebar"
-import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, type CompactionInfo } from "./sessions"
+import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
@@ -1653,6 +1653,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     historyIndex = -1
     historyDraft = ""
 
+    // Auto-title: if this is the first user message and title is still default, derive from input
+    if (messages().length === 0) {
+      const meta = currentSessionMeta()
+      if (meta && isDefaultTitle(meta.title)) {
+        const title = deriveTitle(input)
+        if (title) {
+          updateSessionMeta(meta.id, { title })
+          refreshSessions()
+        }
+      }
+    }
+
     queueMicrotask(scrollBottom)
 
     // Auto-compact if context is near limit (> 80%)
@@ -2298,7 +2310,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               />
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
-              <text style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}>
+              <text
+                style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+              >
                 {mode() === "build" ? "Build" : "Plan"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
@@ -2328,7 +2343,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
                   <text style={{ fg: THEME.muted }}>{`${status()}  •  `}</text>
-                  <text style={{ fg: "#f85149" }}>Esc interrupt</text>
+                  <text
+                    style={{ fg: "#f85149" }}
+                    onMouseDown={() => { if (runAbort) runAbort.abort() }}
+                  >Esc interrupt</text>
                 </box>
               </Show>
             </box>
