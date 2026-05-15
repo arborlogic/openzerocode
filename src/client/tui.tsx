@@ -29,6 +29,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import { createInputQueue } from "./input-queue"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -95,6 +96,10 @@ MARKDOWN_SYNTAX.registerStyle("paste", {
 
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
+
+function formatQueueStatus(status: string, depth: number) {
+  return depth > 0 ? `${status} • ${depth} queued` : status
+}
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -533,6 +538,7 @@ function App() {
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
+  const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
@@ -617,6 +623,19 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+  const inputQueue = createInputQueue(
+    async (item, signal) => {
+      await runQueuedPrompt(item.text, signal)
+    },
+    {
+      onDepthChange: (depth) => {
+        setQueuedInputs(depth)
+      },
+      onDrainEnd: () => {
+        setStatus("waiting for input")
+      },
+    },
+  )
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
@@ -1719,8 +1738,133 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
   }
 
+  const runQueuedPrompt = async (input: string, abortSignal: AbortSignal) => {
+    history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
+    historyIndex = -1
+    historyDraft = ""
+
+    // Auto-title: if this is the first user message and title is still default, derive from input
+    if (messages().length === 0) {
+      const meta = currentSessionMeta()
+      if (meta && isDefaultTitle(meta.title)) {
+        const title = deriveTitle(input)
+        if (title) {
+          updateSessionMeta(meta.id, { title })
+          refreshSessions()
+        }
+      }
+    }
+
+    queueMicrotask(scrollBottom)
+
+    // Auto-compact if context is near limit (> 80%)
+    {
+      const cfg = getModelConfig(currentModel)
+      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
+      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
+        await compactCurrentSession()
+      }
+    }
+
+    runAbort = new AbortController()
+    abortSignal.addEventListener("abort", () => runAbort?.abort(), { once: true })
+    streamState.reset()
+    refreshAgentsInstruction()
+    setRunning(true)
+    setStatus(formatQueueStatus("thinking...", queuedInputs()))
+
+    const activeSessionId = sessionId()
+    markSessionActive(activeSessionId)
+
+    let noticesCleared = false
+    const clearNoticesOnce = () => {
+      if (!noticesCleared) {
+        noticesCleared = true
+        // Preserve error notices from previous runs;
+        // only clear transient notices (tool, info, etc.)
+        setNotices((prev) => prev.filter((n) => n.kind === "error"))
+      }
+    }
+
+    try {
+      const next = await runSession(input, sanitizeMessages(messages()), {
+        abort: runAbort.signal,
+        streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
+        streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
+        streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
+        setStreamingToolResult: (input) => streamState.setToolResult(input),
+        addMessage: (msg) => {
+          if (msg.role === "assistant") streamState.reset()
+          if (msg.role === "tool") streamState.reset()
+          setMessages((prev) => [...prev, msg])
+        },
+        notify: (text, kind) => {
+          setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
+        },
+        setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
+        scrollBottom,
+        model: currentModel,
+        mode: mode(),
+      }, {
+        runSync,
+        systemPrompt,
+        parseJson: tryParseJSON,
+        compactionSummary: compaction()?.summary,
+        ask: (req) => new Promise<void>((resolve, reject) => {
+          if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
+          if (autoApprove()) {
+            if (req.permission === "bash") {
+              const dangerous = req.patterns.some((p) => isDangerousBashCommand(p))
+              if (dangerous) {
+                const request = { ...req, id: `perm_${Date.now()}` }
+                setPendingApproval({
+                  request,
+                  resolve,
+                  reject,
+                  allowAlways: () => {
+                    setPermissionRules((prev) => addPermissionRules(prev, req))
+                    resolve()
+                  },
+                })
+                return
+              }
+            }
+            resolve(); return
+          }
+          const request = { ...req, id: `perm_${Date.now()}` }
+          setPendingApproval({
+            request,
+            resolve,
+            reject,
+            allowAlways: () => {
+              setPermissionRules((prev) => addPermissionRules(prev, req))
+              resolve()
+            },
+          })
+        }),
+      })
+
+      setMessages(next)
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+      setStatus(formatQueueStatus("waiting for input", queuedInputs()))
+      queueMicrotask(scrollBottom)
+    } catch (err) {
+      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
+      if (!isAbort) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
+        setStatus(formatQueueStatus("error", queuedInputs()))
+      } else {
+        setStatus(formatQueueStatus("interrupted", queuedInputs()))
+      }
+    } finally {
+      unmarkSessionActive(activeSessionId)
+      runAbort = undefined
+      setRunning(false)
+    }
+  }
+
   const submit = async () => {
-    if (running()) return
     if (autocompleteApi?.visible()) {
       autocompleteApi.select()
       return
@@ -1728,7 +1872,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const rawInput = draft().trim()
     if (!rawInput) return
 
-    // Expand pasted markers back to full content
     let input = rawInput
     for (const [marker, content] of pastedContent) {
       if (input.includes(marker)) {
@@ -1741,13 +1884,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
-    // Allow bare "exit" / "quit" without the slash
     if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
       void exitApp(0)
       return
     }
 
-    // If there's a pending Codex browser auth, check if input is a callback URL or code
     if (pendingCodexBrowserAuth && isOAuthCallbackUrl(input)) {
       try {
         await pendingCodexBrowserAuth.complete(input)
@@ -1865,131 +2006,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
-    history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
-    historyIndex = -1
-    historyDraft = ""
-
-    // Auto-title: if this is the first user message and title is still default, derive from input
-    if (messages().length === 0) {
-      const meta = currentSessionMeta()
-      if (meta && isDefaultTitle(meta.title)) {
-        const title = deriveTitle(input)
-        if (title) {
-          updateSessionMeta(meta.id, { title })
-          refreshSessions()
-        }
-      }
+    const wasDraining = inputQueue?.isDraining() ?? false
+    inputQueue?.enqueue(input)
+    setComposerText("")
+    if (wasDraining) {
+      // Queue was already processing an earlier item; this one is queued
+      setStatus(formatQueueStatus("queued", queuedInputs()))
     }
-
+    // Otherwise (was not draining): the item starts running immediately,
+    // and runQueuedPrompt will set the status to "thinking...".
     queueMicrotask(scrollBottom)
-
-    // Auto-compact if context is near limit (> 80%)
-    {
-      const cfg = getModelConfig(currentModel)
-      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
-      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
-        await compactCurrentSession()
-      }
-    }
-
-    runAbort = new AbortController()
-        streamState.reset()
-        refreshAgentsInstruction()
-        setRunning(true)
-        setStatus("thinking...")
-
-    // Mark session as active (visible to other processes)
-    const activeSessionId = sessionId()
-    markSessionActive(activeSessionId)
-
-    // Clear notices only when streaming actually starts (first chunk received),
-    // so error notices from a failed stream persist until the next successful response.
-    let noticesCleared = false
-    const clearNoticesOnce = () => {
-      if (!noticesCleared) {
-        noticesCleared = true
-        setNotices([])
-      }
-    }
-
-    try {
-      const next = await runSession(input, sanitizeMessages(messages()), {
-        abort: runAbort.signal,
-        streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
-        streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
-        streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
-        setStreamingToolResult: (input) => streamState.setToolResult(input),
-        addMessage: (msg) => {
-          if (msg.role === "assistant") streamState.reset()
-          if (msg.role === "tool") streamState.reset()
-          setMessages((prev) => [...prev, msg])
-        },
-        notify: (text, kind) => {
-          setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
-        },
-        setStatus,
-        scrollBottom,
-        model: currentModel,
-        mode: mode(),
-      }, {
-        runSync,
-        systemPrompt,
-        parseJson: tryParseJSON,
-        compactionSummary: compaction()?.summary,
-        ask: (req) => new Promise<void>((resolve, reject) => {
-          if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
-          // Auto-approve mode: auto-approve non-bash permissions,
-          // and bash commands that are not destructive.
-          if (autoApprove()) {
-            if (req.permission === "bash") {
-              const dangerous = req.patterns.some((p) => isDangerousBashCommand(p))
-              if (dangerous) {
-                const request = { ...req, id: `perm_${Date.now()}` }
-                setPendingApproval({
-                  request,
-                  resolve,
-                  reject,
-                  allowAlways: () => {
-                    setPermissionRules((prev) => addPermissionRules(prev, req))
-                    resolve()
-                  },
-                })
-                return
-              }
-            }
-            resolve(); return
-          }
-          const request = { ...req, id: `perm_${Date.now()}` }
-          setPendingApproval({
-            request,
-            resolve,
-            reject,
-            allowAlways: () => {
-              setPermissionRules((prev) => addPermissionRules(prev, req))
-              resolve()
-            },
-          })
-        }),
-      })
-
-      setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
-      setComposerText("")
-      setStatus("waiting for input")
-      queueMicrotask(scrollBottom)
-    } catch (err) {
-      // AbortError = user cancelled — no noise needed
-      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
-      if (!isAbort) {
-        const msg = err instanceof Error ? err.message : String(err)
-        setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
-        setStatus("error")
-      }
-    } finally {
-      unmarkSessionActive(activeSessionId)
-      runAbort = undefined
-      setRunning(false)
-    }
   }
 
   useKeyboard((event) => {
@@ -2316,8 +2342,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (running() && runAbort) {
-        runAbort.abort()
-        setStatus("interrupted")
+        inputQueue?.abort()
+        setStatus(formatQueueStatus("interrupted", queuedInputs()))
         event.preventDefault()
         return
       }
@@ -2612,7 +2638,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
               <Show when={running()} fallback={
-                <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
+                <text style={{ fg: THEME.muted }}>{`  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
