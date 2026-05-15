@@ -28,11 +28,12 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import pkg from "../../package.json" with { type: "json" }
 
-// Version — injected at build time via scripts/build.ts, fallback to dev import
+// Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
 const VERSION: string =
   (typeof process !== "undefined" && (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
-  "0.0.0-dev"
+  pkg.version
 
 // Handle CLI flags before anything else
 const args = process.argv.slice(2)
@@ -1778,15 +1779,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     // Splash screen input handling
     if (showSplash()) {
+      const EXIT_IDX = splashSessions.length
+
       if (event.name === "return" || event.name === "enter") {
         const selIdx = splashSelectedIndex()
-        if (selIdx >= 0 && splashSessions[selIdx]) {
+        if (selIdx === EXIT_IDX) {
+          void exitApp(0)
+        } else if (selIdx >= 0 && splashSessions[selIdx]) {
           doSwitchSession(splashSessions[selIdx].id)
+          setShowSplash(false)
+          renderer.setTerminalTitle("openzerocode")
         } else {
           doCreateNewSession()
+          setShowSplash(false)
+          renderer.setTerminalTitle("openzerocode")
         }
-        setShowSplash(false)
-        renderer.setTerminalTitle("openzerocode")
         event.preventDefault()
         return
       }
@@ -1798,13 +1805,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
 
       if (event.name === "down") {
-        setSplashSelectedIndex(i => Math.min(splashSessions.length - 1, i + 1))
+        setSplashSelectedIndex(i => Math.min(EXIT_IDX, i + 1))
         event.preventDefault()
         return
       }
 
       if (event.name === "escape") {
         setSplashSelectedIndex(-1)
+        event.preventDefault()
+        return
+      }
+
+      // q / Q = quick exit from splash
+      if (event.name === "q" || event.name === "Q") {
+        void exitApp(0)
         event.preventDefault()
         return
       }
@@ -2136,6 +2150,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           layoutMode={layoutMode()}
           model={modelLabel()}
           provider={providerLabel()}
+          version={VERSION}
+          onSelectSession={(id) => {
+            doSwitchSession(id)
+            setShowSplash(false)
+            renderer.setTerminalTitle("openzerocode")
+          }}
+          onNewSession={() => {
+            doCreateNewSession()
+            setShowSplash(false)
+            renderer.setTerminalTitle("openzerocode")
+          }}
+          onExit={() => void exitApp(0)}
         />
       </Show>
 
@@ -2474,7 +2500,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                         style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
                         wrapMode="none"
                       >
-                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX)}
+                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX())}
                       </text>
                     </Show>
                   </box>
