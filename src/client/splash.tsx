@@ -2,7 +2,8 @@ import type { SessionMeta } from "./sessions"
 
 export type SplashProps = {
   selectedIndex: number  // -1 = none, 0+ = session row, sessions.length = exit
-  sessions: SessionMeta[]
+  sessions: SessionMeta[]       // sessions for current cwd
+  totalSessions: number         // total across all directories
   layoutMode: "horizontal" | "vertical"
   model: string
   provider: string
@@ -167,8 +168,9 @@ export function SplashScreen(props: SplashProps) {
           <box flexDirection="column" width={W()} marginTop={1}>
             {/* Header */}
             <box flexDirection="row" paddingLeft={1} paddingRight={1} marginBottom={0}>
-              <text style={{ fg: T.borderBright, flexGrow: 1 }}>{"Recent"}</text>
-              <text style={{ fg: T.border }}>{`${recent().length} of ${props.sessions.length}`}</text>
+              <text style={{ fg: T.borderBright }}>{"Recent"}</text>
+              <text style={{ fg: T.border, flexGrow: 1 }}>{"  (this dir)"}</text>
+              <text style={{ fg: T.border }}>{props.totalSessions > props.sessions.length ? `${props.sessions.length} / ${props.totalSessions}` : String(props.sessions.length)}</text>
             </box>
             <box border={["bottom"]} borderColor={T.border} />
 

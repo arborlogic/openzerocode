@@ -547,7 +547,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   )
   const [showSplash, setShowSplash] = createSignal(true)
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
-  const splashSessions = listSessions()
+  const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
+  const splashSessions = listSessions({ directory: process.cwd() })
+  const splashSessionsAll = listSessions({ directory: null })
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
     dimensions().height > dimensions().width
   )
@@ -825,7 +827,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch session",
-        onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setPaletteMode("sessions") },
+        onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setSessionScope("cwd"); setPaletteMode("sessions") },
       },
       {
         label: "Rename session",
@@ -883,7 +885,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     lockPollRevision()
     const sid = sessionId()
-    const sessions = listSessions()
+    const sessions = listSessions({ directory: sessionScope() === "global" ? null : process.cwd() })
     const items: PaletteItem[] = []
 
     for (const s of sessions) {
@@ -1599,6 +1601,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPalettePendingDelete(null)
           setPaletteMode("sessions")
           setPaletteIndex(0)
+          setSessionScope("cwd")
         },
         openHelp: () => {
           setShowPalette(true)
@@ -1946,6 +1949,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "sessions" && event.ctrl && event.name === "s") {
+        setSessionScope(s => s === "cwd" ? "global" : "cwd")
+        setPaletteIndex(0)
+        setComposerText("")
+        event.preventDefault()
+        return
+      }
       if (paletteMode() === "sessions" && event.ctrl && event.name === "d") {
         const item = displayItems()[paletteIndex()]
         const targetId = item?.sessionId
@@ -2147,6 +2157,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         <SplashScreen
           selectedIndex={splashSelectedIndex()}
           sessions={splashSessions}
+          totalSessions={splashSessionsAll.length}
           layoutMode={layoutMode()}
           model={modelLabel()}
           provider={providerLabel()}
@@ -2218,7 +2229,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#f85149" backgroundColor={THEME.surface}>
             <text style={{ fg: "#f85149" }}>PERMISSION REQUIRED</text>
             <text style={{ fg: THEME.text }}>{`${approval().request.permission}: ${approval().request.patterns.join("  ")}`}</text>
-            <text style={{ fg: THEME.muted }}>{"y / Enter = allow once   a = always allow in this session   n / Escape = deny"}</text>
+            <box flexDirection="row" gap={2} marginTop={0}>
+              <text
+                style={{ fg: THEME.accent }}
+                onMouseDown={() => { const a = pendingApproval(); if (a) { setPendingApproval(undefined); a.resolve() } }}
+              >{"[y] allow once"}</text>
+              <text
+                style={{ fg: THEME.muted }}
+                onMouseDown={() => { const a = pendingApproval(); if (a) { setPendingApproval(undefined); a.allowAlways() } }}
+              >{"[a] always allow"}</text>
+              <text
+                style={{ fg: "#f85149" }}
+                onMouseDown={() => { const a = pendingApproval(); if (a) { setPendingApproval(undefined); a.reject(new Error("denied by user")) } }}
+              >{"[n] deny"}</text>
+            </box>
           </box>
         )}
       </Show>
@@ -2422,12 +2446,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           borderColor={THEME.accent}
           flexDirection="column"
         >
-          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1}>
-            <text style={{ fg: THEME.accent }}>
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
+            <text style={{ fg: THEME.accent, flexGrow: 1 }}>
               {paletteMode() === "rename"
                 ? "Rename Session"
                 : paletteMode() === "sessions"
-                  ? "Switch Session"
+                  ? `Switch Session`
                   : paletteMode() === "providers"
                     ? "Switch Provider"
                     : paletteMode() === "models"
@@ -2508,7 +2532,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               </For>
             </Show>
           </box>
-          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border}>
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["top"]} borderColor={THEME.border} flexDirection="column" gap={1}>
+            <Show when={paletteMode() === "sessions"}>
+              <box flexDirection="row" gap={1}>
+                <text
+                  style={{ fg: THEME.accent }}
+                  onMouseDown={() => { setSessionScope(s => s === "cwd" ? "global" : "cwd"); setPaletteIndex(0); setComposerText("") }}
+                >{sessionScope() === "cwd" ? "Scoped" : "Global"}</text>
+                <text style={{ fg: THEME.border }}>{"· Ctrl+S"}</text>
+              </box>
+            </Show>
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"

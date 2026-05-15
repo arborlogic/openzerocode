@@ -19,6 +19,7 @@ export type SessionMeta = {
   messageCount: number
   createdAt: number
   updatedAt: number
+  directory?: string  // cwd when the session was created
 }
 
 type SessionIndex = {
@@ -74,8 +75,12 @@ function defaultSessionTitle(time = Date.now()): string {
   return `New Session - ${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
 }
 
-export function listSessions(): SessionMeta[] {
-  return readIndex().sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+export function listSessions(opts: { directory?: string | null } = {}): SessionMeta[] {
+  const all = readIndex().sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+  // When directory is explicitly null, return all sessions (cross-project view)
+  if (opts.directory === null) return all
+  const dir = opts.directory ?? process.cwd()
+  return all.filter(s => !s.directory || s.directory === dir)
 }
 
 export function getCurrentSessionId(): string | null {
@@ -99,6 +104,7 @@ export function createSession(model: string, provider: string, messages?: Messag
     messageCount: messages?.length ?? 0,
     createdAt: now,
     updatedAt: now,
+    directory: process.cwd(),
   }
   const index = readIndex()
   index.sessions.push(meta)
@@ -162,6 +168,7 @@ export function saveSession(
       messageCount: count,
       createdAt,
       updatedAt: now,
+      directory: process.cwd(),
     })
   }
   index.current = id
