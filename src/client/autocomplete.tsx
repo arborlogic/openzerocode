@@ -33,7 +33,8 @@ export function SlashAutocomplete(props: {
     return filterCommands(props.commands, filter(), (name) => props.onCommand(name, ""))
   })
 
-  const height = createMemo(() => Math.min(8, items().length || 1))
+  // +1 to account for the top border row in the scrollbox
+  const height = createMemo(() => Math.min(8, items().length || 1) + 1)
 
   function move(dir: -1 | 1) {
     const list = items()

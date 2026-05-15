@@ -1,4 +1,4 @@
-import { describe, it, mock } from "node:test"
+import { describe, it, mock } from "bun:test"
 import assert from "node:assert"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import type { DisplayBlock } from "./tui"
@@ -9,33 +9,30 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
   const messages: Message[] = []
   return {
     currentProvider: "openrouter",
-    setCurrentProvider: mock.fn(() => Promise.resolve({ ok: true, message: "switched" })),
-    currentProviderKeyName: mock.fn(() => "my-key"),
-    listProviderKeys: mock.fn(() => ["my-key", "other-key"]),
-    getProviderKeyConfigPath: mock.fn(() => "/tmp/providers.json"),
-    setProviderKey: mock.fn(() => Promise.resolve({ ok: true, message: "key set" })),
+    setCurrentProvider: mock(() => Promise.resolve({ ok: true, message: "switched" })),
     currentModel: "openrouter/auto",
-    setCurrentModel: mock.fn(() => Promise.resolve({ ok: true, message: "model set" })),
+    setCurrentModel: mock(() => Promise.resolve({ ok: true, message: "model set" })),
     mode: "build" as const,
-    setMode: mock.fn(),
+    setMode: mock(() => {}),
     messages: () => messages,
-    setMessages: mock.fn((fn: any) => {
+    setMessages: mock((fn: any) => {
       if (typeof fn === "function") fn(messages)
     }),
-    setDraft: mock.fn(),
-    setNotices: mock.fn((fn: any) => {
+    setDraft: mock(() => {}),
+    setNotices: mock((fn: any) => {
       if (typeof fn === "function") fn(notices)
       else notices.push(fn)
     }),
-    exitApp: mock.fn(() => Promise.resolve()),
-    scrollBottom: mock.fn(),
-    switchSession: mock.fn(),
-    createNewSession: mock.fn(),
-    currentSessionId: mock.fn(() => "ses_test123"),
-    openSessionList: mock.fn(),
-    openProviderList: mock.fn(),
-    openModelList: mock.fn(),
-    refreshSessions: mock.fn(),
+    exitApp: mock(() => Promise.resolve()),
+    scrollBottom: mock(() => {}),
+    switchSession: mock(() => {}),
+    createNewSession: mock(() => {}),
+    currentSessionId: mock(() => "ses_test123"),
+    openSessionList: mock(() => {}),
+    openProviderList: mock(() => {}),
+    openModelList: mock(() => {}),
+    openHelp: mock(() => {}),
+    refreshSessions: mock(() => {}),
     ...overrides,
   }
 }
@@ -45,17 +42,27 @@ describe("BUILTIN_COMMANDS", () => {
     const names = BUILTIN_COMMANDS.map((c) => c.name)
     assert.ok(names.includes("help"))
     assert.ok(names.includes("clear"))
-    assert.ok(names.includes("info"))
     assert.ok(names.includes("provider"))
-    assert.ok(names.includes("model"))
     assert.ok(names.includes("mode"))
+    assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
-    assert.ok(names.includes("session"))
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
     assert.ok(names.includes("commit"))
     assert.ok(names.includes("exit"))
+  })
+
+  it("does not include removed commands", () => {
+    const names = BUILTIN_COMMANDS.map((c) => c.name)
+    assert.ok(!names.includes("info"))
+    assert.ok(!names.includes("provider-key"))
+    assert.ok(!names.includes("session"))
+  })
+
+  it("mode appears before model in list", () => {
+    const names = BUILTIN_COMMANDS.map((c) => c.name)
+    assert.ok(names.indexOf("mode") < names.indexOf("model"))
   })
 
   it("has unique names", () => {
@@ -75,7 +82,7 @@ describe("executeCommand", () => {
     const ctx = stubCtx()
     const result = await executeCommand("/help", ctx)
     assert.ok(result)
-    assert.ok((ctx.setNotices as any).mock.calls.length > 0)
+    assert.ok((ctx.openHelp as any).mock.calls.length > 0)
   })
 
   it("handles /clear", async () => {
@@ -92,34 +99,28 @@ describe("executeCommand", () => {
     assert.ok(result)
   })
 
-  it("handles /info", async () => {
-    const ctx = stubCtx()
-    const result = await executeCommand("/info", ctx)
-    assert.ok(result)
-  })
-
   describe("/mode", () => {
     it("switches to build mode", async () => {
       const ctx = stubCtx()
       const result = await executeCommand("/mode build", ctx)
       assert.ok(result)
       assert.ok((ctx.setMode as any).mock.calls.length > 0)
-      const call = (ctx.setMode as any).mock.calls[0]
-      assert.equal(call.arguments[0], "build")
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "build")
     })
 
     it("switches to plan mode", async () => {
       const ctx = stubCtx()
       const result = await executeCommand("/mode plan", ctx)
       assert.ok(result)
-      assert.equal((ctx.setMode as any).mock.calls[0].arguments[0], "plan")
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
-    it("shows current mode when no argument", async () => {
-      const ctx = stubCtx()
+    it("toggles mode when no argument given", async () => {
+      const ctx = stubCtx() // mode is "build"
       const result = await executeCommand("/mode", ctx)
       assert.ok(result)
-      assert.ok((ctx.setMode as any).mock.calls.length === 0)
+      assert.ok((ctx.setMode as any).mock.calls.length > 0)
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
     it("rejects invalid mode", async () => {
@@ -171,29 +172,6 @@ describe("executeCommand", () => {
       const result = await executeCommand("/model list", ctx)
       assert.ok(result)
       assert.ok((ctx.openModelList as any).mock.calls.length > 0)
-    })
-  })
-
-  describe("/session", () => {
-    it("creates new session", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/session new", ctx)
-      assert.ok(result)
-      assert.ok((ctx.createNewSession as any).mock.calls.length > 0)
-    })
-
-    it("opens a session", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/session open ses_abc", ctx)
-      assert.ok(result)
-      assert.ok((ctx.switchSession as any).mock.calls.length > 0)
-      assert.equal((ctx.switchSession as any).mock.calls[0].arguments[0], "ses_abc")
-    })
-
-    it("shows usage for invalid subcommand", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/session", ctx)
-      assert.ok(result)
     })
   })
 

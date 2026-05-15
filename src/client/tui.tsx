@@ -16,6 +16,7 @@ import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
+import { HELP_CONTENT } from "./help-content"
 import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
@@ -517,7 +518,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -585,9 +586,9 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
-  const PALETTE_WIDTH = 52
-  const PALETTE_LABEL_MAX = 34
-  const PALETTE_HINT_MAX = 12
+  const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
+  const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
+  const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
   type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
 
@@ -853,6 +854,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => {},
       },
       {
+        label: "Switch mode",
+        hint: mode() === "build" ? "build → plan" : "plan → build",
+        onSelect: () => {
+          setMode(m => m === "build" ? "plan" : "build")
+          setShowPalette(false)
+        },
+      },
+      {
         label: "Switch provider",
         hint: providerLabel(),
         onSelect: () => {
@@ -863,7 +872,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch model",
-        hint: truncateText(modelLabel(), PALETTE_HINT_MAX),
+        hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
     ]
@@ -914,7 +923,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return true
     }).map<PaletteItem>((provider) => ({
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
-      hint: truncateText(provider.id, PALETTE_HINT_MAX),
+      hint: truncateText(provider.id, PALETTE_HINT_MAX()),
       onSelect: () => {
         const keys = listConfiguredProviderKeys(provider.id)
         if (keys.length === 0) {
@@ -989,7 +998,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const isCurrent = providerId === providerLabel() && model === modelLabel()
       items.push({
         label: `${isCurrent ? ">" : " "} ${model}`,
-        hint: truncateText(modelHint(model), PALETTE_HINT_MAX),
+        hint: truncateText(modelHint(model), PALETTE_HINT_MAX()),
         onSelect: () => {
           if (!applyProviderModel(providerId, model, true)) return
           setStatus(`provider/model -> ${providerId}/${model}`)
@@ -1528,6 +1537,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
+    // Allow bare "exit" / "quit" without the slash
+    if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
+      void exitApp(0)
+      return
+    }
+
     if (input.startsWith("/")) {
       const ctx: CommandContext = {
         currentProvider,
@@ -1542,27 +1557,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
           if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
           return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
-        },
-        currentProviderKeyName: (providerId) => getActiveConfiguredProviderKeyName(providerId ?? currentProvider),
-        listProviderKeys: (providerId) => listConfiguredProviderKeys(providerId),
-        getProviderKeyConfigPath: () => getProviderConfigPath(),
-        setProviderKey: async (providerId, keyName) => {
-          const result = setActiveConfiguredProviderKey(providerId, keyName)
-          if (!result.ok) return result
-          setProviderModels((prev) => {
-            const next = { ...prev }
-            delete next[providerId]
-            return next
-          })
-          setProviderModelsError((prev) => {
-            const next = { ...prev }
-            delete next[providerId]
-            return next
-          })
-          if (providerId === currentProvider) {
-            rebuildLayer()
-          }
-          return result
         },
         currentModel,
         setCurrentModel: async (name) => {
@@ -1603,6 +1597,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowPalette(true)
           setPalettePendingDelete(null)
           setPaletteMode("sessions")
+          setPaletteIndex(0)
+        },
+        openHelp: () => {
+          setShowPalette(true)
+          setPaletteMode("help")
           setPaletteIndex(0)
         },
         refreshSessions,
@@ -2005,6 +2004,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         } else if (paletteMode() === "userMessageActions") {
           setUserMsgActionTarget(null)
           setShowPalette(false)
+        } else if (paletteMode() === "help") {
+          setShowPalette(false)
+          setPaletteMode("actions")
         } else {
           setShowPalette(false)
         }
@@ -2332,11 +2334,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
-          const noArgs = new Set(["help", "clear", "info", "exit", "quit", "commit"])
-          if (noArgs.has(name)) {
+          // Commands that execute immediately with no arguments
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto"])
+          if (name === "mode") {
+            // Toggle immediately — no text input needed
+            setComposerText("")
+            setMode(m => m === "build" ? "plan" : "build")
+            setStatus(`Mode: ${mode()}`)
+          } else if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })
           } else {
+            // Commands that need an argument — fill the prefix and let user type
             setComposerText("/" + name + " ")
           }
         }}
@@ -2346,15 +2355,41 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         width={dimensions().width - 8}
       />
 
-      <Show when={showPalette()}>
+      <Show when={showPalette() && paletteMode() === "help"}>
+        <box
+          position="absolute"
+          top={2}
+          left={layoutMode() === "horizontal" ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2) : 2}
+          width={PALETTE_WIDTH()}
+          height={dimensions().height - 4}
+          zIndex={100}
+          backgroundColor={THEME.surface}
+          border={["top", "left", "right", "bottom"]}
+          borderColor={THEME.accent}
+          flexDirection="column"
+        >
+          <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
+            <text style={{ fg: THEME.accent, flexGrow: 1 }}>Help</text>
+            <text
+              style={{ fg: THEME.muted }}
+              onMouseDown={() => setShowPalette(false)}
+            >Esc / tap to close</text>
+          </box>
+          <scrollbox flexGrow={1} scrollY={true} paddingLeft={2} paddingRight={2} paddingBottom={1}>
+            <text style={{ fg: THEME.muted }}>{HELP_CONTENT}</text>
+          </scrollbox>
+        </box>
+      </Show>
+
+      <Show when={showPalette() && paletteMode() !== "help"}>
         <box
           position="absolute"
           top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
-            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH) / 2)
+            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
             : 2
           }
-          width={PALETTE_WIDTH}
+          width={PALETTE_WIDTH()}
           zIndex={100}
           backgroundColor={THEME.surface}
           border={["top", "left", "right", "bottom"]}
@@ -2383,7 +2418,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? "Message Actions"
                       : "Command Palette"}
             </text>
-            <text style={{ fg: THEME.muted }}>  F2 / Ctrl+P</text>
+            <text
+              style={{ fg: THEME.muted }}
+              onMouseDown={() => setShowPalette(false)}
+            >  Esc / ✕</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
@@ -2429,7 +2467,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     gap={2}
                   >
                     <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
-                      {truncateText(item.label, PALETTE_LABEL_MAX)}
+                      {truncateText(item.label, PALETTE_LABEL_MAX())}
                     </text>
                     <Show when={item.hint && item.kind !== "section"}>
                       <text
