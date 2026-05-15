@@ -169,5 +169,6 @@ export const def: ProviderDef = {
   name: "OpenCode Zen",
   defaultModel: "big-pickle",
   authOptional: true,
+  envKeys: ["OPENCODE_API", "OPENCODE_API_KEY"],
   factory: (cfg) => layer({ apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model }),
 }

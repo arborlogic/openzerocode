@@ -16,6 +16,46 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     contextLimit: 128_000,
     pricing: { input: 0, output: 0 },
   },
+  "gpt-5.4": {
+    contextLimit: 1_000_000,
+    pricing: { input: 2.5, output: 15 },
+  },
+  "gpt-5.4-mini": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.4, output: 1.6 },
+  },
+  "gpt-5.4-nano": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.1, output: 0.4 },
+  },
+  "gpt-5.4-codex": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+  },
+  "gpt-5.2": {
+    contextLimit: 400_000,
+    pricing: { input: 1.75, output: 14 },
+  },
+  "gpt-5.2-codex": {
+    contextLimit: 400_000,
+    pricing: { input: 1.75, output: 14 },
+  },
+  "gpt-5.2-chat-latest": {
+    contextLimit: 400_000,
+    pricing: { input: 1.75, output: 14 },
+  },
+  "gpt-5": {
+    contextLimit: 400_000,
+    pricing: { input: 1.25, output: 10 },
+  },
+  "gpt-5-mini": {
+    contextLimit: 400_000,
+    pricing: { input: 0.25, output: 2 },
+  },
+  "gpt-5-nano": {
+    contextLimit: 400_000,
+    pricing: { input: 0.05, output: 0.4 },
+  },
   "gpt-4o": {
     contextLimit: 128_000,
     pricing: { input: 2.5, output: 10 },

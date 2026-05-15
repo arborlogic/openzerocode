@@ -33,6 +33,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
     refreshSessions: mock(() => {}),
+    codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     ...overrides,
   }
 }
@@ -43,6 +44,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("help"))
     assert.ok(names.includes("clear"))
     assert.ok(names.includes("provider"))
+    assert.ok(names.includes("codex-login"))
     assert.ok(names.includes("mode"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
@@ -150,6 +152,15 @@ describe("executeCommand", () => {
       const result = await executeCommand("/provider list", ctx)
       assert.ok(result)
       assert.ok((ctx.openProviderList as any).mock.calls.length > 0)
+    })
+  })
+
+  describe("/codex-login", () => {
+    it("authorizes Codex", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/codex-login", ctx)
+      assert.ok(result)
+      assert.ok((ctx.codexLogin as any).mock.calls.length > 0)
     })
   })
 

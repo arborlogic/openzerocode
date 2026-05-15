@@ -8,6 +8,7 @@ Commands
   /help                  Show this help
   /clear  [/new]         Clear conversation history
   /provider [id|list]    Show or switch provider
+  /codex-login           Authorize OpenAI Codex
   /mode                  Toggle build / plan mode
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher

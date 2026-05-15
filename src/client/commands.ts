@@ -30,12 +30,14 @@ export type CommandContext = {
   openModelList: () => void
   openHelp: () => void
   refreshSessions: () => void
+  codexLogin: () => Promise<{ ok: boolean; message: string }>
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "help", description: "Show help, shortcuts and palette guide" },
   { name: "clear", description: "Clear conversation history", aliases: ["new"] },
   { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
+  { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
   { name: "mode", description: "Toggle build / plan mode" },
   { name: "model", description: "Switch model: /model <name> or /model list" },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
@@ -62,6 +64,12 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
       return true
     }
     const result = await ctx.setCurrentProvider(arg)
+    ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+    return true
+  }
+
+  if (cmd === "codex-login") {
+    const result = await ctx.codexLogin()
     ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
     return true
   }

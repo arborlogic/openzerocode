@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
-import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
+import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
 import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn } from "node:child_process"
@@ -23,6 +23,7 @@ import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
+import { hasCodexAuth, startCodexDeviceAuthorization } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
@@ -231,6 +232,22 @@ async function copyToClipboard(text: string) {
     child.on("close", () => resolve())
     child.stdin?.write(text)
     child.stdin?.end()
+  })
+}
+
+async function readClipboard(): Promise<string> {
+  const command = platform() === "darwin"
+    ? ["pbpaste"]
+    : platform() === "win32"
+      ? ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"]
+      : ["xclip", "-selection", "clipboard", "-o"]
+
+  return new Promise((resolve) => {
+    const child = spawn(command[0]!, command.slice(1), { stdio: ["ignore", "pipe", "ignore"] })
+    let output = ""
+    child.stdout?.on("data", (chunk) => { output += String(chunk) })
+    child.on("error", () => resolve(""))
+    child.on("close", () => resolve(output))
   })
 }
 
@@ -928,12 +945,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
       hint: truncateText(provider.id, PALETTE_HINT_MAX()),
       onSelect: () => {
-        const keys = listConfiguredProviderKeys(provider.id)
-        if (keys.length === 0) {
-          openModelsPalette(provider.id, "providers")
-        } else {
-          openProviderKeyPalette(provider.id)
-        }
+        openProviderKeyPalette(provider.id)
       },
     }))
 
@@ -1036,6 +1048,28 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       onSelect: () => {},
     })
 
+    const provider = PROVIDERS[providerId]
+    const envKeys = provider?.envKeys?.filter((key) => Boolean(process.env[key])) ?? []
+    const detectedAuth = provider?.detectAuth?.() ?? false
+
+    if (envKeys.length > 0) {
+      items.push({
+        label: `Env key active`,
+        hint: envKeys.join(", "),
+        kind: "section",
+        onSelect: () => {},
+      })
+    }
+
+    if (providerId === "openai-codex") {
+      items.push({
+        label: detectedAuth ? "Codex auth active" : "Codex auth missing",
+        hint: detectedAuth ? "oauth" : "run /codex-login",
+        kind: "section",
+        onSelect: () => {},
+      })
+    }
+
     for (const key of keys) {
       const cfg = getStoredProviderConfig(providerId)
       const rawValue = cfg?.keys?.[key] ?? ""
@@ -1067,6 +1101,75 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       })
     }
 
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "Continue to models",
+      hint: keys.length > 0
+        ? `using ${active ?? keys[0]}`
+        : envKeys.length > 0
+          ? "using env"
+          : detectedAuth
+            ? "using oauth"
+            : provider?.authOptional
+              ? "no key"
+              : "no key configured",
+      onSelect: () => {
+        if (!provider?.authOptional && keys.length === 0 && envKeys.length === 0 && !detectedAuth) {
+          setStatus(`Add a key for ${providerId} before choosing a model`)
+          return
+        }
+        openModelsPalette(providerId, "providers")
+      },
+    })
+    if (providerId === "openai-codex" && !hasCodexAuth()) {
+      items.push({
+        label: "Authorize Codex...",
+        hint: "/codex-login",
+        onSelect: async () => {
+          const result = await executeCommand("/codex-login", {
+            currentProvider,
+            setCurrentProvider: async (id) => {
+              const provider = PROVIDERS[id]
+              if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
+              return { ok: true, message: `Provider ready: ${id}` }
+            },
+            currentModel,
+            setCurrentModel: async () => ({ ok: false, message: "Not available here" }),
+            mode: mode(),
+            setMode,
+            messages,
+            setMessages,
+            setDraft: setComposerText,
+            setNotices,
+            exitApp,
+            scrollBottom,
+            switchSession: doSwitchSession,
+            createNewSession: doCreateNewSession,
+            currentSessionId: sessionId,
+            openSessionList: () => {},
+            openProviderList: () => {},
+            openModelList: () => {},
+            openHelp: () => {},
+            refreshSessions,
+            codexLogin: async () => {
+              try {
+                const device = await startCodexDeviceAuthorization()
+                setNotices((prev) => [...prev, { kind: "system", text: `Open ${device.url} and enter code: ${device.userCode}` }])
+                setStatus("waiting for Codex authorization...")
+                await device.waitForAuth()
+                setProviderConfigRevision((value) => value + 1)
+                setStatus("Codex authorized")
+                return { ok: true, message: "Codex authorization saved. You can now continue to models." }
+              } catch (error) {
+                setStatus("Codex authorization failed")
+                return { ok: false, message: error instanceof Error ? error.message : String(error) }
+              }
+            },
+          })
+          if (result) setPaletteMode("providerKeys")
+        },
+      })
+    }
     items.push({ label: "", onSelect: () => {} })
     items.push({
       label: "Add key...",
@@ -1609,6 +1712,28 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteIndex(0)
         },
         refreshSessions,
+        codexLogin: async () => {
+          try {
+            const device = await startCodexDeviceAuthorization()
+            setNotices((prev) => [...prev, {
+              kind: "system",
+              text: `Open ${device.url} and enter code: ${device.userCode}`,
+            }])
+            setStatus("waiting for Codex authorization...")
+            await device.waitForAuth()
+            setProviderConfigRevision((value) => value + 1)
+            setProviderModels((prev) => {
+              const next = { ...prev }
+              delete next["openai-codex"]
+              return next
+            })
+            setStatus("Codex authorized")
+            return { ok: true, message: "Codex authorization saved. You can now use provider openai-codex." }
+          } catch (error) {
+            setStatus("Codex authorization failed")
+            return { ok: false, message: error instanceof Error ? error.message : String(error) }
+          }
+        },
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -1864,6 +1989,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     if (showPalette()) {
       // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
+      if ((event.ctrl || event.meta) && event.name === "v") {
+        void readClipboard().then((text) => {
+          if (!text) return
+          setPaletteInput((prev) => prev + text.trim())
+        })
+        event.preventDefault()
+        return
+      }
       if (event.name === "backspace") {
         setPaletteInput(prev => prev.slice(0, -1))
         event.preventDefault()
@@ -2150,6 +2283,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       scroll.scrollTo(scroll.scrollHeight)
       event.preventDefault()
     }
+  })
+
+  // Handle terminal bracketed paste events for the palette input
+  usePaste((event: PasteEvent) => {
+    if (!showPalette()) return
+    const text = new TextDecoder().decode(event.bytes)
+    if (!text) return
+    setPaletteInput((prev) => prev + text)
   })
 
   return (
