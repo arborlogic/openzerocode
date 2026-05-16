@@ -9,6 +9,7 @@ const BASE_SYSTEM_PROMPT = [
   "After non-trivial changes, run the most relevant verification commands available in this repository.",
   "For simple conversation or questions that do not require workspace changes, respond directly without tools.",
   "Be concise and helpful.",
+  "After making changes, briefly summarize what was done, list the files that were modified, added, or deleted, and mention any verification that was run.",
 ].join("\n")
 
 const BUILD_MODE_REMINDER = [

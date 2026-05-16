@@ -3,8 +3,9 @@ import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } fro
 import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
 import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
-import { spawn } from "node:child_process"
+import { spawn, execFile } from "node:child_process"
 import { platform } from "os"
+import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
@@ -137,6 +138,40 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 
 function tryParseJSON(raw: string): Record<string, unknown> {
   try { return JSON.parse(raw) } catch { return {} }
+}
+
+const execFileAsync = promisify(execFile)
+
+/** Run git command and return trimmed stdout, or empty string on failure. */
+async function runGit(args: string[], timeout = 1000): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      encoding: "utf-8",
+      timeout,
+      maxBuffer: 1024 * 1024,
+    })
+    return stdout.trim()
+  } catch {
+    return ""
+  }
+}
+
+/** Check for modified/new/deleted files in the working tree vs HEAD. */
+async function getGitFileChanges(): Promise<{ modified: string[]; added: string[]; deleted: string[] }> {
+  const out = await runGit(["diff", "--name-status", "HEAD"], 2000)
+  if (!out) return { modified: [], added: [], deleted: [] }
+  const modified: string[] = []
+  const added: string[] = []
+  const deleted: string[] = []
+  for (const line of out.split("\n")) {
+    const status = line[0]
+    const path = line.slice(1).trim()
+    if (!path) continue
+    if (status === "M") modified.push(path)
+    else if (status === "A") added.push(path)
+    else if (status === "D") deleted.push(path)
+  }
+  return { modified, added, deleted }
 }
 
 /** Format a tool-call input for compact one-line display */
@@ -917,8 +952,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
-        label: "Reload config",
-        hint: "config files only (not source code)",
+        label: "Reload",
+        hint: "check state, reload config & detect file changes",
         onSelect: () => {
           refreshAgentsInstruction()
           // Re-detect provider in case API keys changed
@@ -935,7 +970,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setProviderModelsError({})
           setProviderConfigRevision(v => v + 1)
           setSelectionRevision(v => v + 1)
-          setStatus("config reloaded")
+          // Check for modified/new/deleted files that may have been changed externally
+          getGitFileChanges().then(({ modified, added, deleted }) => {
+            const hints: string[] = []
+            if (modified.length > 0) hints.push(`${modified.length} modified`)
+            if (added.length > 0) hints.push(`${added.length} added`)
+            if (deleted.length > 0) hints.push(`${deleted.length} deleted`)
+            if (hints.length > 0) {
+              setStatus(`reload: ${hints.join(", ")}`)
+            } else {
+              setStatus("reload complete")
+            }
+          })
           setShowPalette(false)
         },
       },
