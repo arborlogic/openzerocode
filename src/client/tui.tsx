@@ -1,10 +1,11 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
-import { render, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding } from "@opentui/core"
+import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
 import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
-import { spawn } from "node:child_process"
+import { spawn, execFile } from "node:child_process"
 import { platform } from "os"
+import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
@@ -23,11 +24,14 @@ import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
+import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
+import { MarkdownWithDiff } from "./markdown-with-diff"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import { createInputQueue } from "./input-queue"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -94,6 +98,10 @@ MARKDOWN_SYNTAX.registerStyle("paste", {
 
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
+
+function formatQueueStatus(status: string, depth: number) {
+  return depth > 0 ? `${status} • ${depth} queued` : status
+}
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -131,6 +139,40 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 
 function tryParseJSON(raw: string): Record<string, unknown> {
   try { return JSON.parse(raw) } catch { return {} }
+}
+
+const execFileAsync = promisify(execFile)
+
+/** Run git command and return trimmed stdout, or empty string on failure. */
+async function runGit(args: string[], timeout = 1000): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      encoding: "utf-8",
+      timeout,
+      maxBuffer: 1024 * 1024,
+    })
+    return stdout.trim()
+  } catch {
+    return ""
+  }
+}
+
+/** Check for modified/new/deleted files in the working tree vs HEAD. */
+async function getGitFileChanges(): Promise<{ modified: string[]; added: string[]; deleted: string[] }> {
+  const out = await runGit(["diff", "--name-status", "HEAD"], 2000)
+  if (!out) return { modified: [], added: [], deleted: [] }
+  const modified: string[] = []
+  const added: string[] = []
+  const deleted: string[] = []
+  for (const line of out.split("\n")) {
+    const status = line[0]
+    const path = line.slice(1).trim()
+    if (!path) continue
+    if (status === "M") modified.push(path)
+    else if (status === "A") added.push(path)
+    else if (status === "D") deleted.push(path)
+  }
+  return { modified, added, deleted }
 }
 
 /** Format a tool-call input for compact one-line display */
@@ -234,6 +276,33 @@ async function copyToClipboard(text: string) {
   })
 }
 
+async function readClipboard(): Promise<string> {
+  const command = platform() === "darwin"
+    ? ["pbpaste"]
+    : platform() === "win32"
+      ? ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"]
+      : ["xclip", "-selection", "clipboard", "-o"]
+
+  return new Promise((resolve) => {
+    const child = spawn(command[0]!, command.slice(1), { stdio: ["ignore", "pipe", "ignore"] })
+    let output = ""
+    child.stdout?.on("data", (chunk) => { output += String(chunk) })
+    child.on("error", () => resolve(""))
+    child.on("close", () => resolve(output))
+  })
+}
+
+function openExternalUrl(url: string) {
+  const command = platform() === "darwin"
+    ? ["open", url]
+    : platform() === "win32"
+      ? ["cmd", "/c", "start", "", url]
+      : ["xdg-open", url]
+  const child = spawn(command[0]!, command.slice(1), { stdio: "ignore", detached: true })
+  child.on("error", () => {})
+  child.unref()
+}
+
 function systemPrompt(mode: RunMode) {
   return buildSystemPrompt(mode, agentsInstruction)
 }
@@ -311,7 +380,7 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
           when={!props.entry.streaming}
           fallback={<text style={{ fg: THEME.text }}>{props.entry.text}</text>}
         >
-          <markdown
+          <MarkdownWithDiff
             content={props.entry.text}
             syntaxStyle={MARKDOWN_SYNTAX}
             fg={THEME.text}
@@ -505,6 +574,7 @@ function App() {
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
+  const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [copyNotice, setCopyNotice] = createSignal(false)
@@ -532,6 +602,7 @@ function App() {
   const [lockPollRevision, setLockPollRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
+  const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
@@ -540,6 +611,7 @@ function App() {
   const _uiPrefs = loadUIPrefs()
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
+  const [tokenMode, setTokenMode] = createSignal<"precise" | "economy">(_uiPrefs.tokenMode ?? "precise")
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
@@ -567,6 +639,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
+  createEffect(() => { saveUIPrefs({ tokenMode: tokenMode() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -589,6 +662,19 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+  const inputQueue = createInputQueue(
+    async (item, signal) => {
+      await runQueuedPrompt(item.text, signal)
+    },
+    {
+      onDepthChange: (depth) => {
+        setQueuedInputs(depth)
+      },
+      onDrainEnd: () => {
+        setStatus("waiting for input")
+      },
+    },
+  )
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
@@ -701,6 +787,82 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     setPaletteIndex(0)
   }
 
+  let pendingCodexBrowserAuth: Awaited<ReturnType<typeof startCodexBrowserAuthorization>> | undefined
+
+  const markCodexAuthorized = () => {
+    setProviderConfigRevision((value) => value + 1)
+    setProviderModels((prev) => {
+      const next = { ...prev }
+      delete next["openai-codex"]
+      return next
+    })
+    setStatus("Codex authorized")
+  }
+
+  const completeCodexAuthAndSwitch = async () => {
+    setProviderConfigRevision((value) => value + 1)
+    await ensureModelsForProvider("openai-codex")
+    const model = defaultModelForCurrentProvider("openai-codex")
+    applyProviderModel("openai-codex", model, true)
+    setStatus("Codex authorized — switched to openai-codex")
+    setNotices((prev) => [...prev, {
+      kind: "system",
+      text: "Codex authorized! Using openai-codex provider with ChatGPT Pro/Plus.",
+    }])
+  }
+
+  const runCodexLogin = async (method: "browser" | "headless" | "code" = "browser", value?: string) => {
+    try {
+      if (method === "code") {
+        if (!pendingCodexBrowserAuth) {
+          return { ok: false, message: "No pending browser authorization. Run /codex-login first, then paste the callback URL or code directly." }
+        }
+        if (!value?.trim()) {
+          return { ok: false, message: "Usage: /codex-login code <callback-url-or-code>  (or just paste the URL directly)" }
+        }
+        await pendingCodexBrowserAuth.complete(value)
+        pendingCodexBrowserAuth = undefined
+        await completeCodexAuthAndSwitch()
+        return { ok: true, message: "Codex authorization saved — switched to openai-codex." }
+      }
+
+      if (method === "browser") {
+        const auth = await startCodexBrowserAuthorization()
+        pendingCodexBrowserAuth = auth
+        setNotices((prev) => [...prev, {
+          kind: "system",
+          text: `Complete Codex authorization in your browser. If it does not return automatically, paste the callback URL or authorization code here.`,
+        }])
+        setStatus("waiting for Codex browser authorization...")
+        openExternalUrl(auth.url)
+        void auth.waitForAuth().then(async () => {
+          if (pendingCodexBrowserAuth !== auth) return // already handled by paste
+          pendingCodexBrowserAuth = undefined
+          await completeCodexAuthAndSwitch()
+        }).catch((error) => {
+          if (pendingCodexBrowserAuth === auth) pendingCodexBrowserAuth = undefined
+          setStatus("Codex authorization failed")
+          setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+        })
+        return { ok: true, message: `Browser opened for Codex authorization. Paste the callback URL here to complete if it doesn't auto-close.` }
+      } else {
+        const device = await startCodexDeviceAuthorization()
+        setNotices((prev) => [...prev, {
+          kind: "system",
+          text: `Open ${device.url} and enter code: ${device.userCode}`,
+        }])
+        setStatus("waiting for Codex device authorization...")
+        await device.waitForAuth()
+      }
+
+      await completeCodexAuthAndSwitch()
+      return { ok: true, message: "Codex authorization saved — switched to openai-codex." }
+    } catch (error) {
+      setStatus("Codex authorization failed")
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   const timelineMsgs = createMemo(() => {
     return messages().filter((msg) => msg.role === "user" && msg.content);
   });
@@ -794,8 +956,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
-        label: "Reload config",
-        hint: "config files only (not source code)",
+        label: "Reload",
+        hint: "check state, reload config & detect file changes",
         onSelect: () => {
           refreshAgentsInstruction()
           // Re-detect provider in case API keys changed
@@ -812,7 +974,32 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setProviderModelsError({})
           setProviderConfigRevision(v => v + 1)
           setSelectionRevision(v => v + 1)
-          setStatus("config reloaded")
+          // Check for modified/new/deleted files that may have been changed externally
+          getGitFileChanges().then(({ modified, added, deleted }) => {
+            const hints: string[] = []
+            if (modified.length > 0) hints.push(`${modified.length} modified`)
+            if (added.length > 0) hints.push(`${added.length} added`)
+            if (deleted.length > 0) hints.push(`${deleted.length} deleted`)
+            if (hints.length > 0) {
+              setStatus(`reload: ${hints.join(", ")}`)
+            } else {
+              setStatus("reload complete")
+            }
+          })
+          setShowPalette(false)
+        },
+      },
+      {
+        label: "GIT",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Refresh modified files",
+        hint: "force re-read git working tree state",
+        onSelect: () => {
+          setGitRefreshRevision(v => v + 1)
+          setStatus("refreshing modified files…")
           setShowPalette(false)
         },
       },
@@ -878,6 +1065,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
+      {
+        label: "Token mode",
+        hint: tokenMode() === "precise" ? "precise" : "economy",
+        onSelect: () => { setTokenMode(m => m === "precise" ? "economy" : "precise"); setShowPalette(false) },
+      },
     ]
   })
 
@@ -928,12 +1120,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       label: `${provider.id === providerLabel() ? ">" : " "} ${provider.name}`,
       hint: truncateText(provider.id, PALETTE_HINT_MAX()),
       onSelect: () => {
-        const keys = listConfiguredProviderKeys(provider.id)
-        if (keys.length === 0) {
-          openModelsPalette(provider.id, "providers")
-        } else {
-          openProviderKeyPalette(provider.id)
-        }
+        openProviderKeyPalette(provider.id)
       },
     }))
 
@@ -1036,6 +1223,59 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       onSelect: () => {},
     })
 
+    const provider = PROVIDERS[providerId]
+    const envKeys = provider?.envKeys?.filter((key) => Boolean(process.env[key])) ?? []
+    const detectedAuth = provider?.detectAuth?.() ?? false
+
+    if (envKeys.length > 0) {
+      items.push({
+        label: `Env key active`,
+        hint: envKeys.join(", "),
+        kind: "section",
+        onSelect: () => {},
+      })
+    }
+
+    if (providerId === "openai-codex") {
+      // List all stored Codex auth entries
+      const authEntries = listCodexAuths()
+      if (authEntries.length > 0) {
+        for (const entry of authEntries) {
+          const isActive = entry.isActive && currentProvider === "openai-codex"
+          const displayLabel = entry.auth.accountId
+            ? `Account: ${entry.auth.accountId.slice(0, 12)}`
+            : `Key: ${entry.tokenPreview}`
+          items.push({
+            label: `${isActive ? ">" : " "} ${displayLabel}${entry.isActive ? " (active)" : ""}`,
+            hint: entry.tokenPreview,
+            sessionId: entry.label,
+            onSelect: async () => {
+              if (!entry.isActive) {
+                activateCodexAuth(entry.label)
+                setProviderConfigRevision((value) => value + 1)
+              }
+              await ensureModelsForProvider("openai-codex")
+              const model = defaultModelForCurrentProvider("openai-codex")
+              if (!applyProviderModel("openai-codex", model, true)) {
+                setStatus("Failed to activate Codex auth")
+                return
+              }
+              setStatus("Codex activated")
+              setShowPalette(false)
+              setPaletteMode("actions")
+            },
+          })
+        }
+      } else {
+        items.push({
+          label: "Codex auth missing",
+          hint: "run /codex-login",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+    }
+
     for (const key of keys) {
       const cfg = getStoredProviderConfig(providerId)
       const rawValue = cfg?.keys?.[key] ?? ""
@@ -1068,16 +1308,65 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     items.push({ label: "", onSelect: () => {} })
+    if (providerId === "openai-codex") {
+      items.push({
+        label: detectedAuth ? "Re-authorize Codex (browser)" : "Authorize ChatGPT Pro/Plus (browser)",
+        hint: "oauth",
+        onSelect: async () => {
+          const result = await runCodexLogin("browser")
+          setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+        },
+      })
+      items.push({
+        label: "Manually enter API Key",
+        hint: "OpenAI provider",
+        onSelect: () => {
+          setPaletteProviderKeyTarget("openai")
+          setPaletteNewKeyName("default")
+          setPaletteInput("")
+          setPaletteMode("addProviderKeyValue")
+          setPaletteIndex(0)
+        },
+      })
+    }
     items.push({
-      label: "Add key...",
+      label: "Continue to models",
+      hint: keys.length > 0
+        ? `using ${active ?? keys[0]}`
+        : envKeys.length > 0
+          ? "using env"
+          : detectedAuth
+            ? "using oauth"
+            : providerId === "openai-codex"
+              ? "authorize first"
+              : provider?.authOptional
+                ? "no key"
+                : "no key configured",
       onSelect: () => {
-        setPaletteNewKeyName("")
-        setPaletteInput("")
-        setPaletteMode("addProviderKeyName")
-        setPaletteIndex(0)
+        if (providerId === "openai-codex" && !detectedAuth) {
+          setStatus("Authorize Codex before choosing a model")
+          return
+        }
+        if (!provider?.authOptional && keys.length === 0 && envKeys.length === 0 && !detectedAuth) {
+          setStatus(`Add a key for ${providerId} before choosing a model`)
+          return
+        }
+        openModelsPalette(providerId, "providers")
       },
     })
     items.push({ label: "", onSelect: () => {} })
+    if (providerId !== "openai-codex") {
+      items.push({
+        label: "Add key...",
+        onSelect: () => {
+          setPaletteNewKeyName("")
+          setPaletteInput("")
+          setPaletteMode("addProviderKeyName")
+          setPaletteIndex(0)
+        },
+      })
+      items.push({ label: "", onSelect: () => {} })
+    }
     items.push({
       label: "← Back",
       onSelect: () => {
@@ -1518,8 +1807,134 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
   }
 
+  const runQueuedPrompt = async (input: string, abortSignal: AbortSignal) => {
+    history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
+    historyIndex = -1
+    historyDraft = ""
+
+    // Auto-title: if this is the first user message and title is still default, derive from input
+    if (messages().length === 0) {
+      const meta = currentSessionMeta()
+      if (meta && isDefaultTitle(meta.title)) {
+        const title = deriveTitle(input)
+        if (title) {
+          updateSessionMeta(meta.id, { title })
+          refreshSessions()
+        }
+      }
+    }
+
+    queueMicrotask(scrollBottom)
+
+    // Auto-compact if context is near limit (> 80%)
+    {
+      const cfg = getModelConfig(currentModel)
+      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
+      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
+        await compactCurrentSession()
+      }
+    }
+
+    runAbort = new AbortController()
+    abortSignal.addEventListener("abort", () => runAbort?.abort(), { once: true })
+    streamState.reset()
+    refreshAgentsInstruction()
+    setRunning(true)
+    setStatus(formatQueueStatus("thinking...", queuedInputs()))
+
+    const activeSessionId = sessionId()
+    markSessionActive(activeSessionId)
+
+    let noticesCleared = false
+    const clearNoticesOnce = () => {
+      if (!noticesCleared) {
+        noticesCleared = true
+        // Preserve error notices from previous runs;
+        // only clear transient notices (tool, info, etc.)
+        setNotices((prev) => prev.filter((n) => n.kind === "error"))
+      }
+    }
+
+    try {
+      const next = await runSession(input, sanitizeMessages(messages()), {
+        abort: runAbort.signal,
+        streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
+        streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
+        streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
+        setStreamingToolResult: (input) => streamState.setToolResult(input),
+        addMessage: (msg) => {
+          if (msg.role === "assistant") streamState.reset()
+          if (msg.role === "tool") streamState.reset()
+          setMessages((prev) => [...prev, msg])
+        },
+        notify: (text, kind) => {
+          setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
+        },
+        setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
+        scrollBottom,
+        model: currentModel,
+        mode: mode(),
+        tokenMode: tokenMode(),
+      }, {
+        runSync,
+        systemPrompt,
+        parseJson: tryParseJSON,
+        compactionSummary: compaction()?.summary,
+        ask: (req) => new Promise<void>((resolve, reject) => {
+          if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
+          if (autoApprove()) {
+            if (req.permission === "bash") {
+              const dangerous = req.patterns.some((p) => isDangerousBashCommand(p))
+              if (dangerous) {
+                const request = { ...req, id: `perm_${Date.now()}` }
+                setPendingApproval({
+                  request,
+                  resolve,
+                  reject,
+                  allowAlways: () => {
+                    setPermissionRules((prev) => addPermissionRules(prev, req))
+                    resolve()
+                  },
+                })
+                return
+              }
+            }
+            resolve(); return
+          }
+          const request = { ...req, id: `perm_${Date.now()}` }
+          setPendingApproval({
+            request,
+            resolve,
+            reject,
+            allowAlways: () => {
+              setPermissionRules((prev) => addPermissionRules(prev, req))
+              resolve()
+            },
+          })
+        }),
+      })
+
+      setMessages(next)
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+      setStatus(formatQueueStatus("waiting for input", queuedInputs()))
+      queueMicrotask(scrollBottom)
+    } catch (err) {
+      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
+      if (!isAbort) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
+        setStatus(formatQueueStatus("error", queuedInputs()))
+      } else {
+        setStatus(formatQueueStatus("interrupted", queuedInputs()))
+      }
+    } finally {
+      unmarkSessionActive(activeSessionId)
+      runAbort = undefined
+      setRunning(false)
+    }
+  }
+
   const submit = async () => {
-    if (running()) return
     if (autocompleteApi?.visible()) {
       autocompleteApi.select()
       return
@@ -1527,7 +1942,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const rawInput = draft().trim()
     if (!rawInput) return
 
-    // Expand pasted markers back to full content
     let input = rawInput
     for (const [marker, content] of pastedContent) {
       if (input.includes(marker)) {
@@ -1540,9 +1954,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
-    // Allow bare "exit" / "quit" without the slash
     if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
       void exitApp(0)
+      return
+    }
+
+    if (pendingCodexBrowserAuth && isOAuthCallbackUrl(input)) {
+      try {
+        await pendingCodexBrowserAuth.complete(input)
+        pendingCodexBrowserAuth = undefined
+        await completeCodexAuthAndSwitch()
+      } catch (error) {
+        setStatus("Codex authorization failed")
+        setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+      }
+      setComposerText("")
       return
     }
 
@@ -1609,6 +2035,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteIndex(0)
         },
         refreshSessions,
+        codexLogin: runCodexLogin,
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -1649,131 +2076,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
-    history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
-    historyIndex = -1
-    historyDraft = ""
-
-    // Auto-title: if this is the first user message and title is still default, derive from input
-    if (messages().length === 0) {
-      const meta = currentSessionMeta()
-      if (meta && isDefaultTitle(meta.title)) {
-        const title = deriveTitle(input)
-        if (title) {
-          updateSessionMeta(meta.id, { title })
-          refreshSessions()
-        }
-      }
+    const wasDraining = inputQueue?.isDraining() ?? false
+    inputQueue?.enqueue(input)
+    setComposerText("")
+    if (wasDraining) {
+      // Queue was already processing an earlier item; this one is queued
+      setStatus(formatQueueStatus("queued", queuedInputs()))
     }
-
+    // Otherwise (was not draining): the item starts running immediately,
+    // and runQueuedPrompt will set the status to "thinking...".
     queueMicrotask(scrollBottom)
-
-    // Auto-compact if context is near limit (> 80%)
-    {
-      const cfg = getModelConfig(currentModel)
-      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
-      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
-        await compactCurrentSession()
-      }
-    }
-
-    runAbort = new AbortController()
-        streamState.reset()
-        refreshAgentsInstruction()
-        setRunning(true)
-        setStatus("thinking...")
-
-    // Mark session as active (visible to other processes)
-    const activeSessionId = sessionId()
-    markSessionActive(activeSessionId)
-
-    // Clear notices only when streaming actually starts (first chunk received),
-    // so error notices from a failed stream persist until the next successful response.
-    let noticesCleared = false
-    const clearNoticesOnce = () => {
-      if (!noticesCleared) {
-        noticesCleared = true
-        setNotices([])
-      }
-    }
-
-    try {
-      const next = await runSession(input, sanitizeMessages(messages()), {
-        abort: runAbort.signal,
-        streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
-        streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
-        streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
-        setStreamingToolResult: (input) => streamState.setToolResult(input),
-        addMessage: (msg) => {
-          if (msg.role === "assistant") streamState.reset()
-          if (msg.role === "tool") streamState.reset()
-          setMessages((prev) => [...prev, msg])
-        },
-        notify: (text, kind) => {
-          setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
-        },
-        setStatus,
-        scrollBottom,
-        model: currentModel,
-        mode: mode(),
-      }, {
-        runSync,
-        systemPrompt,
-        parseJson: tryParseJSON,
-        compactionSummary: compaction()?.summary,
-        ask: (req) => new Promise<void>((resolve, reject) => {
-          if (shouldAutoApprove(req, permissionRules())) { resolve(); return }
-          // Auto-approve mode: auto-approve non-bash permissions,
-          // and bash commands that are not destructive.
-          if (autoApprove()) {
-            if (req.permission === "bash") {
-              const dangerous = req.patterns.some((p) => isDangerousBashCommand(p))
-              if (dangerous) {
-                const request = { ...req, id: `perm_${Date.now()}` }
-                setPendingApproval({
-                  request,
-                  resolve,
-                  reject,
-                  allowAlways: () => {
-                    setPermissionRules((prev) => addPermissionRules(prev, req))
-                    resolve()
-                  },
-                })
-                return
-              }
-            }
-            resolve(); return
-          }
-          const request = { ...req, id: `perm_${Date.now()}` }
-          setPendingApproval({
-            request,
-            resolve,
-            reject,
-            allowAlways: () => {
-              setPermissionRules((prev) => addPermissionRules(prev, req))
-              resolve()
-            },
-          })
-        }),
-      })
-
-      setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
-      setComposerText("")
-      setStatus("waiting for input")
-      queueMicrotask(scrollBottom)
-    } catch (err) {
-      // AbortError = user cancelled — no noise needed
-      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
-      if (!isAbort) {
-        const msg = err instanceof Error ? err.message : String(err)
-        setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
-        setStatus("error")
-      }
-    } finally {
-      unmarkSessionActive(activeSessionId)
-      runAbort = undefined
-      setRunning(false)
-    }
   }
 
   useKeyboard((event) => {
@@ -1864,6 +2176,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     if (showPalette()) {
       // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
+      if ((event.ctrl || event.meta) && event.name === "v") {
+        void readClipboard().then((text) => {
+          if (!text) return
+          setPaletteInput((prev) => prev + text.trim())
+        })
+        event.preventDefault()
+        return
+      }
       if (event.name === "backspace") {
         setPaletteInput(prev => prev.slice(0, -1))
         event.preventDefault()
@@ -2009,15 +2329,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
         if (palettePendingDelete() === keyName) {
-          const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
-          setStatus(result.message)
-          if (result.ok) setProviderConfigRevision(v => v + 1)
+          if (paletteProviderKeyTarget() === "openai-codex" && (keyName === "openai" || keyName.startsWith("openai@"))) {
+            const ok = deleteCodexAuth(keyName)
+            setStatus(ok ? `removed Codex auth "${keyName}"` : `failed to remove Codex auth "${keyName}"`)
+            if (ok) setProviderConfigRevision(v => v + 1)
+          } else {
+            const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
+            setStatus(result.message)
+            if (result.ok) setProviderConfigRevision(v => v + 1)
+          }
           setPalettePendingDelete(null)
           event.preventDefault()
           return
         }
         setPalettePendingDelete(keyName)
-        setStatus(`press ctrl+d again to remove key "${keyName}"`)
+        setStatus(
+          paletteProviderKeyTarget() === "openai-codex" && (keyName === "openai" || keyName.startsWith("openai@"))
+            ? `press ctrl+d again to remove Codex auth "${keyName}"`
+            : `press ctrl+d again to remove key "${keyName}"`
+        )
         event.preventDefault()
         return
       }
@@ -2082,8 +2412,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (running() && runAbort) {
-        runAbort.abort()
-        setStatus("interrupted")
+        inputQueue?.abort()
+        setStatus(formatQueueStatus("interrupted", queuedInputs()))
         event.preventDefault()
         return
       }
@@ -2150,6 +2480,29 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       scroll.scrollTo(scroll.scrollHeight)
       event.preventDefault()
     }
+  })
+
+  // Handle terminal bracketed paste events for the palette input
+  usePaste((event: PasteEvent) => {
+    if (!showPalette()) return
+    const text = new TextDecoder().decode(event.bytes)
+    if (!text) return
+    // Auto-complete Codex OAuth if user pastes a callback URL while palette is open
+    if (pendingCodexBrowserAuth && isOAuthCallbackUrl(text)) {
+      event.preventDefault()
+      void (async () => {
+        try {
+          await pendingCodexBrowserAuth.complete(text)
+          pendingCodexBrowserAuth = undefined
+          await completeCodexAuthAndSwitch()
+        } catch (error) {
+          setStatus("Codex authorization failed")
+          setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+        }
+      })()
+      return
+    }
+    setPaletteInput((prev) => prev + text)
   })
 
   return (
@@ -2288,6 +2641,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   const text = new TextDecoder().decode(event.bytes)
                     .replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim()
                   if (!text) return
+
+                  // Auto-complete Codex OAuth if user pastes a callback URL or code
+                  if (pendingCodexBrowserAuth && isOAuthCallbackUrl(text)) {
+                    event.preventDefault()
+                    void (async () => {
+                      try {
+                        await pendingCodexBrowserAuth.complete(text)
+                        pendingCodexBrowserAuth = undefined
+                        await completeCodexAuthAndSwitch()
+                      } catch (error) {
+                        setStatus("Codex authorization failed")
+                        setNotices((prev) => [...prev, { kind: "error", text: error instanceof Error ? error.message : String(error) }])
+                      }
+                    })()
+                    return
+                  }
+
                   const lineCount = (text.match(/\n/g)?.length ?? 0) + 1
                   if (lineCount >= 3 || text.length > 200) {
                     event.preventDefault()
@@ -2338,7 +2708,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
               <Show when={running()} fallback={
-                <text style={{ fg: THEME.muted }}>{`  •  ${SCROLL_HINT}`}</text>
+                <text style={{ fg: THEME.muted }}>{`  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
@@ -2368,6 +2738,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           sessionTitle={sessionMeta()?.title}
           cwd={process.cwd()}
           sessionId={sessionId()}
+          gitRefreshKey={gitRefreshRevision()}
         />
       </Show>
 
@@ -2392,6 +2763,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             sessionTitle={sessionMeta()?.title}
             cwd={process.cwd()}
             sessionId={sessionId()}
+            gitRefreshKey={gitRefreshRevision()}
           />
         </box>
       </Show>

@@ -6,8 +6,10 @@ export const HELP_CONTENT = `\
 Commands
 
   /help                  Show this help
-  /clear  [/new]         Clear conversation history
+  /clear                Clear conversation history
+  /new                  Start a fresh session
   /provider [id|list]    Show or switch provider
+  /codex-login           Authorize OpenAI Codex
   /mode                  Toggle build / plan mode
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
@@ -50,6 +52,7 @@ Command Palette  (Ctrl+P / F2)
     Switch mode          Toggle build ↔ plan
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
+    Token mode           Toggle precise ↔ economy history sending
 
 Message Actions  (click a user message)
 

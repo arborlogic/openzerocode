@@ -1,13 +1,13 @@
 import { layer as openAICompatibleLayer } from "./big-pickle"
 import type { ProviderDef } from "./registry"
 
-const DEFAULT_BASE = "https://openrouter.ai/api/v1"
+const DEFAULT_BASE = "https://api.openai.com/v1"
 
 export const def: ProviderDef = {
-  id: "openrouter",
-  name: "OpenRouter",
-  defaultModel: "openrouter/auto",
-  envKeys: ["OPENROUTER_API_KEY"],
+  id: "openai",
+  name: "OpenAI",
+  defaultModel: "gpt-5.4",
+  envKeys: ["OPENAI_API_KEY"],
   factory: (cfg) => openAICompatibleLayer({
     apiKey: cfg.apiKey,
     baseURL: cfg.baseURL ?? DEFAULT_BASE,

@@ -33,6 +33,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
     refreshSessions: mock(() => {}),
+    codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     ...overrides,
   }
 }
@@ -43,6 +44,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("help"))
     assert.ok(names.includes("clear"))
     assert.ok(names.includes("provider"))
+    assert.ok(names.includes("codex-login"))
     assert.ok(names.includes("mode"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
@@ -93,10 +95,11 @@ describe("executeCommand", () => {
     assert.ok((ctx.setDraft as any).mock.calls.length > 0)
   })
 
-  it("handles /new (alias)", async () => {
+  it("handles /new — creates a new session", async () => {
     const ctx = stubCtx()
     const result = await executeCommand("/new", ctx)
     assert.ok(result)
+    assert.ok((ctx.createNewSession as any).mock.calls.length > 0)
   })
 
   describe("/mode", () => {
@@ -150,6 +153,24 @@ describe("executeCommand", () => {
       const result = await executeCommand("/provider list", ctx)
       assert.ok(result)
       assert.ok((ctx.openProviderList as any).mock.calls.length > 0)
+    })
+  })
+
+  describe("/codex-login", () => {
+    it("authorizes Codex", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/codex-login", ctx)
+      assert.ok(result)
+      assert.ok((ctx.codexLogin as any).mock.calls.length > 0)
+      assert.equal((ctx.codexLogin as any).mock.calls[0][0], "browser")
+    })
+
+    it("authorizes Codex with callback code", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/codex-login code http://localhost:1455/auth/callback?code=abc", ctx)
+      assert.ok(result)
+      assert.equal((ctx.codexLogin as any).mock.calls[0][0], "code")
+      assert.equal((ctx.codexLogin as any).mock.calls[0][1], "http://localhost:1455/auth/callback?code=abc")
     })
   })
 

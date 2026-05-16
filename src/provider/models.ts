@@ -16,6 +16,46 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     contextLimit: 128_000,
     pricing: { input: 0, output: 0 },
   },
+  "gpt-5.4": {
+    contextLimit: 1_000_000,
+    pricing: { input: 2.5, output: 15 },
+  },
+  "gpt-5.4-mini": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.4, output: 1.6 },
+  },
+  "gpt-5.4-nano": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.1, output: 0.4 },
+  },
+  "gpt-5.4-codex": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+  },
+  "gpt-5.2": {
+    contextLimit: 400_000,
+    pricing: { input: 1.75, output: 14 },
+  },
+  "gpt-5.2-codex": {
+    contextLimit: 400_000,
+    pricing: { input: 1.75, output: 14 },
+  },
+  "gpt-5.2-chat-latest": {
+    contextLimit: 400_000,
+    pricing: { input: 1.75, output: 14 },
+  },
+  "gpt-5": {
+    contextLimit: 400_000,
+    pricing: { input: 1.25, output: 10 },
+  },
+  "gpt-5-mini": {
+    contextLimit: 400_000,
+    pricing: { input: 0.25, output: 2 },
+  },
+  "gpt-5-nano": {
+    contextLimit: 400_000,
+    pricing: { input: 0.05, output: 0.4 },
+  },
   "gpt-4o": {
     contextLimit: 128_000,
     pricing: { input: 2.5, output: 10 },
@@ -70,7 +110,19 @@ export function getModelConfig(model: string): ModelConfig {
 }
 
 export function estimateTokens(text: string): number {
-  return Math.max(0, Math.round(text.length / 4))
+  if (!text) return 0
+  let cjkCount = 0
+  let otherCount = 0
+  for (const char of text) {
+    if (/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(char)) {
+      cjkCount++
+    } else {
+      otherCount++
+    }
+  }
+  // CJK characters typically take 1–2 tokens per char (~0.5 token each)
+  // ASCII/non-CJK typically average 4 chars per token (~0.25 token each)
+  return Math.max(0, Math.round(cjkCount / 2 + otherCount / 4))
 }
 
 export function estimateCost(model: string, inputTokens: number, outputTokens: number): number {

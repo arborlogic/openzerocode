@@ -6,12 +6,14 @@ type UIPrefs = {
   showCompletedTools: boolean
   showThinkingBlocks: boolean
   layoutMode: "horizontal" | "vertical"
+  tokenMode: "precise" | "economy"
 }
 
 const DEFAULTS: UIPrefs = {
   showCompletedTools: false,
   showThinkingBlocks: true,
   layoutMode: "horizontal",
+  tokenMode: "precise",
 }
 
 function getPrefsPath() {

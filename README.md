@@ -4,6 +4,8 @@
 
 OpenZeroCode is a local-first, TUI-driven AI coding assistant adapted from the OpenCode direction. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, and working memory.
 
+![OpenZeroCode preview](./preview01.png)
+
 ---
 
 ## Inspiration

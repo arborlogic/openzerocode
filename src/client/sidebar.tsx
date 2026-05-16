@@ -1,7 +1,8 @@
 import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
-import { execFileSync } from "node:child_process"
+import { execFile } from "node:child_process"
+import { promisify } from "node:util"
 import type { Message } from "../provider/types"
-import { getModelConfig, estimateTokens, estimateCost } from "../provider/models"
+import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 
@@ -9,6 +10,7 @@ type GitFile = {
   path: string
   additions: number
   deletions: number
+  status: "modified" | "added"
 }
 
 type GitCommit = {
@@ -16,84 +18,109 @@ type GitCommit = {
   subject: string
 }
 
-let lastGitRead = 0
-let lastGitResult: GitFile[] = []
+type GitSnapshot = {
+  files: GitFile[]
+  branch: string | null
+  commits: GitCommit[]
+}
 
-function readGitDiff(): GitFile[] {
-  const now = Date.now()
-  if (now - lastGitRead < 2000) return lastGitResult
-  lastGitRead = now
+const execFileAsync = promisify(execFile)
+const EMPTY_GIT_SNAPSHOT: GitSnapshot = { files: [], branch: null, commits: [] }
+
+let lastGitSnapshot = EMPTY_GIT_SNAPSHOT
+let pendingGitSnapshot: Promise<GitSnapshot> | undefined
+
+async function runGit(args: string[], timeout = 1000): Promise<string> {
   try {
-    // Use --name-status to get file list (handles binary files safely)
-    const out = execFileSync("git", ["diff", "--name-status", "HEAD"], {
+    const { stdout } = await execFileAsync("git", args, {
       encoding: "utf-8",
-      timeout: 2000,
-      stdio: ["pipe", "pipe", "ignore"],
+      timeout,
+      maxBuffer: 1024 * 1024,
     })
-    const lines = out.trim().split("\n").filter(Boolean)
-    const result: GitFile[] = []
-    for (const line of lines) {
-      const status = line.charAt(0)
-      const filePath = line.slice(1).trim()
-      if (filePath) {
-        let additions = 0
-        let deletions = 0
-        if (status === "M" || status === "A") {
-          // Try to get line counts per file — binary files will fail silently
-          try {
-            const stat = execFileSync("git", ["diff", "--numstat", "HEAD", "--", filePath], {
-              encoding: "utf-8",
-              timeout: 1000,
-              stdio: ["pipe", "pipe", "ignore"],
-            })
-            const match = stat.trim().match(/^(\d+)\s+(\d+)/)
-            if (match) {
-              additions = parseInt(match[1]!) || 0
-              deletions = parseInt(match[2]!) || 0
-            }
-          } catch {
-            // binary file or other error — just show filename without counts
-          }
+    return stdout.trim()
+  } catch {
+    return ""
+  }
+}
+
+function parseGitDiffNumstat(out: string): Omit<GitFile, "status">[] {
+  if (!out) return []
+  return out.split("\n").filter(Boolean).map((line) => {
+    const parts = line.split("\t")
+    const additions = Number.parseInt(parts[0] ?? "0", 10) || 0
+    const deletions = Number.parseInt(parts[1] ?? "0", 10) || 0
+    const filePath = parts.at(-1)?.trim() ?? ""
+    return { path: filePath, additions, deletions }
+  }).filter((file) => file.path.length > 0)
+}
+
+function parseRecentCommits(out: string): GitCommit[] {
+  if (!out) return []
+  return out.split("\n").filter(Boolean).map((line) => {
+    const spaceIdx = line.indexOf(" ")
+    const hash = spaceIdx >= 0 ? line.slice(0, spaceIdx) : line
+    const subject = spaceIdx >= 0 ? line.slice(spaceIdx + 1) : ""
+    return { hash, subject }
+  })
+}
+
+async function readGitSnapshot(): Promise<GitSnapshot> {
+  // Dedup concurrent calls: if a fetch is already in-flight, share its result.
+  // The 300 ms debounce in the component effect already prevents rapid
+  // successive reads, so we don't need an additional TTL cache here — without
+  // it the sidebar stays in sync with the actual working tree state.
+  if (pendingGitSnapshot) return pendingGitSnapshot
+
+  pendingGitSnapshot = Promise.all([
+    runGit(["diff", "--numstat", "HEAD"], 2000),
+    runGit(["status", "--porcelain"], 2000),
+    runGit(["rev-parse", "--abbrev-ref", "HEAD"], 1000),
+    runGit(["log", "--oneline", "-3"], 1000),
+  ]).then(([diff, porcelain, branch, commits]) => {
+    // 1) Parse tracked changes from --numstat (modified + staged additions)
+    const fileMap = new Map<string, GitFile>()
+    for (const file of parseGitDiffNumstat(diff)) {
+      fileMap.set(file.path, { ...file, status: "modified" })
+    }
+
+    // 2) Overlay status from --porcelain: mark staged additions as "added"
+    for (const line of porcelain.split("\n").filter(Boolean)) {
+      const statusRaw = line.slice(0, 2)
+      const filePath = line.slice(3).trim()
+      if (!filePath) continue
+
+      // Staged addition (A in index column)
+      if (statusRaw[0] === "A") {
+        const existing = fileMap.get(filePath)
+        if (existing) {
+          existing.status = "added"
+        } else {
+          // Staged new file with no working-tree diff (empty file)
+          fileMap.set(filePath, { path: filePath, additions: 0, deletions: 0, status: "added" })
         }
-        result.push({ path: filePath, additions, deletions })
+        continue
+      }
+
+      // Untracked file (??)
+      if (statusRaw === "??") {
+        // Only add if not already tracked by --numstat
+        if (!fileMap.has(filePath)) {
+          fileMap.set(filePath, { path: filePath, additions: 0, deletions: 0, status: "added" })
+        }
       }
     }
-    lastGitResult = result
-    return lastGitResult
-  } catch {
-    return []
-  }
-}
 
-function readGitBranch(): string | null {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-      encoding: "utf-8",
-      timeout: 1000,
-      stdio: ["pipe", "pipe", "ignore"],
-    })
-    return out.trim() || null
-  } catch {
-    return null
-  }
-}
-
-function readRecentCommits(n: number): GitCommit[] {
-  try {
-    const out = execFileSync("git", ["log", "--oneline", `-${n}`], {
-      encoding: "utf-8",
-      timeout: 1000,
-      stdio: ["pipe", "pipe", "ignore"],
-    })
-    return out.trim().split("\n").filter(Boolean).map((line) => {
-      const spaceIdx = line.indexOf(" ")
-      const hash = spaceIdx >= 0 ? line.slice(0, spaceIdx) : line
-      const subject = spaceIdx >= 0 ? line.slice(spaceIdx + 1) : ""
-      return { hash, subject }
-    })
-  } catch {
-    return []
-  }
+    const snapshot: GitSnapshot = {
+      files: [...fileMap.values()],
+      branch: branch || null,
+      commits: parseRecentCommits(commits),
+    }
+    lastGitSnapshot = snapshot
+    return snapshot
+  }).finally(() => {
+    pendingGitSnapshot = undefined
+  })
+  return pendingGitSnapshot
 }
 
 function truncatePath(path: string, maxLen: number): string {
@@ -127,11 +154,14 @@ export function Sidebar(props: {
   sessionTitle?: string
   sessionId?: string
   cwd?: string
+  /** Increment to force a git snapshot refresh from outside the component. */
+  gitRefreshKey?: number
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
-  const [branch, setBranch] = createSignal<string | null>(readGitBranch())
-  const [commits, setCommits] = createSignal<GitCommit[]>(readRecentCommits(3))
+  const [branch, setBranch] = createSignal<string | null>(null)
+  const [commits, setCommits] = createSignal<GitCommit[]>([])
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
+  let gitRefreshSeq = 0
 
   // Poll session lock status every 3s while sidebar is visible
   const [lockTick, setLockTick] = createSignal(0)
@@ -141,33 +171,49 @@ export function Sidebar(props: {
   })
 
   createEffect(() => {
-    props.messages()
-    setGitFiles(readGitDiff())
-    setBranch(readGitBranch())
-    setCommits(readRecentCommits(3))
+    props.messages().length
+    const seq = ++gitRefreshSeq
+    const id = setTimeout(() => {
+      void readGitSnapshot().then((snapshot) => {
+        if (seq !== gitRefreshSeq) return
+        setGitFiles(snapshot.files)
+        setBranch(snapshot.branch)
+        setCommits(snapshot.commits)
+      })
+    }, 300)
+    return () => clearTimeout(id)
+  })
+
+  // Force refresh when gitRefreshKey changes (external trigger via palette)
+  createEffect(() => {
+    props.gitRefreshKey
+    const seq = ++gitRefreshSeq
+    void readGitSnapshot().then((snapshot) => {
+      if (seq !== gitRefreshSeq) return
+      setGitFiles(snapshot.files)
+      setBranch(snapshot.branch)
+      setCommits(snapshot.commits)
+    })
   })
 
   const modelCfg = createMemo(() => getModelConfig(props.model))
 
-  const totalInputTokens = createMemo(() =>
-    estimateTokens(
-      props.messages()
-        .filter(m => m.role === "user" || m.role === "system")
-        .map(m => m.content ?? "")
-        .join("")
-    )
-  )
+  const tokenUsage = createMemo(() => {
+    let inputChars = 0
+    let outputChars = 0
+    for (const msg of props.messages()) {
+      const length = (msg.content ?? "").length
+      if (msg.role === "user" || msg.role === "system") inputChars += length
+      if (msg.role === "assistant") outputChars += length
+    }
+    const input = Math.max(0, Math.round(inputChars / 4))
+    const output = Math.max(0, Math.round(outputChars / 4))
+    return { input, output, total: input + output }
+  })
 
-  const totalOutputTokens = createMemo(() =>
-    estimateTokens(
-      props.messages()
-        .filter(m => m.role === "assistant")
-        .map(m => m.content ?? "")
-        .join("")
-    )
-  )
-
-  const totalTokens = createMemo(() => totalInputTokens() + totalOutputTokens())
+  const totalInputTokens = createMemo(() => tokenUsage().input)
+  const totalOutputTokens = createMemo(() => tokenUsage().output)
+  const totalTokens = createMemo(() => tokenUsage().total)
   const contextPercent = createMemo(() => {
     const limit = modelCfg().contextLimit
     if (!limit) return 0
@@ -283,16 +329,24 @@ export function Sidebar(props: {
         <Show when={gitFiles().length > 0}>
           <box flexDirection="column">
             <box flexDirection="row" gap={1}>
-              <text style={{ fg: props.theme.accent }}>Modified Files</text>
+              <text style={{ fg: props.theme.accent }}>Changed Files</text>
               <text style={{ fg: "#7ee787" }}>+{totalAdditions()}</text>
               <text style={{ fg: "#f85149" }}>-{totalDeletions()}</text>
             </box>
             <For each={gitFiles()}>
               {(file) => (
                 <box flexDirection="row" justifyContent="space-between">
-                  <text style={{ fg: props.theme.muted }} wrapMode="none" flexShrink={1}>
-                    {truncatePath(file.path, props.width - 8)}
-                  </text>
+                  <box flexDirection="row" gap={1} flexShrink={1}>
+                    <Show when={file.status === "added"}>
+                      <text style={{ fg: "#7ee787" }}>+</text>
+                    </Show>
+                    <text
+                      style={{ fg: file.status === "added" ? "#7ee787" : props.theme.muted }}
+                      wrapMode="none"
+                    >
+                      {truncatePath(file.path, props.width - 8)}
+                    </text>
+                  </box>
                   <box flexDirection="row" flexShrink={0} gap={1}>
                     <Show when={file.additions > 0}>
                       <text style={{ fg: "#7ee787" }}>+{file.additions}</text>

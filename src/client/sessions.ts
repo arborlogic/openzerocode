@@ -62,6 +62,14 @@ function sessionPath(id: string): string {
   return join(getSessionDir(), `${id}.json`)
 }
 
+function writeSessionFile(id: string, data: unknown) {
+  ensureDir()
+  const target = sessionPath(id)
+  const tmp = target + ".tmp"
+  writeFileSync(tmp, JSON.stringify(data), "utf-8")
+  renameSync(tmp, target)
+}
+
 export function generateId(): string {
   return "ses_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
@@ -124,13 +132,13 @@ export function createSession(model: string, provider: string, messages?: Messag
   writeIndex(index)
 
   if (messages && messages.length > 0) {
-    writeFileSync(sessionPath(id), JSON.stringify({
+    writeSessionFile(id, {
       messages,
       model,
       provider,
       createdAt: now,
       updatedAt: now,
-    }, null, 2), "utf-8")
+    })
   }
 
   return meta
@@ -153,7 +161,7 @@ export function saveSession(
   const createdAt = existing?.createdAt ?? now
   const sanitized = sanitizeMessages(messages)
 
-  writeFileSync(sessionPath(id), JSON.stringify({
+  writeSessionFile(id, {
     messages: sanitized,
     model,
     provider,
@@ -163,7 +171,7 @@ export function saveSession(
     autoApprove: autoApprove ?? false,
     createdAt,
     updatedAt: now,
-  }, null, 2), "utf-8")
+  })
 
   const count = sanitized.length
   if (existing) {
