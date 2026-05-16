@@ -6,7 +6,8 @@ export const HELP_CONTENT = `\
 Commands
 
   /help                  Show this help
-  /clear  [/new]         Clear conversation history
+  /clear                Clear conversation history
+  /new                  Start a fresh session
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
   /mode                  Toggle build / plan mode

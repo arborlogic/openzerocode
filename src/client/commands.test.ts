@@ -95,10 +95,11 @@ describe("executeCommand", () => {
     assert.ok((ctx.setDraft as any).mock.calls.length > 0)
   })
 
-  it("handles /new (alias)", async () => {
+  it("handles /new — creates a new session", async () => {
     const ctx = stubCtx()
     const result = await executeCommand("/new", ctx)
     assert.ok(result)
+    assert.ok((ctx.createNewSession as any).mock.calls.length > 0)
   })
 
   describe("/mode", () => {

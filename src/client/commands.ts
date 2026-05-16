@@ -35,7 +35,8 @@ export type CommandContext = {
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "help", description: "Show help, shortcuts and palette guide" },
-  { name: "clear", description: "Clear conversation history", aliases: ["new"] },
+  { name: "clear", description: "Clear conversation history" },
+  { name: "new", description: "Start a fresh session" },
   { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
   { name: "mode", description: "Toggle build / plan mode" },
@@ -111,10 +112,15 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     return true
   }
 
-  if (cmd === "clear" || cmd === "new") {
+  if (cmd === "clear") {
     ctx.setMessages([])
     ctx.setNotices([])
     ctx.setDraft("")
+    return true
+  }
+
+  if (cmd === "new") {
+    ctx.createNewSession()
     return true
   }
 
