@@ -52,6 +52,7 @@ Command Palette  (Ctrl+P / F2)
     Switch mode          Toggle build ↔ plan
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
+    Token mode           Toggle precise ↔ economy history sending
 
 Message Actions  (click a user message)
 

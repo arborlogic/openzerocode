@@ -110,7 +110,19 @@ export function getModelConfig(model: string): ModelConfig {
 }
 
 export function estimateTokens(text: string): number {
-  return Math.max(0, Math.round(text.length / 4))
+  if (!text) return 0
+  let cjkCount = 0
+  let otherCount = 0
+  for (const char of text) {
+    if (/[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/.test(char)) {
+      cjkCount++
+    } else {
+      otherCount++
+    }
+  }
+  // CJK characters typically take 1–2 tokens per char (~0.5 token each)
+  // ASCII/non-CJK typically average 4 chars per token (~0.25 token each)
+  return Math.max(0, Math.round(cjkCount / 2 + otherCount / 4))
 }
 
 export function estimateCost(model: string, inputTokens: number, outputTokens: number): number {

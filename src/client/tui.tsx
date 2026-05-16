@@ -611,6 +611,7 @@ function App() {
   const _uiPrefs = loadUIPrefs()
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
+  const [tokenMode, setTokenMode] = createSignal<"precise" | "economy">(_uiPrefs.tokenMode ?? "precise")
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
@@ -638,6 +639,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
+  createEffect(() => { saveUIPrefs({ tokenMode: tokenMode() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -1062,6 +1064,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Switch model",
         hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
+      },
+      {
+        label: "Token mode",
+        hint: tokenMode() === "precise" ? "precise" : "economy",
+        onSelect: () => { setTokenMode(m => m === "precise" ? "economy" : "precise"); setShowPalette(false) },
       },
     ]
   })
@@ -1867,6 +1874,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         scrollBottom,
         model: currentModel,
         mode: mode(),
+        tokenMode: tokenMode(),
       }, {
         runSync,
         systemPrompt,

@@ -43,7 +43,7 @@ async function runGit(args: string[], timeout = 1000): Promise<string> {
   }
 }
 
-function parseGitDiffNumstat(out: string): GitFile[] {
+function parseGitDiffNumstat(out: string): Omit<GitFile, "status">[] {
   if (!out) return []
   return out.split("\n").filter(Boolean).map((line) => {
     const parts = line.split("\t")

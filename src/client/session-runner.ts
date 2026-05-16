@@ -23,6 +23,7 @@ type SessionUi = {
   scrollBottom: () => void
   model: string
   mode: RunMode
+  tokenMode: "precise" | "economy"
 }
 
 type SessionRuntime = {
@@ -73,7 +74,7 @@ export async function runSession(
     let lastError: unknown
 
     for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
-      const requestMessages = step === 0
+      const requestMessages = (step === 0 || ui.tokenMode === "precise")
         ? allMessages
         : [...permanentPrefix, ...allMessages.slice(currentTurnStart)]
 
@@ -169,20 +170,26 @@ export async function runSession(
       reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
       tool_calls: toolCalls,
     })
-    allMessages.push(assistantMessage)
     resultHistory.push(assistantMessage)
     ui.addMessage(assistantMessage)
 
     if (!toolCalls) {
       if (finishReason === "length") {
+        // Push minimal message to save context window tokens on continuation.
+        // The model does not need to re-read its full partial output;
+        // the CONTINUE_AFTER_LENGTH instruction is sufficient.
+        allMessages.push(createAssistantMessage({ content: "" }))
         allMessages.push(CONTINUE_AFTER_LENGTH)
         ui.notify("response hit token limit, continuing...", "system")
         ui.setStatus("continuing response...")
         continue
       }
+      allMessages.push(assistantMessage)
       ui.setStatus("waiting for input")
       return resultHistory
     }
+
+    allMessages.push(assistantMessage)
 
     if (ui.abort.aborted) {
       ui.setStatus("waiting for input")
