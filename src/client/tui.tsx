@@ -29,6 +29,7 @@ import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
+import { MarkdownWithDiff } from "./markdown-with-diff"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { createInputQueue } from "./input-queue"
 import pkg from "../../package.json" with { type: "json" }
@@ -379,7 +380,7 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
           when={!props.entry.streaming}
           fallback={<text style={{ fg: THEME.text }}>{props.entry.text}</text>}
         >
-          <markdown
+          <MarkdownWithDiff
             content={props.entry.text}
             syntaxStyle={MARKDOWN_SYNTAX}
             fg={THEME.text}
