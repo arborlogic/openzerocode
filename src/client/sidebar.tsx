@@ -10,6 +10,7 @@ type GitFile = {
   path: string
   additions: number
   deletions: number
+  status: "modified" | "added"
 }
 
 type GitCommit = {
@@ -26,7 +27,6 @@ type GitSnapshot = {
 const execFileAsync = promisify(execFile)
 const EMPTY_GIT_SNAPSHOT: GitSnapshot = { files: [], branch: null, commits: [] }
 
-let lastGitRead = 0
 let lastGitSnapshot = EMPTY_GIT_SNAPSHOT
 let pendingGitSnapshot: Promise<GitSnapshot> | undefined
 
@@ -65,22 +65,58 @@ function parseRecentCommits(out: string): GitCommit[] {
 }
 
 async function readGitSnapshot(): Promise<GitSnapshot> {
-  const now = Date.now()
+  // Dedup concurrent calls: if a fetch is already in-flight, share its result.
+  // The 300 ms debounce in the component effect already prevents rapid
+  // successive reads, so we don't need an additional TTL cache here — without
+  // it the sidebar stays in sync with the actual working tree state.
   if (pendingGitSnapshot) return pendingGitSnapshot
-  if (now - lastGitRead < 2000) return lastGitSnapshot
 
-  lastGitRead = now
   pendingGitSnapshot = Promise.all([
     runGit(["diff", "--numstat", "HEAD"], 2000),
+    runGit(["status", "--porcelain"], 2000),
     runGit(["rev-parse", "--abbrev-ref", "HEAD"], 1000),
     runGit(["log", "--oneline", "-3"], 1000),
-  ]).then(([diff, branch, commits]) => {
-    lastGitSnapshot = {
-      files: parseGitDiffNumstat(diff),
+  ]).then(([diff, porcelain, branch, commits]) => {
+    // 1) Parse tracked changes from --numstat (modified + staged additions)
+    const fileMap = new Map<string, GitFile>()
+    for (const file of parseGitDiffNumstat(diff)) {
+      fileMap.set(file.path, { ...file, status: "modified" })
+    }
+
+    // 2) Overlay status from --porcelain: mark staged additions as "added"
+    for (const line of porcelain.split("\n").filter(Boolean)) {
+      const statusRaw = line.slice(0, 2)
+      const filePath = line.slice(3).trim()
+      if (!filePath) continue
+
+      // Staged addition (A in index column)
+      if (statusRaw[0] === "A") {
+        const existing = fileMap.get(filePath)
+        if (existing) {
+          existing.status = "added"
+        } else {
+          // Staged new file with no working-tree diff (empty file)
+          fileMap.set(filePath, { path: filePath, additions: 0, deletions: 0, status: "added" })
+        }
+        continue
+      }
+
+      // Untracked file (??)
+      if (statusRaw === "??") {
+        // Only add if not already tracked by --numstat
+        if (!fileMap.has(filePath)) {
+          fileMap.set(filePath, { path: filePath, additions: 0, deletions: 0, status: "added" })
+        }
+      }
+    }
+
+    const snapshot: GitSnapshot = {
+      files: [...fileMap.values()],
       branch: branch || null,
       commits: parseRecentCommits(commits),
     }
-    return lastGitSnapshot
+    lastGitSnapshot = snapshot
+    return snapshot
   }).finally(() => {
     pendingGitSnapshot = undefined
   })
@@ -118,6 +154,8 @@ export function Sidebar(props: {
   sessionTitle?: string
   sessionId?: string
   cwd?: string
+  /** Increment to force a git snapshot refresh from outside the component. */
+  gitRefreshKey?: number
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(null)
@@ -142,8 +180,20 @@ export function Sidebar(props: {
         setBranch(snapshot.branch)
         setCommits(snapshot.commits)
       })
-    }, 100)
+    }, 300)
     return () => clearTimeout(id)
+  })
+
+  // Force refresh when gitRefreshKey changes (external trigger via palette)
+  createEffect(() => {
+    props.gitRefreshKey
+    const seq = ++gitRefreshSeq
+    void readGitSnapshot().then((snapshot) => {
+      if (seq !== gitRefreshSeq) return
+      setGitFiles(snapshot.files)
+      setBranch(snapshot.branch)
+      setCommits(snapshot.commits)
+    })
   })
 
   const modelCfg = createMemo(() => getModelConfig(props.model))
@@ -279,16 +329,24 @@ export function Sidebar(props: {
         <Show when={gitFiles().length > 0}>
           <box flexDirection="column">
             <box flexDirection="row" gap={1}>
-              <text style={{ fg: props.theme.accent }}>Modified Files</text>
+              <text style={{ fg: props.theme.accent }}>Changed Files</text>
               <text style={{ fg: "#7ee787" }}>+{totalAdditions()}</text>
               <text style={{ fg: "#f85149" }}>-{totalDeletions()}</text>
             </box>
             <For each={gitFiles()}>
               {(file) => (
                 <box flexDirection="row" justifyContent="space-between">
-                  <text style={{ fg: props.theme.muted }} wrapMode="none" flexShrink={1}>
-                    {truncatePath(file.path, props.width - 8)}
-                  </text>
+                  <box flexDirection="row" gap={1} flexShrink={1}>
+                    <Show when={file.status === "added"}>
+                      <text style={{ fg: "#7ee787" }}>+</text>
+                    </Show>
+                    <text
+                      style={{ fg: file.status === "added" ? "#7ee787" : props.theme.muted }}
+                      wrapMode="none"
+                    >
+                      {truncatePath(file.path, props.width - 8)}
+                    </text>
+                  </box>
                   <box flexDirection="row" flexShrink={0} gap={1}>
                     <Show when={file.additions > 0}>
                       <text style={{ fg: "#7ee787" }}>+{file.additions}</text>

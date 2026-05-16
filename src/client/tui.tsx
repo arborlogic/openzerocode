@@ -601,6 +601,7 @@ function App() {
   const [lockPollRevision, setLockPollRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
+  const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
@@ -982,6 +983,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               setStatus("reload complete")
             }
           })
+          setShowPalette(false)
+        },
+      },
+      {
+        label: "GIT",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Refresh modified files",
+        hint: "force re-read git working tree state",
+        onSelect: () => {
+          setGitRefreshRevision(v => v + 1)
+          setStatus("refreshing modified files…")
           setShowPalette(false)
         },
       },
@@ -2714,6 +2729,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           sessionTitle={sessionMeta()?.title}
           cwd={process.cwd()}
           sessionId={sessionId()}
+          gitRefreshKey={gitRefreshRevision()}
         />
       </Show>
 
@@ -2738,6 +2754,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             sessionTitle={sessionMeta()?.title}
             cwd={process.cwd()}
             sessionId={sessionId()}
+            gitRefreshKey={gitRefreshRevision()}
           />
         </box>
       </Show>
