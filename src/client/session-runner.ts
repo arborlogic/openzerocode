@@ -60,17 +60,28 @@ export async function runSession(
   }))
   const toolDefs = ui.mode === "plan" ? [] : convertToolsToDefs(tools)
 
+  // Permanent prefix (sent every step): system + compaction + userMsg.
+  // History is only sent in step 0 so the LLM can see prior context;
+  // from step >= 1 onward, compaction replaces history.
+  // currentTurnStart tracks where the step-0 turn messages begin in allMessages.
+  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
+  const currentTurnStart = allMessages.length
+
   for (let step = 0; step < 50; step++) {
     ui.setStatus("thinking...")
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
 
     for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
+      const requestMessages = step === 0
+        ? allMessages
+        : [...permanentPrefix, ...allMessages.slice(currentTurnStart)]
+
       stream = await runtime.runSync(Effect.gen(function* () {
         const p = yield* Provider
         return yield* p.stream({
           model: ui.model,
-          messages: allMessages,
+          messages: requestMessages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           stream: true,
         })
