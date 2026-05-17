@@ -11,6 +11,9 @@ type ResponseUsage = {
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
+  input_tokens_details?: {
+    cached_tokens?: number
+  }
 }
 
 type ResponseOutputItem = {
@@ -43,10 +46,12 @@ function parseSSE(text: string): { data: string; event?: string }[] {
 function usageFromResponses(usage: ResponseUsage | undefined): Usage {
   const prompt = usage?.input_tokens ?? 0
   const completion = usage?.output_tokens ?? 0
+  const cached = usage?.input_tokens_details?.cached_tokens ?? 0
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: usage?.total_tokens ?? prompt + completion,
+    cached_tokens: cached,
   }
 }
 

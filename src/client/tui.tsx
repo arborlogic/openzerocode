@@ -2080,7 +2080,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         mode: mode(),
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
-        onUsage: (inputTokens, outputTokens) => {
+        onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),
             provider: currentProvider,
@@ -2088,6 +2088,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             model: currentModel,
             inputTokens,
             outputTokens,
+            cachedInputTokens,
             sessionId: sessionId(),
           })
         },

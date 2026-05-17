@@ -9,6 +9,7 @@ export type UsageEntry = {
   model: string
   inputTokens: number
   outputTokens: number
+  cachedInputTokens?: number
   sessionId?: string
 }
 
@@ -18,6 +19,7 @@ export type AggregatedUsage = {
   model: string
   inputTokens: number
   outputTokens: number
+  cachedInputTokens: number
   totalTokens: number
   requestCount: number
 }
@@ -95,6 +97,7 @@ export function aggregateEntries(entries: UsageEntry[]): AggregatedUsage[] {
     if (agg) {
       agg.inputTokens += e.inputTokens
       agg.outputTokens += e.outputTokens
+      agg.cachedInputTokens += e.cachedInputTokens ?? 0
       agg.totalTokens += e.inputTokens + e.outputTokens
       agg.requestCount++
     } else {
@@ -104,6 +107,7 @@ export function aggregateEntries(entries: UsageEntry[]): AggregatedUsage[] {
         model: e.model,
         inputTokens: e.inputTokens,
         outputTokens: e.outputTokens,
+        cachedInputTokens: e.cachedInputTokens ?? 0,
         totalTokens: e.inputTokens + e.outputTokens,
         requestCount: 1,
       })
@@ -172,6 +176,7 @@ export type SessionRequestRow = {
   timestamp: number
   inputTokens: number
   outputTokens: number
+  cachedInputTokens: number
 }
 
 export type SessionBreakdown = {
@@ -181,6 +186,7 @@ export type SessionBreakdown = {
   model: string
   totalInputTokens: number
   totalOutputTokens: number
+  totalCachedInputTokens: number
   totalRequests: number
   recentEntries: SessionRequestRow[]
   lastActivity: number
@@ -193,6 +199,7 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
     model: string
     totalInputTokens: number
     totalOutputTokens: number
+    totalCachedInputTokens: number
     allEntries: SessionRequestRow[]
     lastActivity: number
   }>()
@@ -203,7 +210,13 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
     if (existing) {
       existing.totalInputTokens += e.inputTokens
       existing.totalOutputTokens += e.outputTokens
-      existing.allEntries.push({ timestamp: e.timestamp, inputTokens: e.inputTokens, outputTokens: e.outputTokens })
+      existing.totalCachedInputTokens += e.cachedInputTokens ?? 0
+      existing.allEntries.push({
+        timestamp: e.timestamp,
+        inputTokens: e.inputTokens,
+        outputTokens: e.outputTokens,
+        cachedInputTokens: e.cachedInputTokens ?? 0,
+      })
       if (e.timestamp > existing.lastActivity) {
         existing.lastActivity = e.timestamp
         existing.model = e.model
@@ -217,7 +230,13 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
         model: e.model,
         totalInputTokens: e.inputTokens,
         totalOutputTokens: e.outputTokens,
-        allEntries: [{ timestamp: e.timestamp, inputTokens: e.inputTokens, outputTokens: e.outputTokens }],
+        totalCachedInputTokens: e.cachedInputTokens ?? 0,
+        allEntries: [{
+          timestamp: e.timestamp,
+          inputTokens: e.inputTokens,
+          outputTokens: e.outputTokens,
+          cachedInputTokens: e.cachedInputTokens ?? 0,
+        }],
         lastActivity: e.timestamp,
       })
     }
@@ -234,6 +253,7 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
         model: data.model,
         totalInputTokens: data.totalInputTokens,
         totalOutputTokens: data.totalOutputTokens,
+        totalCachedInputTokens: data.totalCachedInputTokens,
         totalRequests: data.allEntries.length,
         recentEntries: sorted.slice(0, recentCount),
         lastActivity: data.lastActivity,

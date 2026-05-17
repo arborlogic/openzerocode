@@ -39,7 +39,7 @@ function AggRow(props: {
   theme: { text: string; muted: string; accent: string }
 }) {
   const label = () => fmtGroup(props.item, props.groupMode)
-  const labelMax = () => Math.max(10, props.width - 36)
+  const labelMax = () => Math.max(10, props.width - 50)
   const truncated = () => {
     const l = label()
     return l.length > labelMax() ? l.slice(0, labelMax() - 1) + "…" : l
@@ -55,6 +55,9 @@ function AggRow(props: {
       </text>
       <text style={{ fg: "#7ee787" }}>
         {`out:${fmtTokens(props.item.outputTokens).padStart(6)}`}
+      </text>
+      <text style={{ fg: "#f0b72f" }}>
+        {`cache:${fmtTokens(props.item.cachedInputTokens).padStart(5)}`}
       </text>
       <text style={{ fg: props.theme.muted }}>
         {`×${String(props.item.requestCount).padStart(3)}`}
@@ -96,6 +99,9 @@ function SessionRow(props: {
         <text style={{ fg: props.theme.muted }}>
           {`${props.breakdown.totalRequests} requests  •  ${fmtTokens(props.breakdown.totalInputTokens + props.breakdown.totalOutputTokens)} tokens total`}
         </text>
+        <text style={{ fg: "#f0b72f" }}>
+          {`${fmtTokens(props.breakdown.totalCachedInputTokens)} cache hit`}
+        </text>
       </box>
 
       {/* Last N requests */}
@@ -111,6 +117,9 @@ function SessionRow(props: {
             </text>
             <text style={{ fg: "#7ee787" }}>
               {`out:${fmtTokens(row.outputTokens).padStart(5)}`}
+            </text>
+            <text style={{ fg: "#f0b72f" }}>
+              {`cache:${fmtTokens(row.cachedInputTokens).padStart(5)}`}
             </text>
           </box>
         )}

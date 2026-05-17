@@ -26,7 +26,7 @@ type SessionUi = {
   mode: RunMode
   provider: string
   keyName: string
-  onUsage?: (inputTokens: number, outputTokens: number) => void
+  onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
 }
 
 type SessionRuntime = {
@@ -138,6 +138,7 @@ export async function runSession(
     let finishReason: string | null | undefined
     let lastUsageInput = 0
     let lastUsageOutput = 0
+    let lastUsageCachedInput = 0
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
     while (true) {
@@ -148,6 +149,7 @@ export async function runSession(
       if (value.usage) {
         lastUsageInput = value.usage.prompt_tokens
         lastUsageOutput = value.usage.completion_tokens
+        lastUsageCachedInput = value.usage.cached_tokens ?? 0
       }
       if (value.delta.content) {
         content += value.delta.content
@@ -182,7 +184,7 @@ export async function runSession(
     }
 
     if (!ui.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {
-      ui.onUsage?.(lastUsageInput, lastUsageOutput)
+      ui.onUsage?.(lastUsageInput, lastUsageOutput, lastUsageCachedInput)
     }
 
     if (ui.abort.aborted) {
