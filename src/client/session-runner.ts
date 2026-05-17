@@ -24,7 +24,6 @@ type SessionUi = {
   scrollBottom: () => void
   model: string
   mode: RunMode
-  tokenMode: "precise" | "economy"
 }
 
 type SessionRuntime = {
@@ -95,7 +94,7 @@ export async function runSession(
     let lastError: unknown
 
     for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
-      const requestMessages = (step === 0 || ui.tokenMode === "precise")
+      const requestMessages = step === 0
         ? allMessages
         : [...permanentPrefix, ...allMessages.slice(currentTurnStart)]
 
