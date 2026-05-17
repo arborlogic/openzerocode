@@ -16,6 +16,7 @@ Commands
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
+  /usage                 Open token usage dashboard
   /commit                Generate a commit message from current changes
   /exit  [/quit]         Exit the app
   exit  quit             Also work without the slash
@@ -48,10 +49,22 @@ Command Palette  (Ctrl+P / F2)
     Compact session      Summarise and compress history
     Timeline             Browse messages → Revert / Copy / Fork
 
+  USAGE
+    Usage dashboard      Token usage by session / provider / model
+
   MODEL
     Switch mode          Toggle build ↔ plan
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
+
+Usage Dashboard  (/usage or palette → USAGE)
+
+  Views            Sessions (default) · Global · Daily · Hourly
+  Keyboard         Tab / ← → cycle tabs  •  1-4 jump to tab  •  Esc close
+  Sessions view    Per-session breakdown, last 5 requests with in/out tokens
+  Global view      All-time totals aggregated by provider / key / model
+  Daily view       Last 14 days aggregated
+  Hourly view      Last 48 hours aggregated
 
 Message Actions  (click a user message)
 

@@ -29,6 +29,7 @@ export type CommandContext = {
   openProviderList: () => void
   openModelList: () => void
   openHelp: () => void
+  openUsageDashboard: () => void
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
 }
@@ -46,6 +47,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
   { name: "commit", description: "Generate a commit message from current changes" },
+  { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
 ]
 
@@ -109,6 +111,11 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "help") {
     ctx.openHelp()
+    return true
+  }
+
+  if (cmd === "usage") {
+    ctx.openUsageDashboard()
     return true
   }
 

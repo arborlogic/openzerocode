@@ -24,6 +24,9 @@ type SessionUi = {
   scrollBottom: () => void
   model: string
   mode: RunMode
+  provider: string
+  keyName: string
+  onUsage?: (inputTokens: number, outputTokens: number) => void
 }
 
 type SessionRuntime = {
@@ -133,6 +136,8 @@ export async function runSession(
     let reasoning = ""
     let hasReasoning = false
     let finishReason: string | null | undefined
+    let lastUsageInput = 0
+    let lastUsageOutput = 0
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
     while (true) {
@@ -140,6 +145,10 @@ export async function runSession(
       const { done, value } = await reader.read()
       if (done) break
       if (value.finish_reason) finishReason = value.finish_reason
+      if (value.usage) {
+        lastUsageInput = value.usage.prompt_tokens
+        lastUsageOutput = value.usage.completion_tokens
+      }
       if (value.delta.content) {
         content += value.delta.content
         ui.streamAssistantChunk(value.delta.content)
@@ -170,6 +179,10 @@ export async function runSession(
         ui.setStatus(tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool...")
         ui.scrollBottom()
       }
+    }
+
+    if (!ui.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {
+      ui.onUsage?.(lastUsageInput, lastUsageOutput)
     }
 
     if (ui.abort.aborted) {

@@ -31,6 +31,8 @@ import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
+import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
 import pkg from "../../package.json" with { type: "json" }
 
@@ -617,6 +619,8 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
   )
   const [showSplash, setShowSplash] = createSignal(true)
+  const [showUsageDashboard, setShowUsageDashboard] = createSignal(false)
+  const [usageDashboardView, setUsageDashboardView] = createSignal<ViewMode>("sessions")
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
   const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
   const splashSessions = listSessions({ directory: process.cwd() })
@@ -1035,6 +1039,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("timeline");
           setPaletteIndex(0);
         },
+      },
+      {
+        label: "USAGE",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Usage dashboard",
+        hint: "tokens by session / provider / model",
+        onSelect: () => { setShowPalette(false); setShowUsageDashboard(true) },
       },
       {
         label: "MODEL",
@@ -1868,6 +1882,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         scrollBottom,
         model: currentModel,
         mode: mode(),
+        provider: currentProvider,
+        keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
+        onUsage: (inputTokens, outputTokens) => {
+          appendUsageEntry({
+            timestamp: Date.now(),
+            provider: currentProvider,
+            keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
+            model: currentModel,
+            inputTokens,
+            outputTokens,
+            sessionId: sessionId(),
+          })
+        },
       }, {
         runSync,
         systemPrompt,
@@ -2027,6 +2054,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("help")
           setPaletteIndex(0)
         },
+        openUsageDashboard: () => {
+          setShowUsageDashboard(true)
+        },
         refreshSessions,
         codexLogin: runCodexLogin,
       }
@@ -2059,6 +2089,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "commit") {
         setComposerText("Please help generate a commit message and commit the changes")
         queueMicrotask(scrollBottom)
+        return
+      }
+      if (slashCmd === "usage") {
+        setShowUsageDashboard(true)
+        setComposerText("")
         return
       }
       await executeCommand(input, ctx)
@@ -2147,6 +2182,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
+    if (showUsageDashboard()) {
+      if (event.name === "escape" || event.name === "q") {
+        setShowUsageDashboard(false)
+      } else if (event.name === "tab" || event.name === "right" || (event.name === "l" && !event.ctrl)) {
+        const idx = VIEW_MODES.indexOf(usageDashboardView())
+        setUsageDashboardView(VIEW_MODES[(idx + 1) % VIEW_MODES.length]!)
+      } else if ((event.name === "tab" && event.shift) || event.name === "left" || (event.name === "h" && !event.ctrl)) {
+        const idx = VIEW_MODES.indexOf(usageDashboardView())
+        setUsageDashboardView(VIEW_MODES[(idx - 1 + VIEW_MODES.length) % VIEW_MODES.length]!)
+      } else if (event.name === "1") {
+        setUsageDashboardView("sessions")
+      } else if (event.name === "2") {
+        setUsageDashboardView("global")
+      } else if (event.name === "3") {
+        setUsageDashboardView("daily")
+      } else if (event.name === "4") {
+        setUsageDashboardView("hourly")
+      }
+      event.preventDefault()
+      return
+    }
     if (event.ctrl && event.name === "c") {
       void exitApp(0)
       event.preventDefault()
@@ -2768,7 +2824,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto"])
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage"])
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")
@@ -2942,6 +2998,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </text>
           </box>
         </box>
+      </Show>
+
+      {/* ── Usage Dashboard overlay ── */}
+      <Show when={showUsageDashboard()}>
+        <UsageDashboard
+          onClose={() => setShowUsageDashboard(false)}
+          viewMode={usageDashboardView()}
+          onViewMode={setUsageDashboardView}
+          theme={THEME}
+          width={dimensions().width}
+          height={dimensions().height}
+        />
       </Show>
 
       {/* ── Close the `showSplash === false` block ── */}

@@ -116,7 +116,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
               headers: headers(),
-              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true }),
+              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true, stream_options: { include_usage: true } }),
             })
           )
           if (!res.ok) {

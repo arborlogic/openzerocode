@@ -32,6 +32,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
+    openUsageDashboard: mock(() => {}),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     ...overrides,
