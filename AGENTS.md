@@ -16,6 +16,19 @@
 - Provider registry lives in `src/provider/registry.ts`; provider implementations are under `src/provider/`.
 - Built-in tool registration lives in `src/tool/registry.ts`; tool behavior is organized under `src/tool/`.
 - Session persistence is local under `~/.openzerocode/sessions`; session metadata helpers live in `src/client/sessions.ts`.
+- Plugin system lives in `src/plugin/`; see `docs/plugin-architecture.md` and `docs/plugin-onboarding.md`.
+
+## Plugin System
+- Plugin interface: `src/plugin/types.ts` — `Plugin`, `PluginCommand`, `PluginContext`
+- Registry: `src/plugin/registry.ts` — `PluginRegistry` class
+- Loader: `src/plugin/loader.ts` — `loadBuiltinPlugins()` (sync) + `loadExternalPlugins()` (async)
+- External plugins are loaded from `~/.openzerocode/plugins/` at runtime via dynamic import
+- `echo` plugin at `src/plugins/echo/` is the built-in test plugin
+- zero-api client (`src/plugin/zero-api.ts`) is kept as reference, NOT exported or active
+
+## Related Projects
+- `../zerowapper/` — workflow app builder & operator (product layer above openzerocode)
+- `../zero-api/` — backend for memory/trace/procedure (separate project, not active in v1)
 
 ## Memory Scope
 - Current memory phase is working-memory-first: load `AGENTS.md`, maintain `SESSION_SUMMARY.md`, and support session continuation.
@@ -24,6 +37,7 @@
 
 ## Testing Notes
 - When changing workspace memory behavior, verify with `src/client/workspace-memory.test.ts` and `src/client/workspace-summary.test.ts`.
+- When changing plugin system, verify with `npm run typecheck`.
 - Provider-facing tests are integration-style and should only be run when you intentionally want provider validation and have the required env configured.
 
 ## Current Product Boundary

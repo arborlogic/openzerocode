@@ -64,6 +64,10 @@ let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? default
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 
+// Load built-in plugins synchronously at module init
+loadBuiltinPlugins()
+// External plugins are loaded asynchronously inside App() on first render
+
 const THEME = {
   background: "#0d1117",
   surface: "#161b22",
@@ -536,6 +540,11 @@ function App() {
   const dimensions = useTerminalDimensions()
   const sessionStart = new Date()
   const renderer = useRenderer()
+
+  // Load external plugins (from ~/.openzerocode/plugins/) on first render
+  loadExternalPlugins().catch((err) =>
+    console.error("[plugin] failed to load external plugins:", err)
+  )
 
   let initialMessages: Message[] = []
   let initialMode: RunMode = "build"
