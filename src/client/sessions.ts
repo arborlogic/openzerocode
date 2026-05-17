@@ -28,7 +28,7 @@ type SessionIndex = {
 }
 
 function getSessionDir(): string {
-  return join(homedir(), ".openzerocode", "sessions")
+  return join(process.env.HOME ?? homedir(), ".openzerocode", "sessions")
 }
 
 function getIndexFile(): string {
@@ -95,8 +95,10 @@ export function deriveTitle(text: string, maxLen = 60): string {
   return clean.length > maxLen ? clean.slice(0, maxLen - 1) + "…" : clean
 }
 
-export function listSessions(opts: { directory?: string | null } = {}): SessionMeta[] {
-  const all = readIndex().sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+export function listSessions(opts: { directory?: string | null; includeEmpty?: boolean } = {}): SessionMeta[] {
+  const all = readIndex().sessions
+    .filter(s => opts.includeEmpty || s.messageCount > 0 || !isDefaultTitle(s.title))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
   // When directory is explicitly null, return all sessions (cross-project view)
   if (opts.directory === null) return all
   const dir = opts.directory ?? process.cwd()
@@ -267,15 +269,18 @@ export function updateSessionMeta(id: string, updates: Partial<Pick<SessionMeta,
 
 // ─── Lightweight active marker ──────────────────────────────────────────
 
-const ACTIVITY_DIR = join(homedir(), ".openzerocode", ".active")
+function getActivityDir(): string {
+  return join(process.env.HOME ?? homedir(), ".openzerocode", ".active")
+}
 
 function ensureActivityDir() {
-  if (!existsSync(ACTIVITY_DIR)) mkdirSync(ACTIVITY_DIR, { recursive: true })
+  const dir = getActivityDir()
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 }
 
 function activeMarkerPath(id: string): string {
   const safe = id.replace(/[^a-zA-Z0-9._:-]/g, "_")
-  return join(ACTIVITY_DIR, safe)
+  return join(getActivityDir(), safe)
 }
 
 /** Mark a session as actively being processed by this process. */

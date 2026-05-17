@@ -4,6 +4,8 @@ import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } 
 import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn, execFile } from "node:child_process"
+import { existsSync, readdirSync, statSync } from "node:fs"
+import { basename, dirname, resolve } from "node:path"
 import { platform } from "os"
 import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
@@ -133,6 +135,61 @@ function rebuildLayer() {
 function defaultModelForCurrentProvider(providerId: string) {
   const configured = process.env.OPENZERO_MODEL ?? defaultModelForProvider(providerId)
   return providerId === "opencode-zen" ? normalizeBigPickleModel(configured) : configured
+}
+
+function homeDir() {
+  return process.env.HOME ?? ""
+}
+
+function expandHome(path: string) {
+  if (path === "~") return homeDir()
+  if (path.startsWith("~/")) return resolve(homeDir(), path.slice(2))
+  return path
+}
+
+function displayPath(path: string) {
+  const home = homeDir()
+  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
+function resolveDirectoryPath(input: string, cwd = process.cwd()) {
+  const expanded = expandHome(input.trim())
+  return resolve(cwd, expanded || ".")
+}
+
+function isDirectory(path: string) {
+  try {
+    return existsSync(path) && statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function directoryCandidates(input: string, cwd = process.cwd()) {
+  const raw = input.trim()
+  const expanded = expandHome(raw)
+  const target = expanded ? resolve(cwd, expanded) : cwd
+  const inputEndsWithSeparator = raw.endsWith("/") || raw.endsWith("\\")
+  const base = raw && !inputEndsWithSeparator ? dirname(target) : target
+  const filter = raw && !inputEndsWithSeparator ? basename(target).toLowerCase() : ""
+  const entries: { name: string; path: string }[] = []
+
+  if (!raw) entries.push({ name: "../", path: resolve(cwd, "..") })
+
+  try {
+    for (const dirent of readdirSync(base, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue
+      if (dirent.name.startsWith(".") && !filter.startsWith(".")) continue
+      if (filter && !dirent.name.toLowerCase().startsWith(filter)) continue
+      entries.push({ name: `${dirent.name}/`, path: resolve(base, dirent.name) })
+    }
+  } catch {
+    return entries
+  }
+
+  return entries
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 20)
 }
 
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
@@ -591,7 +648,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -605,6 +662,7 @@ function App() {
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
+  const [cwdRevision, setCwdRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
@@ -623,8 +681,21 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [usageDashboardView, setUsageDashboardView] = createSignal<ViewMode>("sessions")
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
   const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
-  const splashSessions = listSessions({ directory: process.cwd() })
-  const splashSessionsAll = listSessions({ directory: null })
+  const currentCwd = createMemo(() => {
+    cwdRevision()
+    return process.cwd()
+  })
+  const splashSessions = createMemo(() => {
+    sessionRevision()
+    cwdRevision()
+    return listSessions({ directory: currentCwd() })
+  })
+  const splashRecentSessions = createMemo(() => splashSessions().slice(0, 5))
+  const splashSessionsAll = createMemo(() => {
+    sessionRevision()
+    cwdRevision()
+    return listSessions({ directory: null })
+  })
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
     dimensions().height > dimensions().width
   )
@@ -681,7 +752,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
-  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
+  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string; directoryPath?: string }
 
   const isSelectablePaletteItem = (item: PaletteItem | undefined) => item?.kind !== "section"
 
@@ -1019,6 +1090,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setSessionScope("cwd"); setPaletteMode("sessions") },
       },
       {
+        label: "Change directory",
+        hint: truncateText(displayPath(currentCwd()), PALETTE_HINT_MAX()),
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteInput("")
+          setPaletteIndex(0)
+          setPaletteMode("directories")
+        },
+      },
+      {
         label: "Rename session",
         onSelect: () => {
           setPaletteInput(sessionMeta()?.title ?? "")
@@ -1084,7 +1165,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     lockPollRevision()
     const sid = sessionId()
-    const sessions = listSessions({ directory: sessionScope() === "global" ? null : process.cwd() })
+    const sessions = listSessions({ directory: sessionScope() === "global" ? null : currentCwd() })
     const items: PaletteItem[] = []
 
     for (const s of sessions) {
@@ -1112,6 +1193,59 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     items.push({
       label: "← Back",
       onSelect: () => { setPalettePendingDelete(null); setPaletteMode("actions"); setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems())) },
+    })
+    return items
+  })
+
+  const directoryPaletteItems = createMemo<PaletteItem[]>(() => {
+    cwdRevision()
+    const input = paletteInput()
+    const target = resolveDirectoryPath(input, currentCwd())
+    const candidates = directoryCandidates(input, currentCwd())
+    const items: PaletteItem[] = []
+
+    items.push({
+      label: `Current: ${displayPath(currentCwd())}`,
+      kind: "section",
+      onSelect: () => {},
+    })
+
+    if (input.trim() && isDirectory(target)) {
+      items.push({
+        label: `Use ${displayPath(target)}`,
+        hint: "Enter",
+        directoryPath: target,
+        onSelect: () => {
+          const result = doChangeDirectory(target)
+          if (!result.ok) setStatus(result.message)
+        },
+      })
+    }
+
+    for (const candidate of candidates) {
+      items.push({
+        label: candidate.name,
+        hint: truncateText(displayPath(candidate.path), PALETTE_HINT_MAX()),
+        directoryPath: candidate.path,
+        onSelect: () => {
+          setPaletteInput(displayPath(candidate.path) + "/")
+          setPaletteIndex(0)
+        },
+      })
+    }
+
+    if (candidates.length === 0 && !isDirectory(target)) {
+      items.push({ label: "No matching directories", kind: "section", onSelect: () => {} })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteInput("")
+        setPaletteMode("actions")
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+      },
     })
     return items
   })
@@ -1460,6 +1594,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
+      : paletteMode() === "directories"
+        ? directoryPaletteItems()
       : paletteMode() === "providers"
         ? providerPaletteItems()
         : paletteMode() === "models"
@@ -1479,7 +1615,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1493,14 +1629,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -1674,6 +1810,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
+    if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "")) return
     saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
   }
 
@@ -1702,6 +1839,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     refreshSessions()
     setComposerText("")
     setDraft("")
+  }
+
+  const enterWorkspace = () => {
+    setShowSplash(false)
+    setPaletteInput("")
+    setPalettePendingDelete(null)
+    setPaletteMode("actions")
+    renderer.setTerminalTitle("openzerocode")
   }
 
   
@@ -1749,8 +1894,59 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setMessages([])
     setNotices([])
     setPermissionRules([])
+    setCompaction(undefined)
+    setAutoApprove(false)
     setComposerText("")
     setDraft("")
+    setStatus("waiting for input")
+    enterWorkspace()
+  }
+
+  const selectInitialSplashRow = () => {
+    const sessions = listSessions({ directory: process.cwd() })
+    setSplashSelectedIndex(sessions.length > 0 ? 0 : -1)
+  }
+
+  createEffect(() => {
+    if (!showSplash()) return
+    const recentCount = splashRecentSessions().length
+    const exitIdx = recentCount
+    const selected = splashSelectedIndex()
+    if (recentCount === 0 && selected !== -1) {
+      setSplashSelectedIndex(-1)
+    } else if (recentCount > 0 && selected > exitIdx) {
+      setSplashSelectedIndex(exitIdx)
+    }
+  })
+
+  const doChangeDirectory = (path: string) => {
+    if (running()) return { ok: false, message: "Cannot change directory while a response is running." }
+    const next = resolveDirectoryPath(path, currentCwd())
+    if (!isDirectory(next)) return { ok: false, message: `Directory not found: ${path}` }
+
+    doSaveCurrent()
+    try {
+      process.chdir(next)
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+
+    refreshAgentsInstruction()
+    setNotices([])
+    setComposerText("")
+    setDraft("")
+    setPaletteInput("")
+    setPalettePendingDelete(null)
+    setPaletteMode("actions")
+    setShowPalette(false)
+    setShowSplash(true)
+    setStatus("waiting for input")
+    setCwdRevision((value) => value + 1)
+    setSessionRevision((value) => value + 1)
+    selectInitialSplashRow()
+    setGitRefreshRevision((value) => value + 1)
+    renderer.setTerminalTitle("openzerocode")
+    return { ok: true, message: `Directory switched to ${displayPath(next)}` }
   }
 
   const compactCurrentSession = async () => {
@@ -2134,20 +2330,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     // Splash screen input handling
     if (showSplash()) {
-      const EXIT_IDX = splashSessions.length
+      const sessions = splashRecentSessions()
+      const EXIT_IDX = sessions.length
 
       if (event.name === "return" || event.name === "enter") {
         const selIdx = splashSelectedIndex()
-        if (selIdx === EXIT_IDX) {
+        setShowSplash(false)
+        renderer.setTerminalTitle("openzerocode")
+        if (selIdx === -1 || sessions.length === 0) {
+          doCreateNewSession()
+        } else if (sessions[selIdx]) {
+          doSwitchSession(sessions[selIdx].id)
+          enterWorkspace()
+        } else if (selIdx === EXIT_IDX) {
+          setShowSplash(true)
           void exitApp(0)
-        } else if (selIdx >= 0 && splashSessions[selIdx]) {
-          doSwitchSession(splashSessions[selIdx].id)
-          setShowSplash(false)
-          renderer.setTerminalTitle("openzerocode")
         } else {
           doCreateNewSession()
-          setShowSplash(false)
-          renderer.setTerminalTitle("openzerocode")
         }
         event.preventDefault()
         return
@@ -2330,6 +2529,30 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "directories") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "tab") {
+          const item = displayItems()[paletteIndex()]
+          if (item?.directoryPath) {
+            setPaletteInput(displayPath(item.directoryPath) + "/")
+            setPaletteIndex(0)
+          }
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const item = displayItems()[paletteIndex()]
+          if (isSelectablePaletteItem(item)) item?.onSelect()
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "sessions" && event.ctrl && event.name === "s") {
         setSessionScope(s => s === "cwd" ? "global" : "cwd")
         setPaletteIndex(0)
@@ -2401,8 +2624,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (event.name === "escape") {
-        if (paletteMode() === "sessions" || paletteMode() === "providers") {
+        if (paletteMode() === "sessions" || paletteMode() === "providers" || paletteMode() === "directories") {
           setPalettePendingDelete(null)
+          setPaletteInput("")
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "models") {
@@ -2570,21 +2794,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showSplash()}>
         <SplashScreen
           selectedIndex={splashSelectedIndex()}
-          sessions={splashSessions}
-          totalSessions={splashSessionsAll.length}
+          sessions={splashSessions()}
+          totalSessions={splashSessionsAll().length}
+          cwd={currentCwd()}
           layoutMode={layoutMode()}
           model={modelLabel()}
           provider={providerLabel()}
           version={VERSION}
           onSelectSession={(id) => {
-            doSwitchSession(id)
             setShowSplash(false)
             renderer.setTerminalTitle("openzerocode")
+            doSwitchSession(id)
+            enterWorkspace()
           }}
           onNewSession={() => {
-            doCreateNewSession()
             setShowSplash(false)
             renderer.setTerminalTitle("openzerocode")
+            doCreateNewSession()
           }}
           onExit={() => void exitApp(0)}
         />
@@ -2785,7 +3011,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           provider={providerLabel()}
           model={modelLabel()}
           sessionTitle={sessionMeta()?.title}
-          cwd={process.cwd()}
+          cwd={currentCwd()}
           sessionId={sessionId()}
           gitRefreshKey={gitRefreshRevision()}
         />
@@ -2810,7 +3036,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             provider={providerLabel()}
             model={modelLabel()}
             sessionTitle={sessionMeta()?.title}
-            cwd={process.cwd()}
+            cwd={currentCwd()}
             sessionId={sessionId()}
             gitRefreshKey={gitRefreshRevision()}
           />
@@ -2891,20 +3117,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 ? "Rename Session"
                 : paletteMode() === "sessions"
                   ? `Switch Session`
-                  : paletteMode() === "providers"
-                    ? "Switch Provider"
-                    : paletteMode() === "models"
-                      ? `Switch Model · ${paletteProviderTarget()}`
-                      : paletteMode() === "providerKeys"
-                        ? `Keys · ${paletteProviderKeyTarget()}`
-                      : paletteMode() === "addProviderKeyName"
-                        ? `Add Key · ${paletteProviderKeyTarget()}`
-                      : paletteMode() === "addProviderKeyValue"
-                        ? `Key Value · ${paletteNewKeyName()}`
-                      : paletteMode() === "timeline"
-                        ? "Timeline"
-                        : paletteMode() === "userMessageActions"
-                          ? "Message Actions"
+                  : paletteMode() === "directories"
+                    ? "Change Directory"
+                    : paletteMode() === "providers"
+                      ? "Switch Provider"
+                      : paletteMode() === "models"
+                        ? `Switch Model · ${paletteProviderTarget()}`
+                        : paletteMode() === "providerKeys"
+                          ? `Keys · ${paletteProviderKeyTarget()}`
+                        : paletteMode() === "addProviderKeyName"
+                          ? `Add Key · ${paletteProviderKeyTarget()}`
+                        : paletteMode() === "addProviderKeyValue"
+                          ? `Key Value · ${paletteNewKeyName()}`
+                        : paletteMode() === "timeline"
+                          ? "Timeline"
+                          : paletteMode() === "userMessageActions"
+                            ? "Message Actions"
                       : "Command Palette"}
             </text>
             <text
@@ -2915,7 +3143,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -2988,6 +3216,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   ? "Enter confirm  •  Esc back"
                   : paletteMode() === "sessions"
                   ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  : paletteMode() === "directories"
+                  ? "Type path  •  Tab complete  •  Enter select/change  •  Esc back"
                   : paletteMode() === "models"
                     ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providers"
