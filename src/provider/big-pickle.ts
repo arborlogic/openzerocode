@@ -79,7 +79,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
       function headers() {
         return {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${input.apiKey}`,
+          Authorization: `Bearer ${input.apiKey || "public"}`,
         }
       }
 
