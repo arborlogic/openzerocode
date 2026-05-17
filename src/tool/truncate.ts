@@ -1,5 +1,5 @@
-const MAX_OUTPUT_CHARS = 40_000
-const HEAD_LINES = 400
+const MAX_OUTPUT_CHARS = 10_000
+const HEAD_LINES = 100
 const TAIL_LINES = 50
 
 export function truncateToolOutput(text: string): string {

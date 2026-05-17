@@ -7,6 +7,7 @@ import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
+import { estimateTokens, getModelConfig } from "../provider/models"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build" | "plan"
@@ -51,7 +52,27 @@ export async function runSession(
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
-  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...history, userMessage]
+
+  // In economy mode, trim history to a token budget so step 0 doesn't send the full context
+  const sendHistory = (() => {
+    if (ui.tokenMode === "precise" || history.length === 0) return history
+    const { contextLimit } = getModelConfig(ui.model)
+    // Reserve ~45% for system prompt, current turn messages, and the response
+    const budget = Math.floor(contextLimit * 0.55)
+    let used = 0
+    let start = history.length
+    for (let i = history.length - 1; i >= 0; i--) {
+      const cost = estimateTokens(JSON.stringify(history[i]))
+      if (used + cost > budget) break
+      used += cost
+      start = i
+    }
+    // Don't begin with orphaned tool messages (their assistant call would be missing)
+    while (start < history.length && history[start]?.role === "tool") start++
+    return history.slice(start)
+  })()
+
+  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
   ui.addMessage(userMessage)
 
