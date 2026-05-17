@@ -53,9 +53,9 @@ export async function runSession(
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
 
-  // In economy mode, trim history to a token budget so step 0 doesn't send the full context
+  // Always trim history to a token budget so step 0 doesn't send unbounded context
   const sendHistory = (() => {
-    if (ui.tokenMode === "precise" || history.length === 0) return history
+    if (history.length === 0) return history
     const { contextLimit } = getModelConfig(ui.model)
     // Reserve ~45% for system prompt, current turn messages, and the response
     const budget = Math.floor(contextLimit * 0.55)
