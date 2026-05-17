@@ -1819,11 +1819,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Auto-compact if context is near limit (> 80%)
+    // Auto-compact if context is near limit (> 80%).
+    // Use JSON.stringify to capture all message content (parts, tool_calls, reasoning).
     {
       const cfg = getModelConfig(currentModel)
-      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
-      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
+      const rawMessages = stripCompactSummaryMessages(messages())
+      if (estimateTokens(JSON.stringify(rawMessages) + input) > cfg.contextLimit * 0.8) {
         await compactCurrentSession()
       }
     }
