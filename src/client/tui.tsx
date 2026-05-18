@@ -26,7 +26,7 @@ import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
 import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
-import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth } from "../provider/codex-auth"
+import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
@@ -648,7 +648,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -656,6 +656,7 @@ function App() {
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
   const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
   const [paletteNewKeyName, setPaletteNewKeyName] = createSignal("")
+  const [paletteCodexKeynameTarget, setPaletteCodexKeynameTarget] = createSignal("")
   const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [lockPollRevision, setLockPollRevision] = createSignal(0)
@@ -1383,9 +1384,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (authEntries.length > 0) {
         for (const entry of authEntries) {
           const isActive = entry.isActive && currentProvider === "openai-codex"
-          const displayLabel = entry.auth.accountId
-            ? `Account: ${entry.auth.accountId.slice(0, 12)}`
-            : `Key: ${entry.tokenPreview}`
+          const displayLabel = entry.keyname
+            ? entry.keyname
+            : entry.auth.accountId
+              ? `Account: ${entry.auth.accountId.slice(0, 12)}`
+              : `Key: ${entry.tokenPreview}`
           items.push({
             label: `${isActive ? ">" : " "} ${displayLabel}${entry.isActive ? " (active)" : ""}`,
             hint: entry.tokenPreview,
@@ -1404,6 +1407,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               setStatus("Codex activated")
               setShowPalette(false)
               setPaletteMode("actions")
+            },
+          })
+          items.push({
+            label: `  ${entry.keyname ? `Rename "${entry.keyname}"` : "Set key name..."}`,
+            hint: entry.label,
+            onSelect: () => {
+              setPaletteCodexKeynameTarget(entry.label)
+              setPaletteInput(entry.keyname ?? "")
+              setPaletteMode("codexKeyname")
             },
           })
         }
@@ -1463,9 +1475,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: "OpenAI provider",
         onSelect: () => {
           setPaletteProviderKeyTarget("openai")
-          setPaletteNewKeyName("default")
           setPaletteInput("")
-          setPaletteMode("addProviderKeyValue")
+          setPaletteMode("addProviderKeyName")
           setPaletteIndex(0)
         },
       })
@@ -1615,7 +1626,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1629,14 +1640,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -2512,6 +2523,31 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "codexKeyname") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const keyname = paletteInput().trim()
+          const target = paletteCodexKeynameTarget()
+          const ok = setCodexAuthKeyname(target, keyname)
+          if (ok) {
+            setProviderConfigRevision(v => v + 1)
+            setStatus(keyname ? `key name set to "${keyname}"` : "key name cleared")
+          } else {
+            setStatus("failed to set key name")
+          }
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "models") {
         if (event.name === "escape") {
           const backMode = paletteModelBackMode()
@@ -3098,7 +3134,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "help"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
             : 2
@@ -3128,6 +3164,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Add Key · ${paletteProviderKeyTarget()}`
                         : paletteMode() === "addProviderKeyValue"
                           ? `Key Value · ${paletteNewKeyName()}`
+                        : paletteMode() === "codexKeyname"
+                          ? `Key name · ${paletteCodexKeynameTarget()}`
                         : paletteMode() === "timeline"
                           ? "Timeline"
                           : paletteMode() === "userMessageActions"
@@ -3142,7 +3180,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -3156,7 +3194,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3223,6 +3261,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                       ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providerKeys"
                       ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                    : paletteMode() === "codexKeyname"
+                      ? "Enter key name  •  Enter save  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>

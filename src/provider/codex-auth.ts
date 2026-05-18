@@ -31,6 +31,7 @@ type OpenCodeAuthFile = Record<string, {
   refresh?: string
   expires?: number
   accountId?: string
+  keyname?: string
 }>
 
 export type CodexAuthEntry = {
@@ -38,6 +39,7 @@ export type CodexAuthEntry = {
   auth: CodexAuth
   tokenPreview: string
   isActive: boolean
+  keyname?: string
 }
 
 const ACTIVE_MARKER = "_active"
@@ -208,6 +210,7 @@ export function listCodexAuths(path?: string): CodexAuthEntry[] {
       auth,
       tokenPreview: tokenPreview(value.access),
       isActive: label === activeLabel,
+      keyname: value.keyname,
     })
   }
 
@@ -224,6 +227,7 @@ export function listCodexAuths(path?: string): CodexAuthEntry[] {
         },
         tokenPreview: tokenPreview(openai.access),
         isActive: true,
+        keyname: openai.keyname,
       })
     }
   }
@@ -266,7 +270,25 @@ export function deleteCodexAuth(label: string, path?: string): boolean {
   const raw = readRawAuthFile(authPath) as Record<string, unknown>
   const openaiFile = raw as OpenCodeAuthFile
 
+  const clearLegacyTokens = () => {
+    const rawAny = raw as any
+    delete rawAny.tokens
+    delete raw["last_refresh"]
+  }
+
   if (label === CODEX_KEY_PREFIX) {
+    delete openaiFile[CODEX_KEY_PREFIX]
+    delete raw[ACTIVE_MARKER]
+    clearLegacyTokens()
+    writeFileSync(authPath, JSON.stringify(raw, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 })
+    return true
+  }
+
+  // Handle synthetic label used when only the legacy tokens section exists
+  if (label === `${CODEX_KEY_PREFIX}@legacy`) {
+    const rawAny = raw as any
+    if (!rawAny.tokens?.access_token) return false
+    clearLegacyTokens()
     delete openaiFile[CODEX_KEY_PREFIX]
     delete raw[ACTIVE_MARKER]
     writeFileSync(authPath, JSON.stringify(raw, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 })
@@ -292,6 +314,39 @@ export function deleteCodexAuth(label: string, path?: string): boolean {
     } else {
       delete openaiFile[CODEX_KEY_PREFIX]
       delete raw[ACTIVE_MARKER]
+      // No credentials remain — clear legacy tokens to prevent phantom re-appearance
+      clearLegacyTokens()
+    }
+  }
+
+  writeFileSync(authPath, JSON.stringify(raw, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 })
+  return true
+}
+
+/** Set or clear the display keyname for a named Codex auth entry. */
+export function setCodexAuthKeyname(label: string, keyname: string, path?: string): boolean {
+  const authPath = path ?? findCodexAuthPath() ?? getCodexAuthPath()
+  const raw = readRawAuthFile(authPath) as Record<string, unknown>
+  const openaiFile = raw as OpenCodeAuthFile
+
+  const entry = openaiFile[label]
+  if (!entry || typeof entry !== "object") return false
+
+  if (keyname) {
+    entry.keyname = keyname
+  } else {
+    delete entry.keyname
+  }
+
+  // Keep openai default key in sync if this is the active entry
+  if (label !== CODEX_KEY_PREFIX && openaiFile[CODEX_KEY_PREFIX]) {
+    const activeLabel = (raw[ACTIVE_MARKER] as string) ?? CODEX_KEY_PREFIX
+    if (activeLabel === label) {
+      if (keyname) {
+        openaiFile[CODEX_KEY_PREFIX]!.keyname = keyname
+      } else {
+        delete openaiFile[CODEX_KEY_PREFIX]!.keyname
+      }
     }
   }
 
@@ -636,14 +691,15 @@ function writeCodexCliAuth(path: string, auth: CodexAuth, tokens?: TokenResponse
   const openaiFile = raw as OpenCodeAuthFile
   const label = authFileLabel(auth)
   openaiFile[label] = {
+    ...openaiFile[label],  // preserve existing fields (e.g. keyname)
     type: "oauth",
     access: auth.access,
     refresh: auth.refresh,
     expires: auth.expires,
     accountId: auth.accountId,
   }
-  // Keep the default key in sync
-  openaiFile[CODEX_KEY_PREFIX] = { ...openaiFile[label]! }
+  // Keep the default key in sync (preserve keyname there too)
+  openaiFile[CODEX_KEY_PREFIX] = { ...openaiFile[CODEX_KEY_PREFIX], ...openaiFile[label]! }
   raw[ACTIVE_MARKER] = label
 
   writeFileSync(path, JSON.stringify(raw, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 })

@@ -3,7 +3,8 @@ import assert from "node:assert"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { findCodexAuthPath, getCodexAuthPath, getCodexAuthPathCandidates, hasCodexAuth, readCodexAuth } from "./codex-auth"
+import { readFileSync } from "fs"
+import { deleteCodexAuth, findCodexAuthPath, getCodexAuthPath, getCodexAuthPathCandidates, hasCodexAuth, listCodexAuths, readCodexAuth } from "./codex-auth"
 
 let tempDir = ""
 let tempFile = ""
@@ -70,6 +71,63 @@ describe("codex auth", () => {
     assert.equal(auth?.refresh, "refresh-token")
     assert.equal(auth?.expires, 1234)
     assert.equal(auth?.accountId, "account-123")
+  })
+
+  it("deleteCodexAuth removes named openai@ entry and clears tokens when last", () => {
+    const authData = {
+      tokens: { access_token: "access-1", refresh_token: "refresh-1", account_id: "acct-1" },
+      last_refresh: "2026-05-15T00:00:00.000Z",
+      "openai": { type: "oauth", access: "access-1", refresh: "refresh-1", expires: 9999 },
+      "openai@acct-1": { type: "oauth", access: "access-1", refresh: "refresh-1", expires: 9999, accountId: "acct-1" },
+      "_active": "openai@acct-1",
+    }
+    writeFileSync(tempFile, JSON.stringify(authData), "utf-8")
+
+    const ok = deleteCodexAuth("openai@acct-1")
+    assert.equal(ok, true)
+    const remaining = JSON.parse(readFileSync(tempFile, "utf-8"))
+    assert.equal(remaining["openai@acct-1"], undefined)
+    assert.equal(remaining["openai"], undefined)
+    assert.equal(remaining["_active"], undefined)
+    assert.equal(remaining["tokens"], undefined, "legacy tokens should be cleared when no entries remain")
+    assert.equal(remaining["last_refresh"], undefined)
+  })
+
+  it("deleteCodexAuth removes legacy tokens-only entry via synthetic label", () => {
+    const authData = {
+      tokens: { access_token: "access-1", refresh_token: "refresh-1" },
+      last_refresh: "2026-05-15T00:00:00.000Z",
+    }
+    writeFileSync(tempFile, JSON.stringify(authData), "utf-8")
+
+    const entries = listCodexAuths()
+    assert.equal(entries.length, 1)
+    assert.equal(entries[0]!.label, "openai@legacy")
+
+    const ok = deleteCodexAuth("openai@legacy")
+    assert.equal(ok, true)
+    const remaining = JSON.parse(readFileSync(tempFile, "utf-8"))
+    assert.equal(remaining["tokens"], undefined)
+    assert.equal(remaining["last_refresh"], undefined)
+    assert.equal(listCodexAuths().length, 0, "no entries after legacy deletion")
+  })
+
+  it("deleteCodexAuth keeps tokens when other named entries remain", () => {
+    const authData = {
+      tokens: { access_token: "access-2", refresh_token: "refresh-2" },
+      "openai": { type: "oauth", access: "access-2", refresh: "refresh-2", expires: 9999 },
+      "openai@acct-1": { type: "oauth", access: "access-1", refresh: "refresh-1", expires: 9999 },
+      "openai@acct-2": { type: "oauth", access: "access-2", refresh: "refresh-2", expires: 9999 },
+      "_active": "openai@acct-2",
+    }
+    writeFileSync(tempFile, JSON.stringify(authData), "utf-8")
+
+    const ok = deleteCodexAuth("openai@acct-2")
+    assert.equal(ok, true)
+    const remaining = JSON.parse(readFileSync(tempFile, "utf-8"))
+    assert.equal(remaining["openai@acct-2"], undefined)
+    assert.notEqual(remaining["tokens"], undefined, "tokens kept since another entry remains")
+    assert.equal(remaining["_active"], "openai@acct-1", "active switched to remaining entry")
   })
 
   it("falls back to opencode's xdg data auth path", () => {
