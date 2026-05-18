@@ -2045,6 +2045,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     refreshAgentsInstruction()
     setRunning(true)
     setStatus(formatQueueStatus("thinking...", queuedInputs()))
+    setNotices([])
 
     const activeSessionId = sessionId()
     markSessionActive(activeSessionId)
@@ -2053,9 +2054,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const clearNoticesOnce = () => {
       if (!noticesCleared) {
         noticesCleared = true
-        // Preserve error notices from previous runs;
-        // only clear transient notices (tool, info, etc.)
-        setNotices((prev) => prev.filter((n) => n.kind === "error"))
       }
     }
 
