@@ -17,6 +17,7 @@ Commands
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
   /usage                 Open token usage dashboard
+  /compact               Summarize and compress earlier session history
   /commit                Generate a commit message from current changes
   /exit  [/quit]         Exit the app
   exit  quit             Also work without the slash

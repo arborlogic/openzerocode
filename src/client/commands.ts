@@ -2,12 +2,15 @@ import type { Setter } from "solid-js"
 import { HELP_CONTENT } from "./help-content"
 import type { DisplayBlock } from "./tui"
 import type { Message } from "../provider/types"
+import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
 
 export type SlashCommandDef = {
   name: string
   description: string
   aliases?: string[]
 }
+
+export type CommandToastKind = "info" | "success" | "warning" | "error"
 
 export type CommandContext = {
   currentProvider: string
@@ -20,6 +23,7 @@ export type CommandContext = {
   setMessages: Setter<Message[]>
   setDraft: (text: string) => void
   setNotices: Setter<DisplayBlock[]>
+  showToast: (kind: CommandToastKind, title: string, text?: string, duration?: number) => void
   exitApp: (code?: number) => Promise<void>
   scrollBottom: () => void
   switchSession: (id: string) => void
@@ -30,6 +34,7 @@ export type CommandContext = {
   openModelList: () => void
   openHelp: () => void
   openUsageDashboard: () => void
+  compactSession: () => Promise<void>
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
 }
@@ -41,6 +46,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
   { name: "mode", description: "Toggle build / plan mode" },
+  { name: "memory", description: "Show loaded workspace memory files and prompt-memory status" },
   { name: "model", description: "Switch model: /model <name> or /model list" },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
@@ -48,9 +54,13 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
+  { name: "compact", description: "Summarize and compress earlier session history" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
 ]
 
+function notifyCommand(ctx: CommandContext, kind: CommandToastKind, title: string, text?: string) {
+  ctx.showToast(kind, title, text)
+}
 
 export async function executeCommand(input: string, ctx: CommandContext): Promise<boolean> {
   const parts = input.slice(1).trim().split(/\s+/)
@@ -59,7 +69,7 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "provider") {
     if (!arg) {
-      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Current provider: ${ctx.currentProvider}` }])
+      notifyCommand(ctx, "info", "Current provider", ctx.currentProvider)
       return true
     }
     if (arg === "list") {
@@ -67,7 +77,7 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
       return true
     }
     const result = await ctx.setCurrentProvider(arg)
-    ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+    notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "Provider updated" : "Provider update failed", result.message)
     return true
   }
 
@@ -76,13 +86,13 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     const method = first === "headless" || first === "code" ? first : "browser"
     const value = method === "code" ? rest.join(" ") : undefined
     const result = await ctx.codexLogin(method, value)
-    ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+    notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "Codex login started" : "Codex login failed", result.message)
     return true
   }
 
   if (cmd === "model") {
     if (!arg) {
-      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Current model: ${ctx.currentModel}` }])
+      notifyCommand(ctx, "info", "Current model", ctx.currentModel)
       return true
     }
     if (arg === "list") {
@@ -90,21 +100,20 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
       return true
     }
     const result = await ctx.setCurrentModel(arg)
-    ctx.setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+    notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "Model updated" : "Model update failed", result.message)
     return true
   }
 
   if (cmd === "mode") {
-    const next = arg.toLowerCase()
-    if (next === "build" || next === "plan") {
-      ctx.setMode(next)
-      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Mode switched to ${next}.` }])
-    } else if (!arg) {
-      const toggled = ctx.mode === "build" ? "plan" : "build"
-      ctx.setMode(toggled)
-      ctx.setNotices((prev) => [...prev, { kind: "system", text: `Mode switched to ${toggled}.` }])
+    if (!arg) {
+      const nextMode = ctx.mode === "build" ? "plan" : "build"
+      ctx.setMode(nextMode)
+      notifyCommand(ctx, "success", "Mode updated", `Mode set to ${nextMode}`)
+    } else if (arg === "build" || arg === "plan") {
+      ctx.setMode(arg)
+      notifyCommand(ctx, "success", "Mode updated", `Mode set to ${arg}`)
     } else {
-      ctx.setNotices((prev) => [...prev, { kind: "error", text: "Usage: /mode build|plan" }])
+      notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan")
     }
     return true
   }
@@ -114,8 +123,19 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     return true
   }
 
+  if (cmd === "memory") {
+    const status = inspectWorkspaceMemory(process.cwd())
+    notifyCommand(ctx, "info", "Workspace memory", formatWorkspaceMemoryStatus(status))
+    return true
+  }
+
   if (cmd === "usage") {
     ctx.openUsageDashboard()
+    return true
+  }
+
+  if (cmd === "compact") {
+    await ctx.compactSession()
     return true
   }
 

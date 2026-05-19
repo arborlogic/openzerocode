@@ -18,7 +18,7 @@ import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
-import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
+import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
@@ -121,6 +121,15 @@ export type DisplayBlock = {
   text: string
   title?: string
   streaming?: boolean
+}
+
+type ToastKind = CommandToastKind
+
+type ToastItem = {
+  id: number
+  kind: ToastKind
+  title: string
+  text?: string
 }
 
 type DisplayTurn = {
@@ -410,6 +419,53 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
 
 const SIDEBAR_WIDTH = 34
 
+function ToastViewport(props: { items: ToastItem[] }) {
+  const tone = (kind: ToastKind) => {
+    if (kind === "success") return { border: "#3fb950", title: "#7ee787", body: THEME.text, icon: "✓" }
+    if (kind === "warning") return { border: "#d29922", title: "#f2cc60", body: THEME.text, icon: "!" }
+    if (kind === "error") return { border: "#f85149", title: "#ff7b72", body: THEME.text, icon: "✗" }
+    return { border: THEME.accent, title: "#79c0ff", body: THEME.text, icon: "i" }
+  }
+
+  return (
+    <box
+      position="absolute"
+      top={1}
+      right={2}
+      width={44}
+      zIndex={120}
+      flexDirection="column"
+      gap={1}
+    >
+      <For each={props.items}>
+        {(item) => {
+          const colors = tone(item.kind)
+          return (
+            <box
+              flexDirection="column"
+              border={["top", "left", "right", "bottom"]}
+              borderColor={colors.border}
+              backgroundColor={THEME.surface}
+              paddingLeft={1}
+              paddingRight={1}
+              paddingTop={0}
+              paddingBottom={0}
+            >
+              <box flexDirection="row" gap={1}>
+                <text style={{ fg: colors.title }}>{colors.icon}</text>
+                <text style={{ fg: colors.title }}>{item.title}</text>
+              </box>
+              <Show when={item.text}>
+                <text style={{ fg: colors.body }}>{item.text}</text>
+              </Show>
+            </box>
+          )
+        }}
+      </For>
+    </box>
+  )
+}
+
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(
@@ -638,8 +694,6 @@ function App() {
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
-  const [copyNotice, setCopyNotice] = createSignal(false)
-  let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   type PendingApproval = {
     request: PermissionRequest
@@ -671,6 +725,15 @@ function App() {
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
+  const [toasts, setToasts] = createSignal<ToastItem[]>([])
+  let nextToastId = 1
+  const showToast = (kind: ToastKind, title: string, text?: string, duration = 3000) => {
+    const id = nextToastId++
+    setToasts((prev) => [...prev, { id, kind, title, text }].slice(-3))
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id))
+    }, duration)
+  }
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
@@ -1114,7 +1177,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Compact session",
-        onSelect: () => { void compactCurrentSession() },
+        hint: "/compact",
+        onSelect: () => {
+          setShowPalette(false)
+          void compactCurrentSession()
+        },
       },
       {
         label: "Timeline",
@@ -1471,7 +1538,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: "oauth",
         onSelect: async () => {
           const result = await runCodexLogin("browser")
-          setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+          showToast(result.ok ? "success" : "error", result.ok ? "Codex login started" : "Codex login failed", result.message)
         },
       })
       items.push({
@@ -1589,7 +1656,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Copy",
         hint: "message text to clipboard",
         onSelect: async () => {
-          if (target) await copyToClipboard(target.text)
+          if (target) {
+            await copyToClipboard(target.text)
+            showToast("success", "Copied to clipboard", truncateText(target.text.replace(/\s+/g, " ").trim(), 60), 2000)
+          }
           setShowPalette(false)
           setPaletteMode("actions")
         },
@@ -1817,9 +1887,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     if (!text) return
     await copyToClipboard(text)
     renderer.clearSelection?.()
-    setCopyNotice(true)
-    clearTimeout(copyNoticeTimer)
-    copyNoticeTimer = setTimeout(() => setCopyNotice(false), 2000)
+    showToast("success", "Copied to clipboard", truncateText(text.replace(/\s+/g, " ").trim(), 60), 2000)
   }
 
   const doSaveCurrent = () => {
@@ -1970,6 +2038,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
     if (head.length === 0) {
       setStatus("session too short to compact")
+      showToast("info", "Compaction skipped", "Session is still too short to compact.")
       return
     }
 
@@ -2008,6 +2077,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const summary = result.message.content?.trim()
       if (!summary) {
         setStatus("compaction failed")
+        showToast("error", "Compaction failed", "The provider returned an empty summary.")
         return
       }
 
@@ -2021,8 +2091,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
       refreshSessions()
       setStatus("session compacted")
+      showToast("success", "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
     } catch {
       setStatus("compaction failed")
+      showToast("error", "Compaction failed", "Could not summarize earlier session history.")
     }
   }
 
@@ -2045,13 +2117,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Auto-compact if context is near limit (> 80%).
+    // Suggest compaction when context is near limit (> 80%), but let the user decide.
     // Use JSON.stringify to capture all message content (parts, tool_calls, reasoning).
     {
       const cfg = getModelConfig(currentModel)
       const rawMessages = stripCompactSummaryMessages(messages())
       if (estimateTokens(JSON.stringify(rawMessages) + input) > cfg.contextLimit * 0.8) {
-        await compactCurrentSession()
+        setNotices((prev) => {
+          const text = "Context is getting full — you can run /compact now if you want to reduce session history."
+          const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
+          if (!alreadyPresent) showToast("warning", "Context getting full", "You can run /compact now to reduce session history.", 4500)
+          return alreadyPresent ? prev : [...prev, { kind: "system", text }]
+        })
       }
     }
 
@@ -2238,6 +2315,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setMessages,
         setDraft: setComposerText,
         setNotices,
+        showToast,
         exitApp,
         scrollBottom,
         switchSession: doSwitchSession,
@@ -2268,6 +2346,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         openUsageDashboard: () => {
           setShowUsageDashboard(true)
         },
+        compactSession: compactCurrentSession,
         refreshSessions,
         codexLogin: runCodexLogin,
       }
@@ -2276,7 +2355,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "tools" || slashCmd === "tool-details") {
         setShowCompletedTools(c => !c)
         const state = showCompletedTools() ? "shown" : "hidden"
-        setNotices((prev) => [...prev, { kind: "system", text: `Completed tool details: ${state}` }])
+        showToast("success", "Tool details updated", `Completed tool details: ${state}`)
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
@@ -2284,7 +2363,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "thinking") {
         setShowThinkingBlocks(c => !c)
         const state = showThinkingBlocks() ? "visible" : "hidden"
-        setNotices((prev) => [...prev, { kind: "system", text: `Thinking blocks: ${state}` }])
+        showToast("success", "Thinking blocks updated", `Thinking blocks: ${state}`)
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
@@ -2292,7 +2371,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "auto" || slashCmd === "auto-approve") {
         setAutoApprove(c => !c)
         const state = autoApprove() ? "ON" : "OFF"
-        setNotices((prev) => [...prev, { kind: "system", text: `Auto-approve: ${state}` }])
+        showToast("success", "Auto-approve updated", `Auto-approve: ${state}`)
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
@@ -2858,6 +2937,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
       {/* ── Main work UI (hidden while splash is shown) ── */}
       <Show when={!showSplash()}>
+      <ToastViewport items={toasts()} />
 <box
         flexDirection={layoutMode() === "horizontal" ? "row" : "column"}
         flexGrow={1}
