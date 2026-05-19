@@ -5,13 +5,17 @@ import { truncateToolOutput } from "../tool/truncate"
 
 export function convertToolToDef(def: Def): ToolDef {
   const doc = Schema.toJsonSchemaDocument(def.parameters)
-  const schema = doc.schema ?? doc
+  let schema = (doc.schema ?? doc) as Record<string, unknown>
+  // Schema.Struct({}) produces anyOf without type: "object", which OpenAI rejects.
+  if (!schema.type || schema.anyOf) {
+    schema = { type: "object", properties: {} }
+  }
   return {
     type: "function",
     function: {
       name: def.id,
       description: def.description,
-      parameters: schema as unknown as Record<string, unknown>,
+      parameters: schema,
     },
   }
 }

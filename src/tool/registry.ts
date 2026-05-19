@@ -8,6 +8,13 @@ import { BashTool } from "./bash"
 import { EditTool } from "./edit"
 import { WebFetchTool } from "./web-fetch"
 import { TodoWriteTool } from "./todo"
+import { BrowserNavigateTool } from "./browser-navigate"
+import { BrowserReadTool } from "./browser-read"
+import { BrowserClickTool } from "./browser-click"
+import { BrowserTypeTool } from "./browser-type"
+import { BrowserSelectTool } from "./browser-select"
+import { BrowserScrollTool } from "./browser-scroll"
+import { BrowserScreenshotTool } from "./browser-screenshot"
 
 export interface Interface {
   readonly all: () => Effect.Effect<readonly Def[]>
@@ -29,6 +36,13 @@ export const layer = Layer.effect(
       yield* EditTool,
       yield* WebFetchTool,
       yield* TodoWriteTool,
+      yield* BrowserNavigateTool,
+      yield* BrowserReadTool,
+      yield* BrowserClickTool,
+      yield* BrowserTypeTool,
+      yield* BrowserSelectTool,
+      yield* BrowserScrollTool,
+      yield* BrowserScreenshotTool,
     ]
     const custom: Def[] = []
 

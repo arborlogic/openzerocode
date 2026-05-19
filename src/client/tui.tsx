@@ -33,6 +33,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
+import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -704,7 +705,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -716,6 +717,7 @@ function App() {
   const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [lockPollRevision, setLockPollRevision] = createSignal(0)
+  const [geassRevision, setGeassRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
@@ -1067,6 +1069,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
 const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
+    geassRevision()
     return [
       {
         label: "INPUT",
@@ -1202,6 +1205,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Usage dashboard",
         hint: "tokens by session / provider / model",
         onSelect: () => { setShowPalette(false); setShowUsageDashboard(true) },
+      },
+      {
+        label: "Experiment",
+        hint: "GEASS …",
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteMode("geass")
+          setPaletteIndex(0)
+        },
       },
       {
         label: "MODEL",
@@ -1640,6 +1652,48 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   
+  const geassPaletteItems = createMemo<PaletteItem[]>(() => {
+    geassRevision()
+    return [
+      {
+        label: "GEASS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: isEnabled() ? "Disable GEASS" : "Enable GEASS",
+        hint: isEnabled() ? (isConnected() ? "● Online" : "○ Offline") : "",
+        onSelect: () => {
+          setEnabled(!isEnabled())
+          setGeassRevision(v => v + 1)
+          if (isEnabled()) {
+            testConnection().then(() => setGeassRevision(v => v + 1))
+          }
+          setShowPalette(false)
+        },
+      },
+      ...(isEnabled() ? [{
+        label: "Test Connect",
+        hint: isConnected() ? "● Online" : "○ Offline",
+        onSelect: () => {
+          testConnection().then(ok => {
+            setGeassRevision(v => v + 1)
+            setStatus(ok ? "GEASS connected" : "GEASS connection failed")
+          })
+          setShowPalette(false)
+        },
+      }] : []),
+      { label: "", onSelect: () => {} },
+      {
+        label: "← Back",
+        onSelect: () => {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        },
+      },
+    ]
+  })
+
   const userMessageActionItems = createMemo<PaletteItem[]>(() => {
     const target = userMsgActionTarget()
     return [
@@ -1691,6 +1745,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? timelinePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
+          : paletteMode() === "geass"
+            ? geassPaletteItems()
           : paletteMode() === "userMessageActions"
             ? userMessageActionItems()
           : actionPaletteItems(),
@@ -3135,6 +3191,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           cwd={currentCwd()}
           sessionId={sessionId()}
           gitRefreshKey={gitRefreshRevision()}
+          geassRevision={geassRevision()}
         />
       </Show>
 
@@ -3161,6 +3218,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             cwd={currentCwd()}
             sessionId={sessionId()}
             gitRefreshKey={gitRefreshRevision()}
+            geassRevision={geassRevision()}
           />
         </box>
       </Show>

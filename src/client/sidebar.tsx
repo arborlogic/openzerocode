@@ -6,6 +6,7 @@ import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
+import { isEnabled, isConnected } from "../browser/geass-client"
 
 type GitFile = {
   path: string
@@ -158,6 +159,8 @@ export function Sidebar(props: {
   cwd?: string
   /** Increment to force a git snapshot refresh from outside the component. */
   gitRefreshKey?: number
+  /** Increment to trigger GEASS status re-read. */
+  geassRevision?: number
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(null)
@@ -318,11 +321,18 @@ export function Sidebar(props: {
           </Show>
         </box>
 
-        <Show when={branch()}>
-          <box flexDirection="column">
-            <text style={{ fg: props.theme.accent }}>Branch</text>
-            <text style={{ fg: props.theme.muted }}>{branch()}</text>
-          </box>
+        <Show when={isEnabled()}>
+          {(() => {
+            void props.geassRevision
+            return (
+              <box flexDirection="column">
+                <text style={{ fg: props.theme.accent }}>GEASS</text>
+                <text style={{ fg: isConnected() ? "#7ee787" : "#f85149" }}>
+                  {isConnected() ? "● Online" : "○ Offline"}
+                </text>
+              </box>
+            )
+          })()}
         </Show>
 
         <Show when={props.cwd}>
