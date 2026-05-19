@@ -107,9 +107,20 @@ export const WebFetchTool = Effect.gen(function* () {
       "Supports URLs up to 5MB. Timeout defaults to 30s, configurable up to 120s.",
     ].join("\n"),
     parameters: Parameters,
-    execute: (raw, _ctx) =>
+    execute: (raw, ctx) =>
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
+
+        yield* ctx.ask({
+          permission: "web_fetch",
+          patterns: [args.url],
+          metadata: {
+            url: args.url,
+            format: args.format,
+            timeout: args.timeout,
+          },
+        })
+
         const timeout = Math.min(
           (args.timeout ?? DEFAULT_TIMEOUT / 1000) * 1000,
           MAX_TIMEOUT,
