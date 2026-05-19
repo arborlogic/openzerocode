@@ -7,6 +7,7 @@ import { GlobTool } from "./glob"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
 import { WebFetchTool } from "./web-fetch"
+import { TodoWriteTool } from "./todo"
 
 export interface Interface {
   readonly all: () => Effect.Effect<readonly Def[]>
@@ -27,6 +28,7 @@ export const layer = Layer.effect(
       yield* BashTool,
       yield* EditTool,
       yield* WebFetchTool,
+      yield* TodoWriteTool,
     ]
     const custom: Def[] = []
 

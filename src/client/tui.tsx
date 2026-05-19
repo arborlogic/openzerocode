@@ -28,6 +28,7 @@ import { loadAgentsInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
+import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
@@ -669,6 +670,8 @@ function App() {
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
+  const [todos, setTodos] = createSignal<TodoItem[]>([])
+  setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
@@ -1904,6 +1907,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setSessionRevision((v) => v + 1)
     setMessages([])
     setNotices([])
+    setTodos([])
     setPermissionRules([])
     setCompaction(undefined)
     setAutoApprove(false)
@@ -3041,6 +3045,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={layoutMode() === "horizontal"}>
         <Sidebar
           messages={messages}
+          todos={todos}
           theme={THEME}
           width={SIDEBAR_WIDTH}
           provider={providerLabel()}
@@ -3066,6 +3071,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box width={1} backgroundColor={THEME.border} flexShrink={0} />
           <Sidebar
             messages={messages}
+            todos={todos}
             theme={THEME}
             width={SIDEBAR_WIDTH}
             provider={providerLabel()}

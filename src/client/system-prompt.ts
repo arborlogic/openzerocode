@@ -1,5 +1,21 @@
 import type { RunMode } from "./session-runner"
 
+const TODO_INSTRUCTIONS = [
+  "# Task List (todowrite tool)",
+  "Use the todowrite tool to create and maintain a task list when:",
+  "  - The task requires 3 or more distinct steps",
+  "  - The user provides multiple things to do",
+  "  - You need to make coordinated changes across several files",
+  "Do NOT use todowrite for single-step or trivial tasks.",
+  "",
+  "Task lifecycle rules:",
+  "  - Create the full list BEFORE starting work — one call with all tasks as 'pending'",
+  "  - Mark a task 'in_progress' immediately before you begin it (only ONE in_progress at a time)",
+  "  - Mark it 'completed' immediately after finishing it",
+  "  - If a task turns out to be unnecessary, remove it from the list",
+  "  - Update the list whenever your plan changes",
+].join("\n")
+
 const BASE_SYSTEM_PROMPT = [
   "You are OpenZeroCode, an AI coding assistant.",
   "You have access to tools for reading, writing, searching files and running shell commands.",
@@ -27,6 +43,10 @@ const PLAN_MODE_REMINDER = [
 
 export function buildSystemPrompt(mode: RunMode, agentsInstruction?: string) {
   const parts = [BASE_SYSTEM_PROMPT, mode === "plan" ? PLAN_MODE_REMINDER : BUILD_MODE_REMINDER]
+
+  if (mode !== "plan") {
+    parts.push(TODO_INSTRUCTIONS)
+  }
 
   if (agentsInstruction) {
     parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)

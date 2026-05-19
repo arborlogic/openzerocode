@@ -5,6 +5,7 @@ import type { Message } from "../provider/types"
 import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
+import type { TodoItem } from "../tool/todo"
 
 type GitFile = {
   path: string
@@ -141,6 +142,7 @@ function fmtCost(n: number): string {
 
 export function Sidebar(props: {
   messages: () => Message[]
+  todos?: () => TodoItem[]
   theme: {
     text: string
     muted: string
@@ -271,6 +273,37 @@ export function Sidebar(props: {
             </Show>
           </Show>
         </box>
+
+        <Show when={props.todos && props.todos().length > 0}>
+          <box flexDirection="column">
+            <box flexDirection="row" gap={1}>
+              <text style={{ fg: props.theme.accent }}>Tasks</text>
+              <text style={{ fg: props.theme.muted }}>
+                {props.todos!().filter(t => t.status === "completed").length}/{props.todos!().length}
+              </text>
+            </box>
+            <For each={props.todos!()}>
+              {(todo) => {
+                const icon = todo.status === "completed" ? "✓" : todo.status === "in_progress" ? "•" : " "
+                const color = todo.status === "completed"
+                  ? props.theme.muted
+                  : todo.status === "in_progress"
+                  ? "#d29922"
+                  : props.theme.muted
+                const maxTextWidth = Math.max(1, props.width - 5)
+                const text = todo.content.length > maxTextWidth
+                  ? todo.content.slice(0, maxTextWidth - 1) + "…"
+                  : todo.content
+                return (
+                  <box flexDirection="row" gap={1}>
+                    <text style={{ fg: color }}>[{icon}]</text>
+                    <text style={{ fg: color }} wrapMode="none">{text}</text>
+                  </box>
+                )
+              }}
+            </For>
+          </box>
+        </Show>
 
         <box flexDirection="column">
           <text style={{ fg: props.theme.accent }}>Context</text>
