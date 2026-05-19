@@ -31,7 +31,8 @@ This repo is actively implemented. Current capabilities include:
 - **Multi-session persistence** under `~/.openzerocode/sessions`
 - **Session management** — rename, delete, compact
 - **Sidebar context** — token usage, cost tracking, git diff summary
-- **Working memory** — `AGENTS.md` loading, `SESSION_SUMMARY.md` handoff, session continuation
+- **Workspace prompt memory** — `AGENTS.md` instructions + `CONTEXT.md` project context injected into the system prompt
+- **Session handoff** — `SESSION_SUMMARY.md` for concise local continuation notes
 - **7 built-in tools**:
   | Tool | Description |
   |------|-------------|
@@ -185,14 +186,24 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
             └────────────────────────────────────┘
 ```
 
+## Workspace Memory Model
+
+OpenZeroCode separates repo memory into three lightweight artifacts:
+
+- `AGENTS.md`: stable repo-specific instructions, workflows, and guardrails.
+- `CONTEXT.md`: background context, shared vocabulary, and known mismatches worth surfacing in prompts.
+- `SESSION_SUMMARY.md`: concise handoff notes for humans/continuation; not auto-injected into the system prompt.
+
+The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` from the nearest workspace via `src/client/workspace-memory.ts`.
+
 ### Key source files
 
 | File | Purpose |
 |------|---------|
 | `src/client/tui.tsx` | Main TUI entrypoint & UI orchestration |
 | `src/client/sessions.ts` | Session persistence helpers |
-| `src/client/workspace-memory.ts` | Working memory injection |
-| `src/client/workspace-summary.ts` | Session summary / handoff management |
+| `src/client/workspace-memory.ts` | Loads `AGENTS.md` and `CONTEXT.md` into the system prompt |
+| `SESSION_SUMMARY.md` | Manual session handoff / continuation notes |
 | `src/provider/registry.ts` | Provider registration & resolution |
 | `src/tool/registry.ts` | Built-in tool registration |
 
@@ -207,7 +218,7 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
 | **Provider layer** | OpenRouter, others | OpenRouter, Big Pickle, extensible |
 | **Tool system** | Built-in tools | Same 7 tools + permission system |
 | **Session storage** | Local files | Local files under `~/.openzerocode/` |
-| **Working memory** | `AGENTS.md` + `SESSION_SUMMARY.md` | Same pattern |
+| **Prompt memory** | Varies | `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
 | **Cloud dependency** | Requires `zero` for operation | None — works entirely offline |
 | **Binary distribution** | Platform-specific npm packages | Same approach |
 

@@ -41,7 +41,7 @@ const PLAN_MODE_REMINDER = [
   "Explain the approach, risks, and step-by-step plan only.",
 ].join("\n")
 
-export function buildSystemPrompt(mode: RunMode, agentsInstruction?: string) {
+export function buildSystemPrompt(mode: RunMode, agentsInstruction?: string, contextInstruction?: string) {
   const parts = [BASE_SYSTEM_PROMPT, mode === "plan" ? PLAN_MODE_REMINDER : BUILD_MODE_REMINDER]
 
   if (mode !== "plan") {
@@ -50,6 +50,10 @@ export function buildSystemPrompt(mode: RunMode, agentsInstruction?: string) {
 
   if (agentsInstruction) {
     parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)
+  }
+
+  if (contextInstruction) {
+    parts.push("# Workspace Context from CONTEXT.md\n\n" + contextInstruction)
   }
 
   return parts.join("\n\n")

@@ -24,7 +24,7 @@ import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
-import { loadAgentsInstruction } from "./workspace-memory"
+import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
@@ -68,6 +68,7 @@ let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
+let contextInstruction = loadContextInstruction(process.cwd())
 
 const THEME = {
   background: "#0d1117",
@@ -364,7 +365,7 @@ function openExternalUrl(url: string) {
 }
 
 function systemPrompt(mode: RunMode) {
-  return buildSystemPrompt(mode, agentsInstruction)
+  return buildSystemPrompt(mode, agentsInstruction, contextInstruction)
 }
 
 function refreshAgentsInstruction() {
