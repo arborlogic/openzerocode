@@ -46,5 +46,15 @@ fi
 
 cd "$PROJDIR"
 node scripts/create-platform-packages.mjs
-mkdir -p "npm/packages/$TARGET/bin"
-bun run scripts/build.ts "npm/packages/$TARGET/bin/$BINARY_NAME"
+PACKAGE_BIN_DIR="npm/packages/$TARGET/bin"
+mkdir -p "$PACKAGE_BIN_DIR"
+rm -f "$PACKAGE_BIN_DIR/$BINARY_NAME"
+bun run scripts/build.ts "$PACKAGE_BIN_DIR/$BINARY_NAME"
+
+if [[ ! -f "$PACKAGE_BIN_DIR/$BINARY_NAME" ]]; then
+  echo "Retrying build from package directory to avoid Bun output path resolution issues..."
+  (
+    cd "npm/packages/$TARGET"
+    bun run "$PROJDIR/scripts/build.ts" "./bin/$BINARY_NAME"
+  )
+fi
