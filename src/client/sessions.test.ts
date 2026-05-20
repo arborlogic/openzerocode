@@ -153,10 +153,24 @@ describe("sessions", () => {
       const meta1 = createSession("gpt-4o", "openai")
       await new Promise((r) => setTimeout(r, 10))
       const meta2 = createSession("claude", "anthropic")
-      const all = listSessions()
+      const all = listSessions({ includeEmpty: true })
       assert.equal(all.length, 2)
       assert.equal(all[0]?.id, meta2.id)
       assert.equal(all[1]?.id, meta1.id)
+    })
+
+    it("hides empty default sessions by default", () => {
+      createSession("gpt-4o", "openai")
+      const all = listSessions()
+      assert.equal(all.length, 0)
+    })
+
+    it("keeps titled empty sessions visible", () => {
+      const meta = createSession("gpt-4o", "openai")
+      updateSessionMeta(meta.id, { title: "Keep me" })
+      const all = listSessions()
+      assert.equal(all.length, 1)
+      assert.equal(all[0]?.id, meta.id)
     })
   })
 

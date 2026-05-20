@@ -4,6 +4,8 @@ import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } 
 import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn, execFile } from "node:child_process"
+import { existsSync, readdirSync, statSync } from "node:fs"
+import { basename, dirname, resolve } from "node:path"
 import { platform } from "os"
 import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
@@ -16,21 +18,26 @@ import { createStreamState } from "./stream-state"
 import { runSession, type RunMode } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
-import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
+import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
-import { loadAgentsInstruction } from "./workspace-memory"
+import { formatProviderError } from "./errors"
+import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
-import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth } from "../provider/codex-auth"
+import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
+import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
+import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
+import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
 import pkg from "../../package.json" with { type: "json" }
 
@@ -63,6 +70,7 @@ let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
+let contextInstruction = loadContextInstruction(process.cwd())
 
 const THEME = {
   background: "#0d1117",
@@ -117,6 +125,15 @@ export type DisplayBlock = {
   streaming?: boolean
 }
 
+type ToastKind = CommandToastKind
+
+type ToastItem = {
+  id: number
+  kind: ToastKind
+  title: string
+  text?: string
+}
+
 type DisplayTurn = {
   user?: DisplayBlock
   entries: DisplayBlock[]
@@ -131,6 +148,61 @@ function rebuildLayer() {
 function defaultModelForCurrentProvider(providerId: string) {
   const configured = process.env.OPENZERO_MODEL ?? defaultModelForProvider(providerId)
   return providerId === "opencode-zen" ? normalizeBigPickleModel(configured) : configured
+}
+
+function homeDir() {
+  return process.env.HOME ?? ""
+}
+
+function expandHome(path: string) {
+  if (path === "~") return homeDir()
+  if (path.startsWith("~/")) return resolve(homeDir(), path.slice(2))
+  return path
+}
+
+function displayPath(path: string) {
+  const home = homeDir()
+  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
+function resolveDirectoryPath(input: string, cwd = process.cwd()) {
+  const expanded = expandHome(input.trim())
+  return resolve(cwd, expanded || ".")
+}
+
+function isDirectory(path: string) {
+  try {
+    return existsSync(path) && statSync(path).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function directoryCandidates(input: string, cwd = process.cwd()) {
+  const raw = input.trim()
+  const expanded = expandHome(raw)
+  const target = expanded ? resolve(cwd, expanded) : cwd
+  const inputEndsWithSeparator = raw.endsWith("/") || raw.endsWith("\\")
+  const base = raw && !inputEndsWithSeparator ? dirname(target) : target
+  const filter = raw && !inputEndsWithSeparator ? basename(target).toLowerCase() : ""
+  const entries: { name: string; path: string }[] = []
+
+  if (!raw) entries.push({ name: "../", path: resolve(cwd, "..") })
+
+  try {
+    for (const dirent of readdirSync(base, { withFileTypes: true })) {
+      if (!dirent.isDirectory()) continue
+      if (dirent.name.startsWith(".") && !filter.startsWith(".")) continue
+      if (filter && !dirent.name.toLowerCase().startsWith(filter)) continue
+      entries.push({ name: `${dirent.name}/`, path: resolve(base, dirent.name) })
+    }
+  } catch {
+    return entries
+  }
+
+  return entries
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 20)
 }
 
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
@@ -304,7 +376,7 @@ function openExternalUrl(url: string) {
 }
 
 function systemPrompt(mode: RunMode) {
-  return buildSystemPrompt(mode, agentsInstruction)
+  return buildSystemPrompt(mode, agentsInstruction, contextInstruction)
 }
 
 function refreshAgentsInstruction() {
@@ -348,6 +420,53 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
 }
 
 const SIDEBAR_WIDTH = 34
+
+function ToastViewport(props: { items: ToastItem[] }) {
+  const tone = (kind: ToastKind) => {
+    if (kind === "success") return { border: "#3fb950", title: "#7ee787", body: THEME.text, icon: "✓" }
+    if (kind === "warning") return { border: "#d29922", title: "#f2cc60", body: THEME.text, icon: "!" }
+    if (kind === "error") return { border: "#f85149", title: "#ff7b72", body: THEME.text, icon: "✗" }
+    return { border: THEME.accent, title: "#79c0ff", body: THEME.text, icon: "i" }
+  }
+
+  return (
+    <box
+      position="absolute"
+      top={1}
+      right={2}
+      width={44}
+      zIndex={120}
+      flexDirection="column"
+      gap={1}
+    >
+      <For each={props.items}>
+        {(item) => {
+          const colors = tone(item.kind)
+          return (
+            <box
+              flexDirection="column"
+              border={["top", "left", "right", "bottom"]}
+              borderColor={colors.border}
+              backgroundColor={THEME.surface}
+              paddingLeft={1}
+              paddingRight={1}
+              paddingTop={0}
+              paddingBottom={0}
+            >
+              <box flexDirection="row" gap={1}>
+                <text style={{ fg: colors.title }}>{colors.icon}</text>
+                <text style={{ fg: colors.title }}>{item.title}</text>
+              </box>
+              <Show when={item.text}>
+                <text style={{ fg: colors.body }}>{item.text}</text>
+              </Show>
+            </box>
+          )
+        }}
+      </For>
+    </box>
+  )
+}
 
 function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
@@ -577,8 +696,6 @@ function App() {
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
-  const [copyNotice, setCopyNotice] = createSignal(false)
-  let copyNoticeTimer: ReturnType<typeof setTimeout> | undefined
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   type PendingApproval = {
     request: PermissionRequest
@@ -589,7 +706,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -597,31 +714,59 @@ function App() {
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
   const [paletteProviderKeyTarget, setPaletteProviderKeyTarget] = createSignal(currentProvider)
   const [paletteNewKeyName, setPaletteNewKeyName] = createSignal("")
+  const [paletteCodexKeynameTarget, setPaletteCodexKeynameTarget] = createSignal("")
   const [timelineTargetMsgIdx, setTimelineTargetMsgIdx] = createSignal(0)
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [lockPollRevision, setLockPollRevision] = createSignal(0)
+  const [geassRevision, setGeassRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
+  const [cwdRevision, setCwdRevision] = createSignal(0)
   const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
+  const [toasts, setToasts] = createSignal<ToastItem[]>([])
+  let nextToastId = 1
+  const showToast = (kind: ToastKind, title: string, text?: string, duration = 3000) => {
+    const id = nextToastId++
+    setToasts((prev) => [...prev, { id, kind, title, text }].slice(-3))
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id))
+    }, duration)
+  }
+  const [todos, setTodos] = createSignal<TodoItem[]>([])
+  setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
-  const [tokenMode, setTokenMode] = createSignal<"precise" | "economy">(_uiPrefs.tokenMode ?? "precise")
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
   )
   const [showSplash, setShowSplash] = createSignal(true)
+  const [showUsageDashboard, setShowUsageDashboard] = createSignal(false)
+  const [usageDashboardView, setUsageDashboardView] = createSignal<ViewMode>("sessions")
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
   const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
-  const splashSessions = listSessions({ directory: process.cwd() })
-  const splashSessionsAll = listSessions({ directory: null })
+  const currentCwd = createMemo(() => {
+    cwdRevision()
+    return process.cwd()
+  })
+  const splashSessions = createMemo(() => {
+    sessionRevision()
+    cwdRevision()
+    return listSessions({ directory: currentCwd() })
+  })
+  const splashRecentSessions = createMemo(() => splashSessions().slice(0, 5))
+  const splashSessionsAll = createMemo(() => {
+    sessionRevision()
+    cwdRevision()
+    return listSessions({ directory: null })
+  })
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(
     dimensions().height > dimensions().width
   )
@@ -639,7 +784,6 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
-  createEffect(() => { saveUIPrefs({ tokenMode: tokenMode() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -679,7 +823,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
-  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string }
+  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string; directoryPath?: string }
 
   const isSelectablePaletteItem = (item: PaletteItem | undefined) => item?.kind !== "section"
 
@@ -926,6 +1070,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
 const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
+    geassRevision()
     return [
       {
         label: "INPUT",
@@ -1017,6 +1162,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => { setPalettePendingDelete(null); setPaletteIndex(0); setSessionScope("cwd"); setPaletteMode("sessions") },
       },
       {
+        label: "Change directory",
+        hint: truncateText(displayPath(currentCwd()), PALETTE_HINT_MAX()),
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteInput("")
+          setPaletteIndex(0)
+          setPaletteMode("directories")
+        },
+      },
+      {
         label: "Rename session",
         onSelect: () => {
           setPaletteInput(sessionMeta()?.title ?? "")
@@ -1026,7 +1181,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Compact session",
-        onSelect: () => { void compactCurrentSession() },
+        hint: "/compact",
+        onSelect: () => {
+          setShowPalette(false)
+          void compactCurrentSession()
+        },
       },
       {
         label: "Timeline",
@@ -1036,6 +1195,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setTimelineTargetMsgIdx(0);
           setPaletteMode("timeline");
           setPaletteIndex(0);
+        },
+      },
+      {
+        label: "USAGE",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Usage dashboard",
+        hint: "tokens by session / provider / model",
+        onSelect: () => { setShowPalette(false); setShowUsageDashboard(true) },
+      },
+      {
+        label: "Experiment",
+        hint: "GEASS …",
+        onSelect: () => {
+          setPalettePendingDelete(null)
+          setPaletteMode("geass")
+          setPaletteIndex(0)
         },
       },
       {
@@ -1065,11 +1243,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
-      {
-        label: "Token mode",
-        hint: tokenMode() === "precise" ? "precise" : "economy",
-        onSelect: () => { setTokenMode(m => m === "precise" ? "economy" : "precise"); setShowPalette(false) },
-      },
     ]
   })
 
@@ -1077,7 +1250,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     lockPollRevision()
     const sid = sessionId()
-    const sessions = listSessions({ directory: sessionScope() === "global" ? null : process.cwd() })
+    const sessions = listSessions({ directory: sessionScope() === "global" ? null : currentCwd() })
     const items: PaletteItem[] = []
 
     for (const s of sessions) {
@@ -1105,6 +1278,59 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     items.push({
       label: "← Back",
       onSelect: () => { setPalettePendingDelete(null); setPaletteMode("actions"); setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems())) },
+    })
+    return items
+  })
+
+  const directoryPaletteItems = createMemo<PaletteItem[]>(() => {
+    cwdRevision()
+    const input = paletteInput()
+    const target = resolveDirectoryPath(input, currentCwd())
+    const candidates = directoryCandidates(input, currentCwd())
+    const items: PaletteItem[] = []
+
+    items.push({
+      label: `Current: ${displayPath(currentCwd())}`,
+      kind: "section",
+      onSelect: () => {},
+    })
+
+    if (input.trim() && isDirectory(target)) {
+      items.push({
+        label: `Use ${displayPath(target)}`,
+        hint: "Enter",
+        directoryPath: target,
+        onSelect: () => {
+          const result = doChangeDirectory(target)
+          if (!result.ok) setStatus(result.message)
+        },
+      })
+    }
+
+    for (const candidate of candidates) {
+      items.push({
+        label: candidate.name,
+        hint: truncateText(displayPath(candidate.path), PALETTE_HINT_MAX()),
+        directoryPath: candidate.path,
+        onSelect: () => {
+          setPaletteInput(displayPath(candidate.path) + "/")
+          setPaletteIndex(0)
+        },
+      })
+    }
+
+    if (candidates.length === 0 && !isDirectory(target)) {
+      items.push({ label: "No matching directories", kind: "section", onSelect: () => {} })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteInput("")
+        setPaletteMode("actions")
+        setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+      },
     })
     return items
   })
@@ -1242,9 +1468,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (authEntries.length > 0) {
         for (const entry of authEntries) {
           const isActive = entry.isActive && currentProvider === "openai-codex"
-          const displayLabel = entry.auth.accountId
-            ? `Account: ${entry.auth.accountId.slice(0, 12)}`
-            : `Key: ${entry.tokenPreview}`
+          const displayLabel = entry.keyname
+            ? entry.keyname
+            : entry.auth.accountId
+              ? `Account: ${entry.auth.accountId.slice(0, 12)}`
+              : `Key: ${entry.tokenPreview}`
           items.push({
             label: `${isActive ? ">" : " "} ${displayLabel}${entry.isActive ? " (active)" : ""}`,
             hint: entry.tokenPreview,
@@ -1263,6 +1491,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               setStatus("Codex activated")
               setShowPalette(false)
               setPaletteMode("actions")
+            },
+          })
+          items.push({
+            label: `  ${entry.keyname ? `Rename "${entry.keyname}"` : "Set key name..."}`,
+            hint: entry.label,
+            onSelect: () => {
+              setPaletteCodexKeynameTarget(entry.label)
+              setPaletteInput(entry.keyname ?? "")
+              setPaletteMode("codexKeyname")
             },
           })
         }
@@ -1314,7 +1551,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: "oauth",
         onSelect: async () => {
           const result = await runCodexLogin("browser")
-          setNotices((prev) => [...prev, { kind: result.ok ? "system" : "error", text: result.message }])
+          showToast(result.ok ? "success" : "error", result.ok ? "Codex login started" : "Codex login failed", result.message)
         },
       })
       items.push({
@@ -1322,9 +1559,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: "OpenAI provider",
         onSelect: () => {
           setPaletteProviderKeyTarget("openai")
-          setPaletteNewKeyName("default")
           setPaletteInput("")
-          setPaletteMode("addProviderKeyValue")
+          setPaletteMode("addProviderKeyName")
           setPaletteIndex(0)
         },
       })
@@ -1417,6 +1653,48 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   
+  const geassPaletteItems = createMemo<PaletteItem[]>(() => {
+    geassRevision()
+    return [
+      {
+        label: "GEASS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: isEnabled() ? "Disable GEASS" : "Enable GEASS",
+        hint: isEnabled() ? (isConnected() ? "● Online" : "○ Offline") : "",
+        onSelect: () => {
+          setEnabled(!isEnabled())
+          setGeassRevision(v => v + 1)
+          if (isEnabled()) {
+            testConnection().then(() => setGeassRevision(v => v + 1))
+          }
+          setShowPalette(false)
+        },
+      },
+      ...(isEnabled() ? [{
+        label: "Test Connect",
+        hint: isConnected() ? "● Online" : "○ Offline",
+        onSelect: () => {
+          testConnection().then(ok => {
+            setGeassRevision(v => v + 1)
+            setStatus(ok ? "GEASS connected" : "GEASS connection failed")
+          })
+          setShowPalette(false)
+        },
+      }] : []),
+      { label: "", onSelect: () => {} },
+      {
+        label: "← Back",
+        onSelect: () => {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        },
+      },
+    ]
+  })
+
   const userMessageActionItems = createMemo<PaletteItem[]>(() => {
     const target = userMsgActionTarget()
     return [
@@ -1433,7 +1711,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Copy",
         hint: "message text to clipboard",
         onSelect: async () => {
-          if (target) await copyToClipboard(target.text)
+          if (target) {
+            await copyToClipboard(target.text)
+            showToast("success", "Copied to clipboard", truncateText(target.text.replace(/\s+/g, " ").trim(), 60), 2000)
+          }
           setShowPalette(false)
           setPaletteMode("actions")
         },
@@ -1453,6 +1734,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "sessions"
       ? sessionPaletteItems()
+      : paletteMode() === "directories"
+        ? directoryPaletteItems()
       : paletteMode() === "providers"
         ? providerPaletteItems()
         : paletteMode() === "models"
@@ -1463,6 +1746,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? timelinePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
+          : paletteMode() === "geass"
+            ? geassPaletteItems()
           : paletteMode() === "userMessageActions"
             ? userMessageActionItems()
           : actionPaletteItems(),
@@ -1472,7 +1757,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1486,14 +1771,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -1659,14 +1944,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     if (!text) return
     await copyToClipboard(text)
     renderer.clearSelection?.()
-    setCopyNotice(true)
-    clearTimeout(copyNoticeTimer)
-    copyNoticeTimer = setTimeout(() => setCopyNotice(false), 2000)
+    showToast("success", "Copied to clipboard", truncateText(text.replace(/\s+/g, " ").trim(), 60), 2000)
   }
 
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
+    if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "")) return
     saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
   }
 
@@ -1695,6 +1979,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     refreshSessions()
     setComposerText("")
     setDraft("")
+  }
+
+  const enterWorkspace = () => {
+    setShowSplash(false)
+    setPaletteInput("")
+    setPalettePendingDelete(null)
+    setPaletteMode("actions")
+    renderer.setTerminalTitle("openzerocode")
   }
 
   
@@ -1741,9 +2033,61 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setSessionRevision((v) => v + 1)
     setMessages([])
     setNotices([])
+    setTodos([])
     setPermissionRules([])
+    setCompaction(undefined)
+    setAutoApprove(false)
     setComposerText("")
     setDraft("")
+    setStatus("waiting for input")
+    enterWorkspace()
+  }
+
+  const selectInitialSplashRow = () => {
+    const sessions = listSessions({ directory: process.cwd() })
+    setSplashSelectedIndex(sessions.length > 0 ? 0 : -1)
+  }
+
+  createEffect(() => {
+    if (!showSplash()) return
+    const recentCount = splashRecentSessions().length
+    const exitIdx = recentCount
+    const selected = splashSelectedIndex()
+    if (recentCount === 0 && selected !== -1) {
+      setSplashSelectedIndex(-1)
+    } else if (recentCount > 0 && selected > exitIdx) {
+      setSplashSelectedIndex(exitIdx)
+    }
+  })
+
+  const doChangeDirectory = (path: string) => {
+    if (running()) return { ok: false, message: "Cannot change directory while a response is running." }
+    const next = resolveDirectoryPath(path, currentCwd())
+    if (!isDirectory(next)) return { ok: false, message: `Directory not found: ${path}` }
+
+    doSaveCurrent()
+    try {
+      process.chdir(next)
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+
+    refreshAgentsInstruction()
+    setNotices([])
+    setComposerText("")
+    setDraft("")
+    setPaletteInput("")
+    setPalettePendingDelete(null)
+    setPaletteMode("actions")
+    setShowPalette(false)
+    setShowSplash(true)
+    setStatus("waiting for input")
+    setCwdRevision((value) => value + 1)
+    setSessionRevision((value) => value + 1)
+    selectInitialSplashRow()
+    setGitRefreshRevision((value) => value + 1)
+    renderer.setTerminalTitle("openzerocode")
+    return { ok: true, message: `Directory switched to ${displayPath(next)}` }
   }
 
   const compactCurrentSession = async () => {
@@ -1751,6 +2095,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
     if (head.length === 0) {
       setStatus("session too short to compact")
+      showToast("info", "Compaction skipped", "Session is still too short to compact.")
       return
     }
 
@@ -1778,7 +2123,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           model: currentModel,
           stream: false,
           max_tokens: 1200,
-          temperature: 0,
           messages: [
             { role: "system", content: prompt },
             { role: "user", content: `Summarize this earlier session history for compaction:\n\n${transcript}` },
@@ -1789,6 +2133,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const summary = result.message.content?.trim()
       if (!summary) {
         setStatus("compaction failed")
+        showToast("error", "Compaction failed", "The provider returned an empty summary.")
         return
       }
 
@@ -1802,8 +2147,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
       refreshSessions()
       setStatus("session compacted")
-    } catch {
+      showToast("success", "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
+    } catch (error) {
+      const errorText = formatProviderError(error)
       setStatus("compaction failed")
+      showToast("error", "Compaction failed", errorText)
+      setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     }
   }
 
@@ -1826,12 +2175,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Auto-compact if context is near limit (> 80%)
+    // Suggest compaction when context is near limit (> 80%), but let the user decide.
+    // Use JSON.stringify to capture all message content (parts, tool_calls, reasoning).
     {
       const cfg = getModelConfig(currentModel)
-      const totalText = stripCompactSummaryMessages(messages()).map(m => m.content ?? "").join(" ") + input
-      if (estimateTokens(totalText) > cfg.contextLimit * 0.8) {
-        await compactCurrentSession()
+      const rawMessages = stripCompactSummaryMessages(messages())
+      if (estimateTokens(JSON.stringify(rawMessages) + input) > cfg.contextLimit * 0.8) {
+        setNotices((prev) => {
+          const text = "Context is getting full — you can run /compact now if you want to reduce session history."
+          const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
+          if (!alreadyPresent) showToast("warning", "Context getting full", "You can run /compact now to reduce session history.", 4500)
+          return alreadyPresent ? prev : [...prev, { kind: "system", text }]
+        })
       }
     }
 
@@ -1841,6 +2196,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     refreshAgentsInstruction()
     setRunning(true)
     setStatus(formatQueueStatus("thinking...", queuedInputs()))
+    setNotices([])
 
     const activeSessionId = sessionId()
     markSessionActive(activeSessionId)
@@ -1849,9 +2205,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const clearNoticesOnce = () => {
       if (!noticesCleared) {
         noticesCleared = true
-        // Preserve error notices from previous runs;
-        // only clear transient notices (tool, info, etc.)
-        setNotices((prev) => prev.filter((n) => n.kind === "error"))
       }
     }
 
@@ -1874,7 +2227,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         scrollBottom,
         model: currentModel,
         mode: mode(),
-        tokenMode: tokenMode(),
+        provider: currentProvider,
+        keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
+        onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
+          appendUsageEntry({
+            timestamp: Date.now(),
+            provider: currentProvider,
+            keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
+            model: currentModel,
+            inputTokens,
+            outputTokens,
+            cachedInputTokens,
+            sessionId: sessionId(),
+          })
+        },
       }, {
         runSync,
         systemPrompt,
@@ -2007,6 +2373,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setMessages,
         setDraft: setComposerText,
         setNotices,
+        showToast,
         exitApp,
         scrollBottom,
         switchSession: doSwitchSession,
@@ -2034,6 +2401,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("help")
           setPaletteIndex(0)
         },
+        openUsageDashboard: () => {
+          setShowUsageDashboard(true)
+        },
+        compactSession: compactCurrentSession,
         refreshSessions,
         codexLogin: runCodexLogin,
       }
@@ -2042,7 +2413,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "tools" || slashCmd === "tool-details") {
         setShowCompletedTools(c => !c)
         const state = showCompletedTools() ? "shown" : "hidden"
-        setNotices((prev) => [...prev, { kind: "system", text: `Completed tool details: ${state}` }])
+        showToast("success", "Tool details updated", `Completed tool details: ${state}`)
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
@@ -2050,7 +2421,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "thinking") {
         setShowThinkingBlocks(c => !c)
         const state = showThinkingBlocks() ? "visible" : "hidden"
-        setNotices((prev) => [...prev, { kind: "system", text: `Thinking blocks: ${state}` }])
+        showToast("success", "Thinking blocks updated", `Thinking blocks: ${state}`)
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
@@ -2058,7 +2429,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "auto" || slashCmd === "auto-approve") {
         setAutoApprove(c => !c)
         const state = autoApprove() ? "ON" : "OFF"
-        setNotices((prev) => [...prev, { kind: "system", text: `Auto-approve: ${state}` }])
+        showToast("success", "Auto-approve updated", `Auto-approve: ${state}`)
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
@@ -2066,6 +2437,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (slashCmd === "commit") {
         setComposerText("Please help generate a commit message and commit the changes")
         queueMicrotask(scrollBottom)
+        return
+      }
+      if (slashCmd === "usage") {
+        setShowUsageDashboard(true)
+        setComposerText("")
         return
       }
       await executeCommand(input, ctx)
@@ -2106,20 +2482,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     // Splash screen input handling
     if (showSplash()) {
-      const EXIT_IDX = splashSessions.length
+      const sessions = splashRecentSessions()
+      const EXIT_IDX = sessions.length
 
       if (event.name === "return" || event.name === "enter") {
         const selIdx = splashSelectedIndex()
-        if (selIdx === EXIT_IDX) {
+        setShowSplash(false)
+        renderer.setTerminalTitle("openzerocode")
+        if (selIdx === -1 || sessions.length === 0) {
+          doCreateNewSession()
+        } else if (sessions[selIdx]) {
+          doSwitchSession(sessions[selIdx].id)
+          enterWorkspace()
+        } else if (selIdx === EXIT_IDX) {
+          setShowSplash(true)
           void exitApp(0)
-        } else if (selIdx >= 0 && splashSessions[selIdx]) {
-          doSwitchSession(splashSessions[selIdx].id)
-          setShowSplash(false)
-          renderer.setTerminalTitle("openzerocode")
         } else {
           doCreateNewSession()
-          setShowSplash(false)
-          renderer.setTerminalTitle("openzerocode")
         }
         event.preventDefault()
         return
@@ -2154,6 +2533,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
+    if (showUsageDashboard()) {
+      if (event.name === "escape" || event.name === "q") {
+        setShowUsageDashboard(false)
+      } else if (event.name === "tab" || event.name === "right" || (event.name === "l" && !event.ctrl)) {
+        const idx = VIEW_MODES.indexOf(usageDashboardView())
+        setUsageDashboardView(VIEW_MODES[(idx + 1) % VIEW_MODES.length]!)
+      } else if ((event.name === "tab" && event.shift) || event.name === "left" || (event.name === "h" && !event.ctrl)) {
+        const idx = VIEW_MODES.indexOf(usageDashboardView())
+        setUsageDashboardView(VIEW_MODES[(idx - 1 + VIEW_MODES.length) % VIEW_MODES.length]!)
+      } else if (event.name === "1") {
+        setUsageDashboardView("sessions")
+      } else if (event.name === "2") {
+        setUsageDashboardView("global")
+      } else if (event.name === "3") {
+        setUsageDashboardView("daily")
+      } else if (event.name === "4") {
+        setUsageDashboardView("hourly")
+      }
+      event.preventDefault()
+      return
+    }
     if (event.ctrl && event.name === "c") {
       void exitApp(0)
       event.preventDefault()
@@ -2265,6 +2665,31 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "codexKeyname") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const keyname = paletteInput().trim()
+          const target = paletteCodexKeynameTarget()
+          const ok = setCodexAuthKeyname(target, keyname)
+          if (ok) {
+            setProviderConfigRevision(v => v + 1)
+            setStatus(keyname ? `key name set to "${keyname}"` : "key name cleared")
+          } else {
+            setStatus("failed to set key name")
+          }
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "models") {
         if (event.name === "escape") {
           const backMode = paletteModelBackMode()
@@ -2276,6 +2701,30 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         }
         if (event.name === "return") {
           const item = paletteItems()[paletteIndex()]
+          if (isSelectablePaletteItem(item)) item?.onSelect()
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "directories") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "tab") {
+          const item = displayItems()[paletteIndex()]
+          if (item?.directoryPath) {
+            setPaletteInput(displayPath(item.directoryPath) + "/")
+            setPaletteIndex(0)
+          }
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const item = displayItems()[paletteIndex()]
           if (isSelectablePaletteItem(item)) item?.onSelect()
           event.preventDefault()
           return
@@ -2352,8 +2801,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (event.name === "escape") {
-        if (paletteMode() === "sessions" || paletteMode() === "providers") {
+        if (paletteMode() === "sessions" || paletteMode() === "providers" || paletteMode() === "directories") {
           setPalettePendingDelete(null)
+          setPaletteInput("")
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "models") {
@@ -2521,21 +2971,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showSplash()}>
         <SplashScreen
           selectedIndex={splashSelectedIndex()}
-          sessions={splashSessions}
-          totalSessions={splashSessionsAll.length}
+          sessions={splashSessions()}
+          totalSessions={splashSessionsAll().length}
+          cwd={currentCwd()}
           layoutMode={layoutMode()}
           model={modelLabel()}
           provider={providerLabel()}
           version={VERSION}
           onSelectSession={(id) => {
-            doSwitchSession(id)
             setShowSplash(false)
             renderer.setTerminalTitle("openzerocode")
+            doSwitchSession(id)
+            enterWorkspace()
           }}
           onNewSession={() => {
-            doCreateNewSession()
             setShowSplash(false)
             renderer.setTerminalTitle("openzerocode")
+            doCreateNewSession()
           }}
           onExit={() => void exitApp(0)}
         />
@@ -2543,6 +2995,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
       {/* ── Main work UI (hidden while splash is shown) ── */}
       <Show when={!showSplash()}>
+      <ToastViewport items={toasts()} />
 <box
         flexDirection={layoutMode() === "horizontal" ? "row" : "column"}
         flexGrow={1}
@@ -2731,14 +3184,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={layoutMode() === "horizontal"}>
         <Sidebar
           messages={messages}
+          todos={todos}
           theme={THEME}
           width={SIDEBAR_WIDTH}
           provider={providerLabel()}
           model={modelLabel()}
           sessionTitle={sessionMeta()?.title}
-          cwd={process.cwd()}
+          cwd={currentCwd()}
           sessionId={sessionId()}
           gitRefreshKey={gitRefreshRevision()}
+          geassRevision={geassRevision()}
         />
       </Show>
 
@@ -2756,14 +3211,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box width={1} backgroundColor={THEME.border} flexShrink={0} />
           <Sidebar
             messages={messages}
+            todos={todos}
             theme={THEME}
             width={SIDEBAR_WIDTH}
             provider={providerLabel()}
             model={modelLabel()}
             sessionTitle={sessionMeta()?.title}
-            cwd={process.cwd()}
+            cwd={currentCwd()}
             sessionId={sessionId()}
             gitRefreshKey={gitRefreshRevision()}
+            geassRevision={geassRevision()}
           />
         </box>
       </Show>
@@ -2775,7 +3232,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto"])
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage"])
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")
@@ -2824,7 +3281,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "help"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
             : 2
@@ -2842,20 +3299,24 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 ? "Rename Session"
                 : paletteMode() === "sessions"
                   ? `Switch Session`
-                  : paletteMode() === "providers"
-                    ? "Switch Provider"
-                    : paletteMode() === "models"
-                      ? `Switch Model · ${paletteProviderTarget()}`
-                      : paletteMode() === "providerKeys"
-                        ? `Keys · ${paletteProviderKeyTarget()}`
-                      : paletteMode() === "addProviderKeyName"
-                        ? `Add Key · ${paletteProviderKeyTarget()}`
-                      : paletteMode() === "addProviderKeyValue"
-                        ? `Key Value · ${paletteNewKeyName()}`
-                      : paletteMode() === "timeline"
-                        ? "Timeline"
-                        : paletteMode() === "userMessageActions"
-                          ? "Message Actions"
+                  : paletteMode() === "directories"
+                    ? "Change Directory"
+                    : paletteMode() === "providers"
+                      ? "Switch Provider"
+                      : paletteMode() === "models"
+                        ? `Switch Model · ${paletteProviderTarget()}`
+                        : paletteMode() === "providerKeys"
+                          ? `Keys · ${paletteProviderKeyTarget()}`
+                        : paletteMode() === "addProviderKeyName"
+                          ? `Add Key · ${paletteProviderKeyTarget()}`
+                        : paletteMode() === "addProviderKeyValue"
+                          ? `Key Value · ${paletteNewKeyName()}`
+                        : paletteMode() === "codexKeyname"
+                          ? `Key name · ${paletteCodexKeynameTarget()}`
+                        : paletteMode() === "timeline"
+                          ? "Timeline"
+                          : paletteMode() === "userMessageActions"
+                            ? "Message Actions"
                       : "Command Palette"}
             </text>
             <text
@@ -2866,7 +3327,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -2880,7 +3341,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -2939,16 +3400,32 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   ? "Enter confirm  •  Esc back"
                   : paletteMode() === "sessions"
                   ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  : paletteMode() === "directories"
+                  ? "Type path  •  Tab complete  •  Enter select/change  •  Esc back"
                   : paletteMode() === "models"
                     ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providers"
                       ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providerKeys"
                       ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                    : paletteMode() === "codexKeyname"
+                      ? "Enter key name  •  Enter save  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}
             </text>
           </box>
         </box>
+      </Show>
+
+      {/* ── Usage Dashboard overlay ── */}
+      <Show when={showUsageDashboard()}>
+        <UsageDashboard
+          onClose={() => setShowUsageDashboard(false)}
+          viewMode={usageDashboardView()}
+          onViewMode={setUsageDashboardView}
+          theme={THEME}
+          width={dimensions().width}
+          height={dimensions().height}
+        />
       </Show>
 
       {/* ── Close the `showSplash === false` block ── */}

@@ -4,6 +4,7 @@ export type SplashProps = {
   selectedIndex: number  // -1 = none, 0+ = session row, sessions.length = exit
   sessions: SessionMeta[]       // sessions for current cwd
   totalSessions: number         // total across all directories
+  cwd: string
   layoutMode: "horizontal" | "vertical"
   model: string
   provider: string
@@ -123,7 +124,7 @@ export function SplashScreen(props: SplashProps) {
         {/* cwd row */}
         <box flexDirection="row" alignItems="center" gap={1}>
           <text style={{ fg: T.border }}>{"  ~"}</text>
-          <text style={{ fg: T.borderBright }}>{process.cwd().replace(process.env.HOME ?? "", "~")}</text>
+          <text style={{ fg: T.borderBright }}>{props.cwd.replace(process.env.HOME ?? "", "~")}</text>
         </box>
 
         {/* Prompt row */}

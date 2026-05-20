@@ -27,7 +27,7 @@ describe("convertToolToDef", () => {
     assert.ok(props.count)
   })
 
-  it("converts a no-parameter tool (empty struct produces anyOf schema without properties)", () => {
+  it("converts a no-parameter tool (empty struct normalised to type: object)", () => {
     const def = new Def({
       id: "noop",
       description: "No-op tool",
@@ -37,11 +37,9 @@ describe("convertToolToDef", () => {
 
     const result = convertToolToDef(def)
     assert.equal(result.function.name, "noop")
-    // Empty Struct({}) produces anyOf [object, array], not a plain object with properties
     const params = result.function.parameters as Record<string, unknown>
-    assert.ok(params.type === undefined || params.anyOf)
-    // Verify it doesn't crash and returns a valid schema
-    assert.ok(typeof params === "object")
+    assert.equal(params.type, "object")
+    assert.ok(params.properties)
   })
 })
 

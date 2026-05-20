@@ -23,6 +23,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
       if (typeof fn === "function") fn(notices)
       else notices.push(fn)
     }),
+    showToast: mock(() => {}),
     exitApp: mock(() => Promise.resolve()),
     scrollBottom: mock(() => {}),
     switchSession: mock(() => {}),
@@ -32,6 +33,8 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
+    openUsageDashboard: mock(() => {}),
+    compactSession: mock(() => Promise.resolve()),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     ...overrides,
@@ -46,12 +49,14 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("provider"))
     assert.ok(names.includes("codex-login"))
     assert.ok(names.includes("mode"))
+    assert.ok(names.includes("memory"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
     assert.ok(names.includes("commit"))
+    assert.ok(names.includes("compact"))
     assert.ok(names.includes("exit"))
   })
 
@@ -196,6 +201,20 @@ describe("executeCommand", () => {
     })
   })
 
+  describe("/memory", () => {
+    it("shows workspace memory status", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/memory", ctx)
+      assert.ok(result)
+      const calls = (ctx.showToast as any).mock.calls
+      assert.ok(calls.length > 0)
+      const first = calls[0]
+      const args = first.arguments ?? first
+      assert.equal(args[0], "info")
+      assert.equal(args[1], "Workspace memory")
+    })
+  })
+
   describe("/sessions", () => {
     it("opens session list", async () => {
       const ctx = stubCtx()
@@ -209,6 +228,15 @@ describe("executeCommand", () => {
       const result = await executeCommand("/s", ctx)
       assert.ok(result)
       assert.ok((ctx.openSessionList as any).mock.calls.length > 0)
+    })
+  })
+
+  describe("/compact", () => {
+    it("runs session compaction", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/compact", ctx)
+      assert.ok(result)
+      assert.ok((ctx.compactSession as any).mock.calls.length > 0)
     })
   })
 
@@ -226,6 +254,41 @@ describe("executeCommand", () => {
       assert.ok(result)
       assert.ok((ctx.exitApp as any).mock.calls.length > 0)
     })
+  })
+
+  it("shows toast for provider success", async () => {
+    const ctx = stubCtx({ setCurrentProvider: mock(() => Promise.resolve({ ok: true, message: "Provider switched" })) })
+    const result = await executeCommand("/provider openai", ctx)
+    assert.ok(result)
+    const calls = (ctx.showToast as any).mock.calls
+    assert.equal(calls.length, 1)
+    const args = calls[0].arguments ?? calls[0]
+    assert.equal(args[0], "success")
+    assert.equal(args[1], "Provider updated")
+    assert.equal(args[2], "Provider switched")
+  })
+
+  it("shows toast for provider failure", async () => {
+    const ctx = stubCtx({ setCurrentProvider: mock(() => Promise.resolve({ ok: false, message: "Unknown provider" })) })
+    const result = await executeCommand("/provider nope", ctx)
+    assert.ok(result)
+    const calls = (ctx.showToast as any).mock.calls
+    assert.equal(calls.length, 1)
+    const args = calls[0].arguments ?? calls[0]
+    assert.equal(args[0], "error")
+    assert.equal(args[1], "Provider update failed")
+    assert.equal(args[2], "Unknown provider")
+  })
+
+  it("shows toast for memory status", async () => {
+    const ctx = stubCtx()
+    const result = await executeCommand("/memory", ctx)
+    assert.ok(result)
+    assert.ok((ctx.showToast as any).mock.calls.length > 0)
+    const call = (ctx.showToast as any).mock.calls[0]
+    const args = call.arguments ?? call
+    assert.equal(args[0], "info")
+    assert.equal(args[1], "Workspace memory")
   })
 
   it("returns false for unknown command", async () => {

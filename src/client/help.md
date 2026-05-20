@@ -39,6 +39,7 @@
   SESSION
     New session          Start a fresh conversation
     Switch session       Pick an existing session
+    Change directory     Switch workspace and return to welcome
     Rename session       Set a custom title
     Compact session      Summarise and compress history
     Timeline             Browse messages → Revert / Copy / Fork

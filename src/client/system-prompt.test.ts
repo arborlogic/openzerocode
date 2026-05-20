@@ -25,4 +25,29 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /Workspace Instructions from AGENTS\.md/)
     assert.match(prompt, /Run typecheck\./)
   })
+
+  it("appends CONTEXT instructions when present", () => {
+    const prompt = buildSystemPrompt("build", undefined, "Release context details.\n")
+
+    assert.match(prompt, /Workspace Context from CONTEXT\.md/)
+    assert.match(prompt, /Release context details\./)
+  })
+
+  it("includes AGENTS before CONTEXT when both are present", () => {
+    const prompt = buildSystemPrompt("build", "- Follow repo rules.\n", "Feature rollout notes.\n")
+
+    const agentsIndex = prompt.indexOf("# Workspace Instructions from AGENTS.md")
+    const contextIndex = prompt.indexOf("# Workspace Context from CONTEXT.md")
+    assert.ok(agentsIndex >= 0)
+    assert.ok(contextIndex >= 0)
+    assert.ok(agentsIndex < contextIndex)
+  })
+
+  it("includes task list instructions in build mode only", () => {
+    const buildPrompt = buildSystemPrompt("build")
+    const planPrompt = buildSystemPrompt("plan")
+
+    assert.match(buildPrompt, /# Task List \(todowrite tool\)/)
+    assert.doesNotMatch(planPrompt, /# Task List \(todowrite tool\)/)
+  })
 })

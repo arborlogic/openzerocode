@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { Provider, type CompletionRequest, type CompletionResult, type Chunk, type Message } from "./types"
+import { Provider, type CompletionRequest, type CompletionResult, type Chunk, type Message, type Usage } from "./types"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 import { resolveConfiguredProviderApiKey } from "./config"
@@ -59,7 +59,19 @@ function openaiChunkToChunk(raw: any): Chunk {
     delta: { content: delta.content ?? undefined, reasoning_content: delta.reasoning_content ?? undefined },
     tool_calls: toolCalls,
     finish_reason: finish ?? undefined,
-    usage: raw.usage ?? undefined,
+    usage: usageFromOpenAI(raw.usage),
+  }
+}
+
+function usageFromOpenAI(usage: any): Usage | undefined {
+  if (!usage) return undefined
+  const prompt = usage.prompt_tokens ?? 0
+  const completion = usage.completion_tokens ?? 0
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: usage.total_tokens ?? prompt + completion,
+    cached_tokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
   }
 }
 
@@ -79,7 +91,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
       function headers() {
         return {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${input.apiKey}`,
+          Authorization: `Bearer ${input.apiKey || "public"}`,
         }
       }
 
@@ -106,7 +118,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
               reasoning_content: choice?.message?.reasoning_content ?? undefined,
               tool_calls: choice?.message?.tool_calls,
             }),
-            usage: json.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+            usage: usageFromOpenAI(json.usage) ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 },
           } satisfies CompletionResult
         }).pipe(Effect.orDie)
 
@@ -116,7 +128,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
               headers: headers(),
-              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true }),
+              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true, stream_options: { include_usage: true } }),
             })
           )
           if (!res.ok) {

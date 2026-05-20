@@ -7,6 +7,7 @@ import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
+import { estimateTokens, getModelConfig } from "../provider/models"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build" | "plan"
@@ -23,7 +24,9 @@ type SessionUi = {
   scrollBottom: () => void
   model: string
   mode: RunMode
-  tokenMode: "precise" | "economy"
+  provider: string
+  keyName: string
+  onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
 }
 
 type SessionRuntime = {
@@ -51,7 +54,27 @@ export async function runSession(
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
-  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...history, userMessage]
+
+  // Always trim history to a token budget so step 0 doesn't send unbounded context
+  const sendHistory = (() => {
+    if (history.length === 0) return history
+    const { contextLimit } = getModelConfig(ui.model)
+    // Reserve ~45% for system prompt, current turn messages, and the response
+    const budget = Math.floor(contextLimit * 0.55)
+    let used = 0
+    let start = history.length
+    for (let i = history.length - 1; i >= 0; i--) {
+      const cost = estimateTokens(JSON.stringify(history[i]))
+      if (used + cost > budget) break
+      used += cost
+      start = i
+    }
+    // Don't begin with orphaned tool messages (their assistant call would be missing)
+    while (start < history.length && history[start]?.role === "tool") start++
+    return history.slice(start)
+  })()
+
+  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
   ui.addMessage(userMessage)
 
@@ -74,7 +97,7 @@ export async function runSession(
     let lastError: unknown
 
     for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
-      const requestMessages = (step === 0 || ui.tokenMode === "precise")
+      const requestMessages = step === 0
         ? allMessages
         : [...permanentPrefix, ...allMessages.slice(currentTurnStart)]
 
@@ -113,6 +136,9 @@ export async function runSession(
     let reasoning = ""
     let hasReasoning = false
     let finishReason: string | null | undefined
+    let lastUsageInput = 0
+    let lastUsageOutput = 0
+    let lastUsageCachedInput = 0
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
     while (true) {
@@ -120,6 +146,11 @@ export async function runSession(
       const { done, value } = await reader.read()
       if (done) break
       if (value.finish_reason) finishReason = value.finish_reason
+      if (value.usage) {
+        lastUsageInput = value.usage.prompt_tokens
+        lastUsageOutput = value.usage.completion_tokens
+        lastUsageCachedInput = value.usage.cached_tokens ?? 0
+      }
       if (value.delta.content) {
         content += value.delta.content
         ui.streamAssistantChunk(value.delta.content)
@@ -150,6 +181,10 @@ export async function runSession(
         ui.setStatus(tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool...")
         ui.scrollBottom()
       }
+    }
+
+    if (!ui.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {
+      ui.onUsage?.(lastUsageInput, lastUsageOutput, lastUsageCachedInput)
     }
 
     if (ui.abort.aborted) {

@@ -73,7 +73,12 @@ describe("filterCommands", () => {
   it("includes description in items", () => {
     const items = filterCommands(BUILTIN_COMMANDS, "help", noop)
     assert.equal(items.length, 1)
-    assert.equal(items[0]!.description, "Show available commands")
+    assert.equal(items[0]!.description, "Show help, shortcuts and palette guide")
+  })
+
+  it("includes /compact in matching commands", () => {
+    const items = filterCommands(BUILTIN_COMMANDS, "comp", noop)
+    assert.ok(items.some((i) => i.display === "/compact"))
   })
 
   it("calls onSelect with command name and empty args", () => {

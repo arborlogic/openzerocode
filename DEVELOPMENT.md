@@ -200,14 +200,23 @@ scripts/
 src/
   client/
     tui.tsx                       # Main TUI entrypoint
-    session.ts                    # Session persistence helpers
-    workspace-memory.ts           # Workspace memory injection
-    workspace-summary.ts          # Session summary management
+    sessions.ts                   # Session persistence helpers
+    workspace-memory.ts           # Workspace prompt memory / AGENTS.md + CONTEXT.md loading
   provider/
     registry.ts                   # Provider registry
   tool/
     registry.ts                   # Built-in tool registration
 ```
+
+## Shared Language
+
+This repo benefits from a small shared vocabulary for agent-driven work:
+
+- **Build mode**: make the requested change directly in the workspace.
+- **Plan mode**: discuss approach only; no edits or tool calls.
+- **Workspace memory**: prompt context loaded from `AGENTS.md` and `CONTEXT.md`.
+- **Session summary**: concise human handoff notes in `SESSION_SUMMARY.md`, not part of the automatic prompt assembly path.
+- **Targeted verification**: run the smallest relevant checks for the area you changed instead of defaulting to the full test suite.
 
 ---
 

@@ -18,15 +18,18 @@
 - Session persistence is local under `~/.openzerocode/sessions`; session metadata helpers live in `src/client/sessions.ts`.
 
 ## Memory Scope
-- Current memory phase is working-memory-first: load `AGENTS.md`, maintain `SESSION_SUMMARY.md`, and support session continuation.
+- Current prompt assembly loads both `AGENTS.md` and `CONTEXT.md` via `src/client/workspace-memory.ts` and injects them into the system prompt.
+- Use `AGENTS.md` for stable repo-specific instructions and workflow rules; keep it high-signal.
+- Use `CONTEXT.md` for project background, vocabulary, workflow heuristics, and known mismatches that help the agent orient quickly.
+- `SESSION_SUMMARY.md` is a manual/local handoff artifact for continuation, not part of the automatic prompt assembly path.
 - Do not expand the local runtime into long-term rule promotion in this phase; anything beyond working handoff belongs to future `zero` integration.
-- Workspace memory code lives in `src/client/workspace-memory.ts` and `src/client/workspace-summary.ts`.
 
 ## Testing Notes
-- When changing workspace memory behavior, verify with `src/client/workspace-memory.test.ts` and `src/client/workspace-summary.test.ts`.
+- When changing workspace memory or prompt assembly behavior, verify with `src/client/workspace-memory.test.ts` and the most relevant prompt-related tests.
 - Provider-facing tests are integration-style and should only be run when you intentionally want provider validation and have the required env configured.
 
 ## Current Product Boundary
 - OpenZeroCode should remain usable without `zero`.
-- `AGENTS.md` is treated as a stable instruction source, not an auto-managed long-term memory store.
-- `SESSION_SUMMARY.md` is the local handoff artifact and should stay concise, continuation-oriented, and repo-specific.
+- `AGENTS.md` is a stable instruction source, not an auto-managed long-term memory store.
+- `CONTEXT.md` is for concise workspace context, not policy that should override executable repo truth.
+- `SESSION_SUMMARY.md` should stay concise, continuation-oriented, and repo-specific.

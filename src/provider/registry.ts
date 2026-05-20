@@ -4,6 +4,7 @@ import { def as bigPickle } from "./big-pickle"
 import { def as openai } from "./openai"
 import { def as openaiCodex } from "./openai-codex"
 import { def as openrouter } from "./openrouter"
+import { def as zeroApi } from "./zero-api"
 import { resolveConfiguredProviderApiKey, resolveConfiguredProviderBaseURL } from "./config"
 
 export type ProviderDef = {
@@ -21,6 +22,7 @@ export const PROVIDERS: Record<string, ProviderDef> = {
   openai,
   "openai-codex": openaiCodex,
   openrouter,
+  "zero-api": zeroApi,
 }
 
 export function resolveProviderApiKey(providerId: string): string | undefined {

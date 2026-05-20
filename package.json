@@ -14,7 +14,8 @@
     "start:tui": "bun run --preload @opentui/solid/preload src/client/tui.tsx",
     "test": "tsx --test",
     "test:unit": "find src -name '*.test.ts' -not -path '*core/core.test.ts' -not -path '*provider/provider.test.ts' -print0 | xargs -0 tsx --test",
-    "build": "bash scripts/build.sh"
+    "build": "bash scripts/build.sh",
+    "postinstall": "bash scripts/postinstall.sh"
   },
   "files": [
     "bin/openzerocode",
