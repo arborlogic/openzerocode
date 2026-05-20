@@ -51,7 +51,24 @@ This repo is actively implemented. Current capabilities include:
 ### Prerequisites
 
 - **bun** ≥ 1.2
-- **npm** on your `PATH` (used by the dev install flow)
+- **npm** on your `PATH` (used by the dev install flow and npm distribution)
+
+### Install from npm
+
+Supported prebuilt npm targets:
+
+- `darwin-arm64`
+- `linux-x64`
+- `linux-arm64`
+- `win32-x64`
+
+Install with:
+
+```bash
+npm install -g openzerocode
+```
+
+The root package installs a small Node launcher and resolves the matching optional platform package at runtime.
 
 ### Install from source
 
@@ -61,7 +78,7 @@ cd openzerocode
 python3 scripts/dev-install.py
 ```
 
-This is the supported install path today. It installs dependencies, rebuilds `dist/openzerocode` with a timestamped `-dev.YYYYMMDDHHMMSS` version suffix, and runs `npm install -g .` so the global `openzerocode` command points at that locally built binary.
+This remains the supported local development install path. It installs dependencies, rebuilds `dist/openzerocode` with a timestamped `-dev.YYYYMMDDHHMMSS` version suffix, and runs `npm install -g .` so the global `openzerocode` command points at that locally built binary.
 
 ### Run
 
@@ -83,6 +100,74 @@ python3 scripts/dev-install.py
 ```
 
 That refreshes dependencies, rebuilds the binary, and reinstalls the global `openzerocode` command from your local checkout.
+
+### npm / 打包流程
+
+發佈用的 npm 產物採用「root launcher + 平台子套件」結構：
+
+- 根套件 `openzerocode` 只放 Node 啟動器 `bin/openzerocode.js`
+- 平台二進位分別放在 `@openzerocode/<target>` optionalDependencies
+- 目前支援的 target：`darwin-arm64`、`linux-x64`、`linux-arm64`、`win32-x64`
+
+常用流程如下：
+
+1. **建立一般本機 binary**
+
+   ```bash
+   npm run build
+   ```
+
+   這會執行 `scripts/build.sh`，預設輸出到 `dist/openzerocode`。
+
+2. **產生 `npm/` 發佈 staging 結構**
+
+   ```bash
+   node scripts/create-platform-packages.mjs
+   ```
+
+   這會建立：
+
+   - `npm/package.json`：root npm package manifest
+   - `npm/bin/openzerocode.js`：依作業系統/架構轉送到對應平台 binary 的 launcher
+   - `npm/packages/<target>/package.json`：各平台子套件 manifest
+   - `npm/README.md`、`npm/LICENSE`、`npm/bin/package.json`：發佈時需要的附帶檔案
+
+3. **在對應平台上建出平台 binary**
+
+   ```bash
+   scripts/build-platform-package.sh darwin-arm64
+   scripts/build-platform-package.sh linux-x64
+   scripts/build-platform-package.sh linux-arm64
+   scripts/build-platform-package.sh win32-x64
+   ```
+
+   `scripts/build-platform-package.sh` 必須在目標平台本機執行；例如 `linux-arm64` 只能在 `linux-arm64` host 上建置。成功後 binary 會輸出到：
+
+   - `npm/packages/<target>/bin/openzerocode`
+   - Windows target 則是 `npm/packages/win32-x64/bin/openzerocode.exe`
+
+4. **打包 / 發佈 npm 套件**
+
+   完成 staging 與各平台 binary 後，可分別在 `npm/` 與 `npm/packages/<target>/` 內執行 `npm pack` 或 `npm publish`。
+
+   建議順序：
+
+   - 先發佈各平台套件 `@openzerocode/<target>`
+   - 再發佈 root 套件 `openzerocode`
+
+5. **CI / release checklist**
+
+   發版前後建議依序確認：
+
+   - 在乾淨工作樹上更新版本號與 changelog（如果這次 release 有對外變更）
+   - 執行 `npm run typecheck`
+   - 重新執行 `node scripts/create-platform-packages.mjs`，確認 `npm/` 與 `npm/packages/<target>/` 的 staged 檔案都是最新內容
+   - 在每個目標平台主機上執行 `scripts/build-platform-package.sh <target>`，確認 binary 已寫入對應 `npm/packages/<target>/bin/`
+   - 先在各平台套件目錄執行 `npm pack` 做最後檢查，再視需要 `npm publish`
+   - 確認各個 `@openzerocode/<target>` 都已 publish 後，再到 `npm/` 發佈 root `openzerocode`
+   - 發佈完成後，用一個乾淨環境驗證 `npm install -g openzerocode` 與 `openzerocode --version`
+
+這個流程讓 `npm install -g openzerocode` 安裝的是輕量 launcher，而實際執行檔由 npm 自動解析到符合目前平台的 optional package。
 
 ### Command-line flags
 
@@ -219,7 +304,7 @@ The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` fr
 | **Session storage** | Local files | Local files under `~/.openzerocode/` |
 | **Prompt memory** | Varies | `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
 | **Cloud dependency** | Requires `zero` for operation | None — works entirely offline |
-| **Binary distribution** | Platform-specific npm packages | Source-first local install via `python3 scripts/dev-install.py` |
+| **Binary distribution** | Platform-specific npm packages | Platform-specific npm packages (`darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`) plus source-first local install via `python3 scripts/dev-install.py` |
 
 ---
 
