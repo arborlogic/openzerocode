@@ -20,7 +20,7 @@ import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
-import { Sidebar } from "./sidebar"
+import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
@@ -227,6 +227,62 @@ async function runGit(args: string[], timeout = 1000): Promise<string> {
   } catch {
     return ""
   }
+}
+
+/**
+ * Recompute every hunk header's `oldLines` / `newLines` count from the
+ * actual hunk body. Defensive against trailing-newline trimming, blank
+ * context lines, or any other quirk that would make `@opentui/core`'s
+ * diff parser throw "Added/Removed line count did not match".
+ */
+function normalizeDiffHunkCounts(diff: string): string {
+  if (!diff) return diff
+  const lines = diff.split("\n")
+  const hunkRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]!
+    const m = hunkRe.exec(line)
+    if (!m) {
+      out.push(line)
+      i++
+      continue
+    }
+    const oldStart = m[1]
+    const newStart = m[3]
+    const trailing = m[5] ?? ""
+    let oldCount = 0
+    let newCount = 0
+    const body: string[] = []
+    let j = i + 1
+    while (j < lines.length) {
+      const l = lines[j]!
+      if (hunkRe.test(l)) break
+      if (l.startsWith("diff --git ") || l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("Index: ")) break
+      const op = l[0]
+      if (op === "-") oldCount++
+      else if (op === "+") newCount++
+      else if (op === " ") { oldCount++; newCount++ }
+      else if (op === "\\") { /* "\ No newline at end of file" — skip count */ }
+      else if (l.length === 0) {
+        // Trailing empty element from `split("\n")` when git output ends with
+        // a newline — don't include it. Otherwise treat as blank context line.
+        if (j === lines.length - 1) break
+        oldCount++
+        newCount++
+      } else {
+        // Unknown line — stop consuming so we don't swallow non-hunk content.
+        break
+      }
+      body.push(l)
+      j++
+    }
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${trailing}`)
+    for (const b of body) out.push(b)
+    i = j
+  }
+  return out.join("\n")
 }
 
 /** Check for modified/new/deleted files in the working tree vs HEAD. */
@@ -750,6 +806,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [showSplash, setShowSplash] = createSignal(true)
   const [showUsageDashboard, setShowUsageDashboard] = createSignal(false)
   const [usageDashboardView, setUsageDashboardView] = createSignal<ViewMode>("sessions")
+  const [diffOverlay, setDiffOverlay] = createSignal<{ file: string; content: string } | null>(null)
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
   const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
   const currentCwd = createMemo(() => {
@@ -798,6 +855,39 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
       setSidebarCollapsed(false)
     }
   })
+  async function handleFileDiffRequest(file: GitFile) {
+    let raw = ""
+    try {
+      const { stdout } = await execFileAsync("git", ["diff", "HEAD", "--", file.path], {
+        encoding: "utf-8",
+        timeout: 5000,
+        maxBuffer: 8 * 1024 * 1024,
+      })
+      raw = stdout
+    } catch {
+      raw = ""
+    }
+    // Untracked / new file: `git diff HEAD` is empty. Fall back to
+    // `git diff --no-index /dev/null <file>` which produces a full-file
+    // addition diff. That command exits with code 1 when there are
+    // differences, so capture stdout from the error path as well.
+    if (!raw) {
+      try {
+        const { stdout } = await execFileAsync("git", ["diff", "--no-index", "--", "/dev/null", file.path], {
+          encoding: "utf-8",
+          timeout: 5000,
+          maxBuffer: 8 * 1024 * 1024,
+        })
+        raw = stdout
+      } catch (err) {
+        const stdout = (err as { stdout?: string })?.stdout
+        if (typeof stdout === "string") raw = stdout
+      }
+    }
+    const normalized = normalizeDiffHunkCounts(raw)
+    setDiffOverlay({ file: file.path, content: normalized || "(no diff available)" })
+  }
+
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
   let autocompleteApi: AutocompleteApi | undefined
@@ -2533,6 +2623,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
 
+    if (diffOverlay() !== null) {
+      if (event.name === "escape" || event.name === "q") {
+        setDiffOverlay(null)
+      }
+      event.preventDefault()
+      return
+    }
+
     if (showUsageDashboard()) {
       if (event.name === "escape" || event.name === "q") {
         setShowUsageDashboard(false)
@@ -3194,6 +3292,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           sessionId={sessionId()}
           gitRefreshKey={gitRefreshRevision()}
           geassRevision={geassRevision()}
+          onFileClick={(file) => { void handleFileDiffRequest(file) }}
         />
       </Show>
 
@@ -3221,6 +3320,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             sessionId={sessionId()}
             gitRefreshKey={gitRefreshRevision()}
             geassRevision={geassRevision()}
+            onFileClick={(file) => { void handleFileDiffRequest(file) }}
           />
         </box>
       </Show>
@@ -3426,6 +3526,52 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           width={dimensions().width}
           height={dimensions().height}
         />
+      </Show>
+
+      {/* ── File Diff overlay ── */}
+      <Show when={diffOverlay() !== null}>
+        {(() => {
+          const overlay = diffOverlay()!
+          const overlayWidth = Math.min(dimensions().width - 4, 120)
+          const overlayLeft = Math.floor((dimensions().width - overlayWidth) / 2)
+          return (
+            <box
+              position="absolute"
+              top={2}
+              left={overlayLeft}
+              width={overlayWidth}
+              height={dimensions().height - 4}
+              zIndex={110}
+              backgroundColor={THEME.surface}
+              border={["top", "left", "right", "bottom"]}
+              borderColor={THEME.accent}
+              flexDirection="column"
+            >
+              <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
+                <text style={{ fg: THEME.accent, flexGrow: 1 }}>{overlay.file}</text>
+                <text
+                  style={{ fg: THEME.muted }}
+                  onMouseDown={() => setDiffOverlay(null)}
+                >Esc / tap to close</text>
+              </box>
+              <scrollbox flexGrow={1} scrollY={true} paddingLeft={1} paddingRight={1} paddingBottom={1}>
+                <diff
+                  diff={overlay.content}
+                  view="unified"
+                  showLineNumbers={true}
+                  syntaxStyle={MARKDOWN_SYNTAX}
+                  fg={THEME.text}
+                  addedBg="#1a4d1a"
+                  removedBg="#4d1a1a"
+                  contextBg="transparent"
+                  addedSignColor="#22c55e"
+                  removedSignColor="#ef4444"
+                  lineNumberFg="#6b7280"
+                />
+              </scrollbox>
+            </box>
+          )
+        })()}
       </Show>
 
       {/* ── Close the `showSplash === false` block ── */}

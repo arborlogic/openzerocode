@@ -8,7 +8,7 @@ import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
 import { isEnabled, isConnected } from "../browser/geass-client"
 
-type GitFile = {
+export type GitFile = {
   path: string
   additions: number
   deletions: number
@@ -161,6 +161,8 @@ export function Sidebar(props: {
   gitRefreshKey?: number
   /** Increment to trigger GEASS status re-read. */
   geassRevision?: number
+  /** Called when user clicks a changed file to view its diff. */
+  onFileClick?: (file: GitFile) => void
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(null)
@@ -378,7 +380,11 @@ export function Sidebar(props: {
             </box>
             <For each={gitFiles()}>
               {(file) => (
-                <box flexDirection="row" justifyContent="space-between">
+                <box
+                  flexDirection="row"
+                  justifyContent="space-between"
+                  onMouseDown={() => props.onFileClick?.(file)}
+                >
                   <box flexDirection="row" gap={1} flexShrink={1}>
                     <Show when={file.status === "added"}>
                       <text style={{ fg: "#7ee787" }}>+</text>
