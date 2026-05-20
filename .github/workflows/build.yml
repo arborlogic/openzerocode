@@ -75,17 +75,46 @@ jobs:
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
+          always-auth: true
 
       - name: Download all platform packages
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Publish platform packages
-        run: |
-          find artifacts -name '*.tgz' -print0 | sort -z | xargs -0 -n1 npm publish --access public
+      - name: Verify npm auth is configured
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+            echo "NPM_TOKEN secret is not configured for this repository/environment." >&2
+            exit 1
+          fi
+
+      - name: Verify npm authentication
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+
+      - name: Publish platform packages
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' packages < <(find artifacts -name '*.tgz' -print0 | sort -z)
+
+          if [[ ${#packages[@]} -eq 0 ]]; then
+            echo "No .tgz packages found under artifacts/." >&2
+            exit 1
+          fi
+
+          for pkg in "${packages[@]}"; do
+            echo "Publishing $pkg"
+            npm publish "$pkg" --access public
+          done
 
   release:
     if: github.ref_type == 'tag' || inputs.create_github_release

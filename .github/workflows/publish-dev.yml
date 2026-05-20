@@ -24,6 +24,11 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+      - name: Verify npm authentication
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami
+
       - name: Publish dev build
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
