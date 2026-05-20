@@ -2,7 +2,24 @@ name: build
 
 on:
   push:
-    tags: "v*"
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to release, e.g. v0.3.3. Leave empty to only build artifacts."
+        required: false
+        type: string
+      publish_to_npm:
+        description: "Publish npm packages"
+        required: false
+        default: false
+        type: boolean
+      create_github_release:
+        description: "Create GitHub Release"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-platform-package:
@@ -41,6 +58,7 @@ jobs:
           path: openzerocode-*.tgz
 
   publish-npm:
+    if: github.event_name == 'push' || inputs.publish_to_npm
     needs: [build-platform-package]
     runs-on: ubuntu-latest
     permissions:
@@ -65,6 +83,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   release:
+    if: github.event_name == 'push' || inputs.create_github_release
     needs: [build-platform-package]
     runs-on: ubuntu-latest
     permissions:
@@ -75,10 +94,28 @@ jobs:
         with:
           path: artifacts
 
+      - name: Resolve release tag
+        id: release_tag
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.release_tag }}"
+          fi
+
+          if [[ -z "$TAG" ]]; then
+            echo "release_tag=" >> "$GITHUB_OUTPUT"
+            echo "No release tag provided; skipping GitHub Release creation."
+            exit 0
+          fi
+
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
+        if: steps.release_tag.outputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          tag_name: ${{ steps.release_tag.outputs.release_tag }}
+          name: ${{ steps.release_tag.outputs.release_tag }}
           generate_release_notes: true
           files: artifacts/**/*.tgz

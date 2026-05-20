@@ -217,13 +217,15 @@ Current published platform packages:
 
 ### Manual release flow
 
-1. **Prepare the version**
+Use a version bump only for a real new release. If a previous GitHub Actions run failed and you just need to retry the packaging flow, do not bump the version again.
 
-   Update the root version first:
+1. **Prepare the version for a real release**
+
+   Update the root version first only when publishing a new release:
 
    ```bash
    # edit package.json and package-lock.json
-   # this release: v0.3.3
+   # example release: v0.3.3
    ```
 
    For this repository, the git tag and npm version should match:
@@ -289,20 +291,36 @@ Current published platform packages:
    npm pack ./npm
    ```
 
-7. **Create and push the release tag**
+7. **Trigger the workflow**
+
+   You now have two supported ways to trigger packaging/release:
+
+   **A. New release via tag push**
 
    After the version bump is committed, create the matching tag:
 
    ```bash
-   git tag v0.3.2
+   git tag v0.3.3
    git push origin main --tags
    ```
 
-### What the GitHub workflow does after tagging
+   **B. Retry or dry-run via GitHub Actions UI**
 
-`build.yml` runs automatically on `push` tags that match `v*`.
+   Use the workflow's **Run workflow** button with `workflow_dispatch`.
 
-After `v0.3.2` is pushed, the workflow will:
+   Recommended usage:
+
+   - Retry build only: leave `release_tag` empty, keep publish/release unchecked
+   - Retry npm publish only when artifacts build successfully: check `publish_to_npm`
+   - Retry GitHub Release creation: provide `release_tag` and check `create_github_release`
+
+   This avoids unnecessary version bumps when you only need to re-run the pipeline.
+
+### What the GitHub workflow does after triggering
+
+`build.yml` runs automatically on `push` tags that match `v*`, and it can also be started manually with `workflow_dispatch`.
+
+After `v0.3.3` is pushed, or when the workflow is started manually, the workflow will:
 
 1. build platform packages on the matrix runners
 2. run `npm pack` for each platform package
@@ -320,7 +338,8 @@ After `v0.3.2` is pushed, the workflow will:
 - [ ] `scripts/build-platform-package.sh <target>` completed on each target platform
 - [ ] `npm pack` succeeded for root and platform packages
 - [ ] release commit pushed
-- [ ] git tag `vX.Y.Z` pushed
+- [ ] for a new release: git tag `vX.Y.Z` pushed
+- [ ] for a retry: manual `workflow_dispatch` run started instead of bumping version
 - [ ] GitHub Actions release workflow completed successfully
 
 ---
