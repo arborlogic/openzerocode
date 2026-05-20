@@ -65,10 +65,30 @@ if (!result.success) {
   process.exit(1)
 }
 
-// Make executable
-await Bun.spawnSync(["chmod", "+x", outfile])
+const outputFile = Bun.file(outfile)
+const outputExists = await outputFile.exists()
 
-const stat = await Bun.file(outfile).stat()
+if (!outputExists) {
+  console.error("❌ Build completed without producing the expected output file.")
+  console.error(`   Expected: ${outfile}`)
+  if (result.outputs.length > 0) {
+    console.error("   Bun reported these outputs:")
+    for (const output of result.outputs) {
+      console.error(`   - ${output.path}`)
+    }
+  }
+  process.exit(1)
+}
+
+const chmodResult = Bun.spawnSync(["chmod", "+x", outfile])
+if (chmodResult.exitCode !== 0) {
+  const stderr = chmodResult.stderr.toString().trim()
+  console.error(`❌ Failed to mark build output executable: ${outfile}`)
+  if (stderr) console.error(`   ${stderr}`)
+  process.exit(chmodResult.exitCode)
+}
+
+const stat = await outputFile.stat()
 const sizeMB = (stat.size / 1024 / 1024).toFixed(1)
 
 console.log("✅ Build successful!")
