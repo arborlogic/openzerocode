@@ -87,6 +87,21 @@ describe("buildCompactionTranscript", () => {
     const transcript = buildCompactionTranscript(msgs)
     assert.ok(transcript.includes("---"))
   })
+
+  it("includes tool calls and tool results from message parts", () => {
+    const msgs: Message[] = [{
+      role: "assistant",
+      parts: [
+        { type: "tool-call", id: "call_1", tool: "read", input: '{"filePath":"README.md"}' },
+        { type: "tool-result", id: "call_1", tool: "read", output: "# README" },
+      ],
+    }]
+    const transcript = buildCompactionTranscript(msgs)
+    assert.ok(transcript.includes("[tool-call:read]"))
+    assert.ok(transcript.includes('{"filePath":"README.md"}'))
+    assert.ok(transcript.includes("[tool-result:read]"))
+    assert.ok(transcript.includes("# README"))
+  })
 })
 
 describe("selectCompactionTail", () => {

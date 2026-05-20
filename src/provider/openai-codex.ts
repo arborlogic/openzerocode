@@ -164,7 +164,6 @@ export function toCodexRequestBody(req: CompletionRequest) {
     tools: toolsToResponsesTools(req.tools),
     stream: req.stream,
     max_output_tokens: req.max_tokens,
-    temperature: req.temperature,
     store: false,
   }
 }

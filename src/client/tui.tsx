@@ -24,6 +24,7 @@ import { Sidebar } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
+import { formatProviderError } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
@@ -2122,7 +2123,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           model: currentModel,
           stream: false,
           max_tokens: 1200,
-          temperature: 0,
           messages: [
             { role: "system", content: prompt },
             { role: "user", content: `Summarize this earlier session history for compaction:\n\n${transcript}` },
@@ -2148,9 +2148,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       refreshSessions()
       setStatus("session compacted")
       showToast("success", "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
-    } catch {
+    } catch (error) {
+      const errorText = formatProviderError(error)
       setStatus("compaction failed")
-      showToast("error", "Compaction failed", "Could not summarize earlier session history.")
+      showToast("error", "Compaction failed", errorText)
+      setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     }
   }
 

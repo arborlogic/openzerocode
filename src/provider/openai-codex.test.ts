@@ -28,4 +28,15 @@ describe("openai codex provider", () => {
 
     assert.equal(body.instructions, "You are a helpful coding assistant.")
   })
+
+  it("omits unsupported temperature from Codex requests", () => {
+    const body = toCodexRequestBody({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+      temperature: 0,
+    })
+
+    assert.equal(Object.hasOwn(body, "temperature"), false)
+  })
 })
