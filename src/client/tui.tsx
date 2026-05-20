@@ -2181,6 +2181,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   const compactCurrentSession = async () => {
+    if (running()) {
+      showToast("info", "Compaction skipped", "A response is already running.")
+      return
+    }
     const currentMessages = messages()
     const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
     if (head.length === 0) {
@@ -2192,6 +2196,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setPalettePendingDelete(null)
     setShowPalette(false)
     setStatus("compacting session...")
+    setRunning(true)
 
     const transcript = buildCompactionTranscript(head)
     const prompt = [
@@ -2243,6 +2248,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setStatus("compaction failed")
       showToast("error", "Compaction failed", errorText)
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
+    } finally {
+      setRunning(false)
     }
   }
 
