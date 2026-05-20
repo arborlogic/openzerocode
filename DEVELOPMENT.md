@@ -223,13 +223,13 @@ Current published platform packages:
 
    ```bash
    # edit package.json and package-lock.json
-   # this release: v0.3.2
+   # this release: v0.3.3
    ```
 
    For this repository, the git tag and npm version should match:
 
-   - npm version: `0.3.2`
-   - git tag: `v0.3.2`
+   - npm version: `0.3.3`
+   - git tag: `v0.3.3`
 
 2. **Verify the workspace before packaging**
 
