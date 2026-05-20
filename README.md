@@ -159,12 +159,14 @@ That refreshes dependencies, rebuilds the binary, and reinstalls the global `ope
 
    發版前後建議依序確認：
 
-   - 在乾淨工作樹上更新版本號與 changelog（如果這次 release 有對外變更）
+   - 先更新 root `package.json` / `package-lock.json` 版本號，再建立對應 git tag（例如套件版本 `0.3.2` 對應 tag `v0.3.2`）
+   - 在乾淨工作樹上確認 changelog 或 release notes 已準備好（如果這次 release 有對外變更）
    - 執行 `npm run typecheck`
    - 重新執行 `node scripts/create-platform-packages.mjs`，確認 `npm/` 與 `npm/packages/<target>/` 的 staged 檔案都是最新內容
-   - 在每個目標平台主機上執行 `scripts/build-platform-package.sh <target>`，確認 binary 已寫入對應 `npm/packages/<target>/bin/`
-   - 先在各平台套件目錄執行 `npm pack` 做最後檢查，再視需要 `npm publish`
-   - 確認各個 `@openzerocode/<target>` 都已 publish 後，再到 `npm/` 發佈 root `openzerocode`
+   - 合併到 `main` 後，push `v*` tag 來觸發 GitHub Actions 發版流程
+   - 目前 `.github/workflows/build.yml` 會在 tag push 時自動建置各平台 package、publish 各個 `@openzerocode/<target>`，並建立同名 GitHub Release
+   - 若只是因為 workflow 失敗需要重跑，可用 Actions 頁面的 `workflow_dispatch` 手動觸發；這種情況不需要再 bump 版本號，但若要建立 GitHub Release，請填入既有 tag 並勾選對應選項
+   - 注意：目前 workflow 尚未自動 publish root `openzerocode` 套件；若要讓 `npm install -g openzerocode` 可用，仍需另外發佈 `npm/` 內的 root package
    - 發佈完成後，用一個乾淨環境驗證 `npm install -g openzerocode` 與 `openzerocode --version`
 
 這個流程讓 `npm install -g openzerocode` 安裝的是輕量 launcher，而實際執行檔由 npm 自動解析到符合目前平台的 optional package。
