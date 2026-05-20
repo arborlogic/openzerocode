@@ -2,6 +2,8 @@ name: build
 
 on:
   push:
+    branches:
+      - dev
     tags:
       - "v*"
   workflow_dispatch:
@@ -58,7 +60,7 @@ jobs:
           path: openzerocode-*.tgz
 
   publish-npm:
-    if: github.event_name == 'push' || inputs.publish_to_npm
+    if: github.ref_type == 'tag' || inputs.publish_to_npm
     needs: [build-platform-package]
     runs-on: ubuntu-latest
     permissions:
@@ -83,7 +85,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   release:
-    if: github.event_name == 'push' || inputs.create_github_release
+    if: github.ref_type == 'tag' || inputs.create_github_release
     needs: [build-platform-package]
     runs-on: ubuntu-latest
     permissions:
@@ -98,8 +100,11 @@ jobs:
         id: release_tag
         shell: bash
         run: |
-          TAG="${{ github.ref_name }}"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          TAG=""
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             TAG="${{ inputs.release_tag }}"
           fi
 

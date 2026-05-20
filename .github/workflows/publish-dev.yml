@@ -1,0 +1,36 @@
+name: Publish Dev Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+
+jobs:
+  publish-dev:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.15
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Publish dev build
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="$(node -p \"require('./package.json').version\")-dev.${GITHUB_RUN_NUMBER}"
+          node -e \"const fs=require('fs'); const pkg=require('./package.json'); pkg.version=process.env.VERSION; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2)+'\\n');\" \
+          && bun publish --tag dev
