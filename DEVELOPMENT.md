@@ -190,6 +190,141 @@ OPENCODE_API=... npx tsx --test src/provider/provider.test.ts
 
 ---
 
+
+## Release SOP
+
+This section is the release source of truth for npm and GitHub releases.
+
+### Version source of truth
+
+- The canonical release version lives in the root `package.json`.
+- `scripts/create-platform-packages.mjs` reads that version and copies it into:
+  - `npm/package.json`
+  - `npm/packages/<target>/package.json`
+- `package-lock.json` should be kept in sync with the root package version.
+- The GitHub Actions workflow at `.github/workflows/build.yml` is triggered by git tags matching `v*`.
+
+Because of that, **always bump `package.json` to the intended release version before creating the git tag**.
+
+### Supported npm release targets
+
+Current published platform packages:
+
+- `darwin-arm64`
+- `linux-x64`
+- `linux-arm64`
+- `win32-x64`
+
+### Manual release flow
+
+1. **Prepare the version**
+
+   Update the root version first:
+
+   ```bash
+   # edit package.json and package-lock.json
+   # this release: v0.3.2
+   ```
+
+   For this repository, the git tag and npm version should match:
+
+   - npm version: `0.3.2`
+   - git tag: `v0.3.2`
+
+2. **Verify the workspace before packaging**
+
+   ```bash
+   npm run typecheck
+   ```
+
+3. **Build the local binary output**
+
+   ```bash
+   npm run build
+   ```
+
+4. **Generate npm staging manifests**
+
+   ```bash
+   node scripts/create-platform-packages.mjs
+   ```
+
+   This produces the npm staging tree under `npm/`:
+
+   - `npm/package.json`
+   - `npm/bin/openzerocode.js`
+   - `npm/bin/package.json`
+   - `npm/README.md`
+   - `npm/LICENSE`
+   - `npm/packages/<target>/package.json`
+
+5. **Build each platform package on its native platform**
+
+   ```bash
+   scripts/build-platform-package.sh darwin-arm64
+   scripts/build-platform-package.sh linux-x64
+   scripts/build-platform-package.sh linux-arm64
+   scripts/build-platform-package.sh win32-x64
+   ```
+
+   Output binaries are written to:
+
+   - `npm/packages/<target>/bin/openzerocode`
+   - Windows: `npm/packages/win32-x64/bin/openzerocode.exe`
+
+6. **Pack and publish npm packages**
+
+   Recommended order:
+
+   - publish `@openzerocode/<target>` packages first
+   - publish root `openzerocode` package last
+
+   Example checks:
+
+   ```bash
+   npm pack ./npm/packages/darwin-arm64
+   npm pack ./npm/packages/linux-x64
+   npm pack ./npm/packages/linux-arm64
+   npm pack ./npm/packages/win32-x64
+   npm pack ./npm
+   ```
+
+7. **Create and push the release tag**
+
+   After the version bump is committed, create the matching tag:
+
+   ```bash
+   git tag v0.3.2
+   git push origin main --tags
+   ```
+
+### What the GitHub workflow does after tagging
+
+`build.yml` runs automatically on `push` tags that match `v*`.
+
+After `v0.3.2` is pushed, the workflow will:
+
+1. build platform packages on the matrix runners
+2. run `npm pack` for each platform package
+3. upload each generated `.tgz` as a workflow artifact
+4. publish platform packages to npm in the `publish-npm` job
+5. create a GitHub Release for the same tag and attach the built `.tgz` files
+
+### Release checklist
+
+- [ ] `package.json` version updated before tagging
+- [ ] `package-lock.json` version updated to match
+- [ ] `npm run typecheck` passes
+- [ ] `npm run build` passes
+- [ ] `node scripts/create-platform-packages.mjs` regenerated `npm/` staging files
+- [ ] `scripts/build-platform-package.sh <target>` completed on each target platform
+- [ ] `npm pack` succeeded for root and platform packages
+- [ ] release commit pushed
+- [ ] git tag `vX.Y.Z` pushed
+- [ ] GitHub Actions release workflow completed successfully
+
+---
+
 ## Project Structure
 
 ```
