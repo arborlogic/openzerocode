@@ -11,11 +11,19 @@ set -euo pipefail
 
 OPTDIR="$(cd "$(dirname "$0")" && pwd)"
 PROJDIR="$(cd "$OPTDIR/.." && pwd)"
-OUTFILE="${1:-$PROJDIR/dist/openzerocode}"
+OUTFILE="${1:-}"
 
 cd "$PROJDIR"
 echo "=== OpenZeroCode Build ==="
-echo "Output: $OUTFILE"
+if [[ -n "$OUTFILE" ]]; then
+  echo "Output: $OUTFILE"
+else
+  echo "Output: $PROJDIR/dist/openzerocode"
+fi
 echo ""
 
-bun run scripts/build.ts "$OUTFILE"
+if [[ -n "$OUTFILE" ]]; then
+  bun run scripts/build.ts "$OUTFILE"
+else
+  bun run scripts/build.ts
+fi

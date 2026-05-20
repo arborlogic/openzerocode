@@ -1,22 +1,21 @@
 #!/usr/bin/env bun
 // Build script — produces a standalone binary via Bun.build() + compile
 //
-// The output follows the platform-specific package layout used by opencode:
+// Default output:
+//   dist/openzerocode
 //
-//   dist/openzerocode-<os>-<arch>/bin/openzerocode
-//
-// This allows the Node.js wrapper in bin/openzerocode to find the binary
-// naturally when developing locally.
+// This keeps local development, npm global installs, and the wrapper script on a
+// single binary path. Optional custom output paths are still supported.
 //
 // Usage:
-//   bun run scripts/build.ts              → dist/openzerocode-<os>-<arch>/bin/openzerocode
-//   bun run scripts/build.ts /custom/path → custom path (flat binary, no structure)
+//   bun run scripts/build.ts              → dist/openzerocode
+//   bun run scripts/build.ts /custom/path → custom output path
 
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
-import { existsSync } from "fs"
 import * as path from "path"
 import * as os from "os"
 import pkg from "../package.json" with { type: "json" }
+import { resolveBuildVersion } from "./version"
 
 const PLATFORM_MAP: Record<string, string> = { darwin: "darwin", linux: "linux", win32: "windows" }
 const ARCH_MAP: Record<string, string> = { x64: "x64", arm64: "arm64", arm: "arm" }
@@ -28,12 +27,10 @@ const binaryName = platform === "windows" ? "openzerocode.exe" : "openzerocode"
 const dir = path.resolve(import.meta.dirname, "..")
 process.chdir(dir)
 
-// If a custom output path is provided, write the binary directly there.
-// Otherwise create the platform-specific package layout.
+const buildVersion = resolveBuildVersion({ dev: process.env.OPENZEROCODE_DEV_VERSION === "1" })
+
 const customOut = process.argv[2]
-const outfile = customOut
-  ? path.resolve(customOut)
-  : path.resolve(dir, "dist", `openzerocode-${platform}-${arch}`, "bin", binaryName)
+const outfile = customOut ? path.resolve(customOut) : path.resolve(dir, "dist", binaryName)
 
 console.log("=== OpenZeroCode Build ===")
 console.log(`Platform : ${platform}-${arch}`)
@@ -51,7 +48,7 @@ const result = await Bun.build({
   sourcemap: "external",
   target: "bun",
   define: {
-    "process.env.__OPENZEROCODE_VERSION__": JSON.stringify(pkg.version),
+    "process.env.__OPENZEROCODE_VERSION__": JSON.stringify(buildVersion),
   },
   compile: {
     autoloadTsconfig: true,
@@ -77,16 +74,3 @@ const sizeMB = (stat.size / 1024 / 1024).toFixed(1)
 console.log("✅ Build successful!")
 console.log(`   ${outfile}  (${sizeMB} MB)`)
 
-// Create platform package.json alongside the binary (for optional dep publishing)
-if (!customOut) {
-  const pkgDir = path.dirname(path.dirname(outfile))
-  const pkgJson = {
-    name: `openzerocode-${platform}-${arch}`,
-    version: pkg.version,
-    os: [platform],
-    cpu: [arch],
-    bin: { openzerocode: `bin/${binaryName}` },
-  }
-  await Bun.file(path.join(pkgDir, "package.json")).write(JSON.stringify(pkgJson, null, 2) + "\n")
-  console.log(`   Created ${path.join(pkgDir, "package.json")}`)
-}

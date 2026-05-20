@@ -50,23 +50,18 @@ This repo is actively implemented. Current capabilities include:
 
 ### Prerequisites
 
-- **bun** ≥ 1.2 (for development)
-- **Node.js** ≥ 20 (for running pre-built binaries)
+- **bun** ≥ 1.2
+- **npm** on your `PATH` (used by the dev install flow)
 
-### Install
-
-```bash
-npm install -g openzerocode
-```
-
-Or from source:
+### Install from source
 
 ```bash
 git clone https://github.com/arborlogic/openzerocode.git
 cd openzerocode
-npm install
-npm link
+python3 scripts/dev-install.py
 ```
+
+This is the supported install path today. It installs dependencies, rebuilds `dist/openzerocode` with a timestamped `-dev.YYYYMMDDHHMMSS` version suffix, and runs `npm install -g .` so the global `openzerocode` command points at that locally built binary.
 
 ### Run
 
@@ -82,8 +77,12 @@ npm run dev
 
 ### Updating
 
-- **Published version**: `npm install -g openzerocode@latest`
-- **Local development build**: `git pull && npm install && npm run build && npm install -g .`
+```bash
+git pull
+python3 scripts/dev-install.py
+```
+
+That refreshes dependencies, rebuilds the binary, and reinstalls the global `openzerocode` command from your local checkout.
 
 ### Command-line flags
 
@@ -220,7 +219,7 @@ The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` fr
 | **Session storage** | Local files | Local files under `~/.openzerocode/` |
 | **Prompt memory** | Varies | `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
 | **Cloud dependency** | Requires `zero` for operation | None — works entirely offline |
-| **Binary distribution** | Platform-specific npm packages | Same approach |
+| **Binary distribution** | Platform-specific npm packages | Source-first local install via `python3 scripts/dev-install.py` |
 
 ---
 
