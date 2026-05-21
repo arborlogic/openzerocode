@@ -101,38 +101,38 @@ python3 scripts/dev-install.py
 
 That refreshes dependencies, rebuilds the binary, and reinstalls the global `openzerocode` command from your local checkout.
 
-### npm / 打包流程
+### npm packaging workflow
 
-發佈用的 npm 產物採用「root launcher + 平台子套件」結構：
+The published npm artifacts use a "root launcher + platform packages" structure:
 
-- 根套件 `openzerocode` 只放 Node 啟動器 `bin/openzerocode.js`
-- 平台二進位分別放在 `@openzerocode/<target>` optionalDependencies
-- 目前支援的 target：`darwin-arm64`、`linux-x64`、`linux-arm64`、`win32-x64`
+- Root package `openzerocode` ships only the Node launcher `bin/openzerocode.js`
+- Platform binaries live in `@openzerocode/<target>` optional dependencies
+- Currently supported targets: `darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`
 
-常用流程如下：
+Typical workflow:
 
-1. **建立一般本機 binary**
+1. **Build the local binary**
 
    ```bash
    npm run build
    ```
 
-   這會執行 `scripts/build.sh`，預設輸出到 `dist/openzerocode`。
+   This runs `scripts/build.sh` and outputs `dist/openzerocode` by default.
 
-2. **產生 `npm/` 發佈 staging 結構**
+2. **Generate the `npm/` publishing staging layout**
 
    ```bash
    node scripts/create-platform-packages.mjs
    ```
 
-   這會建立：
+   This creates:
 
-   - `npm/package.json`：root npm package manifest
-   - `npm/bin/openzerocode.js`：依作業系統/架構轉送到對應平台 binary 的 launcher
-   - `npm/packages/<target>/package.json`：各平台子套件 manifest
-   - `npm/README.md`、`npm/LICENSE`、`npm/bin/package.json`：發佈時需要的附帶檔案
+   - `npm/package.json`: root npm package manifest
+   - `npm/bin/openzerocode.js`: launcher that dispatches to the matching platform binary
+   - `npm/packages/<target>/package.json`: manifest for each platform package
+   - `npm/README.md`, `npm/LICENSE`, `npm/bin/package.json`: supporting publish files
 
-3. **在對應平台上建出平台 binary**
+3. **Build each platform binary on its native platform**
 
    ```bash
    scripts/build-platform-package.sh darwin-arm64
@@ -141,35 +141,35 @@ That refreshes dependencies, rebuilds the binary, and reinstalls the global `ope
    scripts/build-platform-package.sh win32-x64
    ```
 
-   `scripts/build-platform-package.sh` 必須在目標平台本機執行；例如 `linux-arm64` 只能在 `linux-arm64` host 上建置。成功後 binary 會輸出到：
+   `scripts/build-platform-package.sh` must run on the matching host platform. For example, `linux-arm64` must be built on a `linux-arm64` machine. Successful builds output binaries to:
 
    - `npm/packages/<target>/bin/openzerocode`
-   - Windows target 則是 `npm/packages/win32-x64/bin/openzerocode.exe`
+   - Windows target: `npm/packages/win32-x64/bin/openzerocode.exe`
 
-4. **打包 / 發佈 npm 套件**
+4. **Pack / publish the npm packages**
 
-   完成 staging 與各平台 binary 後，可分別在 `npm/` 與 `npm/packages/<target>/` 內執行 `npm pack` 或 `npm publish`。
+   After staging and building the platform binaries, run `npm pack` or `npm publish` inside `npm/` and each `npm/packages/<target>/` directory.
 
-   建議順序：
+   Recommended order:
 
-   - 先發佈各平台套件 `@openzerocode/<target>`
-   - 再發佈 root 套件 `openzerocode`
+   - Publish platform packages `@openzerocode/<target>` first
+   - Publish the root package `openzerocode` second
 
 5. **CI / release checklist**
 
-   發版前後建議依序確認：
+   Before and after a release, verify:
 
-   - 先更新 root `package.json` / `package-lock.json` 版本號，再建立對應 git tag（例如套件版本 `0.3.2` 對應 tag `v0.3.2`）
-   - 在乾淨工作樹上確認 changelog 或 release notes 已準備好（如果這次 release 有對外變更）
-   - 執行 `npm run typecheck`
-   - 重新執行 `node scripts/create-platform-packages.mjs`，確認 `npm/` 與 `npm/packages/<target>/` 的 staged 檔案都是最新內容
-   - 合併到 `main` 後，push `v*` tag 來觸發 GitHub Actions 發版流程
-   - 目前 `.github/workflows/build.yml` 會在 tag push 時自動建置各平台 package、publish 各個 `@openzerocode/<target>`，並建立同名 GitHub Release
-   - 若只是因為 workflow 失敗需要重跑，可用 Actions 頁面的 `workflow_dispatch` 手動觸發；這種情況不需要再 bump 版本號，但若要建立 GitHub Release，請填入既有 tag 並勾選對應選項
-   - 注意：目前 workflow 尚未自動 publish root `openzerocode` 套件；若要讓 `npm install -g openzerocode` 可用，仍需另外發佈 `npm/` 內的 root package
-   - 發佈完成後，用一個乾淨環境驗證 `npm install -g openzerocode` 與 `openzerocode --version`
+   - Update the root `package.json` / `package-lock.json` version, then create the matching git tag (for example package version `0.3.2` maps to tag `v0.3.2`)
+   - Confirm changelog or release notes are ready if the release includes user-facing changes
+   - Run `npm run typecheck`
+   - Re-run `node scripts/create-platform-packages.mjs` and confirm the staged files under `npm/` and `npm/packages/<target>/` are current
+   - Merge to `main`, then push the `v*` tag to trigger the GitHub Actions release workflow
+   - `.github/workflows/build.yml` currently builds the platform packages on tag push, publishes each `@openzerocode/<target>`, and creates a matching GitHub Release
+   - If a workflow failed and only needs a rerun, use `workflow_dispatch` from the Actions page; no version bump is needed in that case, but if you want a GitHub Release, provide the existing tag and select the related option
+   - Note: the workflow does not yet automatically publish the root `openzerocode` package; to make `npm install -g openzerocode` available, you still need to publish the root package from `npm/`
+   - After publishing, verify `npm install -g openzerocode` and `openzerocode --version` in a clean environment
 
-這個流程讓 `npm install -g openzerocode` 安裝的是輕量 launcher，而實際執行檔由 npm 自動解析到符合目前平台的 optional package。
+This structure keeps `npm install -g openzerocode` lightweight while npm resolves the real executable from the platform-specific optional package.
 
 ### Command-line flags
 

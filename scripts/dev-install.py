@@ -30,6 +30,7 @@ def main() -> int:
     print(f"OpenZeroCode dev install from: {ROOT}")
     run([npm, "install"])
     run(["bash", "-lc", "OPENZEROCODE_DEV_VERSION=1 npm run build"])
+    run(["node", "scripts/create-platform-packages.mjs"])
     run([npm, "install", "-g", "."])
 
     print("\nDone. You can now run: openzerocode")

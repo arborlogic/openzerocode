@@ -6,6 +6,9 @@ const root = path.resolve(process.cwd())
 const distRoot = path.join(root, "npm")
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
 
+const normalizeReadmeForNpm = (content) =>
+  content.replace(/!\[OpenZeroCode preview\]\((?:\.\/)?preview01\.png\)/g, "![OpenZeroCode preview](https://raw.githubusercontent.com/arborlogic/openzerocode/main/preview01.png)")
+
 const platforms = [
   { id: "darwin-arm64", os: ["darwin"], cpu: ["arm64"], binary: "openzerocode" },
   { id: "linux-x64", os: ["linux"], cpu: ["x64"], binary: "openzerocode" },
@@ -20,19 +23,57 @@ const optionalDependencies = Object.fromEntries(
   platforms.map((platform) => [`@openzerocode/${platform.id}`, pkg.version]),
 )
 
+const sharedMetadata = {
+  license: pkg.license,
+  repository: pkg.repository,
+  homepage: pkg.homepage,
+  bugs: pkg.bugs,
+  author: pkg.author,
+  funding: pkg.funding,
+  keywords: pkg.keywords,
+}
+
+const platformReadme = (platform) => `# @openzerocode/${platform.id}
+
+Prebuilt **${platform.id}** binary package for [OpenZeroCode](https://github.com/arborlogic/openzerocode).
+
+This package is normally installed automatically as an optional dependency of:
+
+\`\`\`bash
+npm install -g openzerocode
+\`\`\`
+
+## Purpose
+
+- Contains the native executable for **${platform.os.join(", ")}/${platform.cpu.join(", ")}**
+- Intended for internal distribution use by the root \`openzerocode\` package
+- Not usually installed directly unless you specifically need this target package
+
+## Usage
+
+The recommended install path is:
+
+\`\`\`bash
+npm install -g openzerocode
+openzerocode
+\`\`\`
+
+Repository and documentation:
+
+- GitHub: https://github.com/arborlogic/openzerocode
+- Main package: https://www.npmjs.com/package/openzerocode
+`
+
 const rootPackage = {
   name: pkg.name,
   version: pkg.version,
   type: pkg.type,
-  license: pkg.license,
   description: pkg.description,
+  ...sharedMetadata,
   bin: { openzerocode: "bin/openzerocode.js" },
-  files: ["bin/openzerocode.js", "bin/package.json", "README.md", "LICENSE"],
+  files: ["bin/openzerocode.js", "bin/package.json", "README.md", "LICENSE", "preview01.png"],
   scripts: { postinstall: "node bin/openzerocode.js --postinstall-check" },
   optionalDependencies,
-  repository: pkg.repository,
-  homepage: pkg.homepage,
-  bugs: pkg.bugs,
 }
 
 const launcher = [
@@ -104,19 +145,25 @@ for (const platform of platforms) {
     version: pkg.version,
     os: platform.os,
     cpu: platform.cpu,
-    files: [`bin/${platform.binary}`],
+    files: ["README.md", `bin/${platform.binary}`],
     preferUnplugged: true,
-    license: pkg.license,
     description: `${pkg.description} (${platform.id} binary)`,
+    ...sharedMetadata,
   }
 
   fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify(platformPackage, null, 2) + "\n")
+  fs.writeFileSync(path.join(packageDir, "README.md"), platformReadme(platform))
 }
 
 const rootReadme = path.join(root, "README.md")
 const rootLicense = path.join(root, "LICENSE")
-if (fs.existsSync(rootReadme)) fs.copyFileSync(rootReadme, path.join(distRoot, "README.md"))
+const rootPreview = path.join(root, "preview01.png")
+if (fs.existsSync(rootReadme)) {
+  const readme = fs.readFileSync(rootReadme, "utf8")
+  fs.writeFileSync(path.join(distRoot, "README.md"), normalizeReadmeForNpm(readme))
+}
 if (fs.existsSync(rootLicense)) fs.copyFileSync(rootLicense, path.join(distRoot, "LICENSE"))
+if (fs.existsSync(rootPreview)) fs.copyFileSync(rootPreview, path.join(distRoot, "preview01.png"))
 
 const rootBinPackage = path.join(root, "bin", "package.json")
 if (fs.existsSync(rootBinPackage)) {

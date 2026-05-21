@@ -1,9 +1,27 @@
 {
   "name": "openzerocode",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "type": "module",
   "license": "MIT",
   "description": "AI coding assistant in the terminal",
+  "keywords": [
+    "ai",
+    "coding-assistant",
+    "cli",
+    "terminal",
+    "tui",
+    "openai",
+    "anthropic",
+    "llm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arborlogic/openzerocode.git"
+  },
+  "homepage": "https://github.com/arborlogic/openzerocode#readme",
+  "bugs": {
+    "url": "https://github.com/arborlogic/openzerocode/issues"
+  },
   "bin": {
     "openzerocode": "bin/openzerocode"
   },

@@ -22,6 +22,31 @@ on:
         type: boolean
 
 jobs:
+  build-root-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: bun install --frozen-lockfile
+
+      - name: Generate npm package metadata
+        run: node scripts/create-platform-packages.mjs
+
+      - name: Pack root npm package
+        run: npm pack ./npm
+
+      - name: Upload root npm package
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-root
+          path: openzerocode-*.tgz
+
   build-platform-package:
     strategy:
       matrix:
@@ -61,7 +86,7 @@ jobs:
 
   publish-npm:
     if: github.ref_type == 'tag' || inputs.publish_to_npm
-    needs: [build-platform-package]
+    needs: [build-root-package, build-platform-package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -77,7 +102,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           always-auth: true
 
-      - name: Download all platform packages
+      - name: Download all npm packages
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -98,27 +123,37 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm whoami
 
-      - name: Publish platform packages
+      - name: Publish npm packages
         shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          mapfile -d '' packages < <(find artifacts -name '*.tgz' -print0 | sort -z)
 
-          if [[ ${#packages[@]} -eq 0 ]]; then
-            echo "No .tgz packages found under artifacts/." >&2
+          root_package="$(find artifacts -path '*/npm-package-root/*.tgz' | head -n 1)"
+          if [[ -z "$root_package" ]]; then
+            echo "Root npm package tarball not found under artifacts/." >&2
             exit 1
           fi
 
-          for pkg in "${packages[@]}"; do
-            echo "Publishing $pkg"
+          mapfile -d '' platform_packages < <(find artifacts -path '*/npm-package-*/*.tgz' ! -path '*/npm-package-root/*' -print0 | sort -z)
+
+          if [[ ${#platform_packages[@]} -eq 0 ]]; then
+            echo "No platform package tarballs found under artifacts/." >&2
+            exit 1
+          fi
+
+          for pkg in "${platform_packages[@]}"; do
+            echo "Publishing platform package $pkg"
             npm publish "$pkg" --access public
           done
 
+          echo "Publishing root package $root_package"
+          npm publish "$root_package" --access public
+
   release:
     if: github.ref_type == 'tag' || inputs.create_github_release
-    needs: [build-platform-package]
+    needs: [build-root-package, build-platform-package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
