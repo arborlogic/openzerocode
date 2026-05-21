@@ -4,10 +4,12 @@ import { Effect } from "effect"
 import { Provider, type ToolDef } from "./types"
 import { layer } from "./zero-api"
 
+// Integration test: hits the live Zero API. Skip the whole suite when the
+// env var is missing so it doesn't break local / CI runs that don't have a key.
 const API_KEY = process.env.ZERO_API_KEY
-if (!API_KEY) throw new Error("ZERO_API_KEY env var required")
+const describeIfKey = API_KEY ? describe : describe.skip
 
-const testLayer = layer({ apiKey: API_KEY })
+const testLayer = layer({ apiKey: API_KEY ?? "" })
 
 const BASH_TOOL: ToolDef = {
   type: "function",
@@ -22,7 +24,7 @@ const BASH_TOOL: ToolDef = {
   },
 }
 
-describe("zero-api provider", () => {
+describeIfKey("zero-api provider", () => {
   it("models returns a list", async () => {
     const models = await Effect.runPromise(
       Effect.gen(function* () {
