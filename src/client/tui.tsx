@@ -22,8 +22,8 @@ import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToas
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
-import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
+import { getKnownModelConfig, getModelConfig } from "../provider/models"
+import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, estimateContextTokens, CONTEXT_WARNING_THRESHOLD } from "./session-compact"
 import { formatProviderError } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
@@ -2272,12 +2272,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Suggest compaction when context is near limit (> 80%), but let the user decide.
-    // Use JSON.stringify to capture all message content (parts, tool_calls, reasoning).
+    // Suggest compaction when context is near limit, but let the user decide.
     {
       const cfg = getModelConfig(currentModel)
-      const rawMessages = stripCompactSummaryMessages(messages())
-      if (estimateTokens(JSON.stringify(rawMessages) + input) > cfg.contextLimit * 0.8) {
+      if (estimateContextTokens(messages(), input) > cfg.contextLimit * CONTEXT_WARNING_THRESHOLD) {
         setNotices((prev) => {
           const text = "Context is getting full — you can run /compact now if you want to reduce session history."
           const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)

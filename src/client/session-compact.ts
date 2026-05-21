@@ -38,6 +38,13 @@ export function stripCompactSummaryMessages(messages: Message[]): Message[] {
   return messages.filter((msg) => !isCompactSummaryMessage(msg))
 }
 
+export const CONTEXT_WARNING_THRESHOLD = 0.8
+
+export function estimateContextTokens(messages: Message[], extraInput: string = ""): number {
+  const clean = stripCompactSummaryMessages(messages)
+  return estimateTokens(JSON.stringify(clean) + extraInput)
+}
+
 export function selectCompactionTail(messages: Message[], contextLimit: number): { head: Message[]; tail: Message[] } {
   const clean = stripCompactSummaryMessages(messages)
   if (clean.length <= 6) return { head: [], tail: clean }
