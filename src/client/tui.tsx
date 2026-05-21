@@ -56,14 +56,41 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log(`openzerocode v${VERSION}`)
   console.log()
   console.log("Usage: openzerocode [options] [prompt...]")
+  console.log("       openzerocode serve [--port PORT] [--host HOST]")
   console.log()
   console.log("Options:")
   console.log("  -v, --version            Show version number")
   console.log("  -h, --help               Show this help message")
   console.log()
+  console.log("Commands:")
+  console.log("  serve                    Start an HTTP server exposing the streaming session API")
+  console.log("    --port PORT            Port to listen on (default: 4096)")
+  console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
+  console.log()
   console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
   console.log("Otherwise, the terminal UI is launched.")
   process.exit(0)
+}
+
+if (args[0] === "serve") {
+  const flagValue = (name: string, fallback: string): string => {
+    const eq = args.find((a) => a.startsWith(`${name}=`))
+    if (eq) return eq.slice(name.length + 1)
+    const idx = args.indexOf(name)
+    if (idx >= 0 && args[idx + 1]) return args[idx + 1]!
+    return fallback
+  }
+  const port = Number.parseInt(flagValue("--port", "4096"), 10)
+  const host = flagValue("--host", "127.0.0.1")
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    console.error(`Invalid port: ${flagValue("--port", "4096")}`)
+    process.exit(1)
+  }
+  const { startServer } = await import("../server/index")
+  await startServer({ port, host })
+  // Bun.serve() keeps the event loop alive but returns immediately. Block here
+  // so the rest of this module (which boots the TUI) never executes.
+  await new Promise<never>(() => {})
 }
 
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
