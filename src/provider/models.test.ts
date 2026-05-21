@@ -9,6 +9,12 @@ describe("getKnownModelConfig", () => {
     assert.equal(cfg?.contextLimit, 128_000)
   })
 
+  it("normalizes provider-prefixed model ids", () => {
+    const cfg = getKnownModelConfig("openaicodex/gpt-5.4")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+  })
+
   it("returns undefined for unknown models", () => {
     assert.equal(getKnownModelConfig("unknown-model"), undefined)
   })
@@ -38,6 +44,13 @@ describe("getModelConfig", () => {
     const cfg = getModelConfig("openrouter/auto")
     assert.equal(cfg.contextLimit, 2_000_000)
     assert.equal(cfg.pricing, undefined)
+  })
+
+  it("uses normalized config for provider-prefixed model ids", () => {
+    const cfg = getModelConfig("openaicodex/gpt-5.4")
+    assert.equal(cfg.contextLimit, 1_000_000)
+    assert.equal(cfg.pricing?.input, 2.5)
+    assert.equal(cfg.pricing?.output, 15)
   })
 })
 

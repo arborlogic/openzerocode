@@ -749,6 +749,7 @@ function App() {
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
+  const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
@@ -834,7 +835,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   createEffect(() => {
-    if (!running()) return
+    if (!running() && !compacting()) return
     const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
     return () => clearInterval(id)
   })
@@ -2050,6 +2051,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   const doSwitchSession = (id: string) => {
+    if (running() || compacting()) {
+      setStatus("cannot switch sessions while busy")
+      showToast("info", "Session busy", "Please wait for the current response or compaction to finish.")
+      return
+    }
     doSaveCurrent()
     const loaded = loadSessionState(id)
     if (loaded?.provider && loaded.model) {
@@ -2116,6 +2122,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   };
 
   const doCreateNewSession = () => {
+    if (running() || compacting()) {
+      setStatus("cannot create a session while busy")
+      showToast("info", "Session busy", "Please wait for the current response or compaction to finish.")
+      return
+    }
     doSaveCurrent()
     const meta = createSession(currentModel, currentProvider)
     setSessionId(meta.id)
@@ -2151,7 +2162,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const doChangeDirectory = (path: string) => {
-    if (running()) return { ok: false, message: "Cannot change directory while a response is running." }
+    if (running() || compacting()) return { ok: false, message: "Cannot change directory while a response or compaction is running." }
     const next = resolveDirectoryPath(path, currentCwd())
     if (!isDirectory(next)) return { ok: false, message: `Directory not found: ${path}` }
 
@@ -2182,9 +2193,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const compactCurrentSession = async () => {
     if (running()) {
+      setStatus("response running — compaction skipped")
       showToast("info", "Compaction skipped", "A response is already running.")
       return
     }
+    if (compacting()) {
+      setStatus("compaction already running")
+      showToast("info", "Compaction running", "Please wait for the current compaction to finish.")
+      return
+    }
+
     const currentMessages = messages()
     const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
     if (head.length === 0) {
@@ -2195,8 +2213,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     setPalettePendingDelete(null)
     setShowPalette(false)
-    setStatus("compacting session...")
-    setRunning(true)
+    setCompacting(true)
+    setStatus(`compacting ${head.length} earlier messages...`)
+    showToast("info", "Compaction started", "Summarizing earlier session history…", 2000)
+    queueMicrotask(scrollBottom)
 
     const transcript = buildCompactionTranscript(head)
     const prompt = [
@@ -2249,7 +2269,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       showToast("error", "Compaction failed", errorText)
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     } finally {
-      setRunning(false)
+      setCompacting(false)
     }
   }
 
@@ -2402,6 +2422,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     const rawInput = draft().trim()
     if (!rawInput) return
+    if (compacting()) {
+      setStatus("compaction running — please wait")
+      showToast("info", "Compaction running", "Please wait for compaction to finish before sending input.")
+      return
+    }
 
     let input = rawInput
     for (const [marker, content] of pastedContent) {
@@ -2538,6 +2563,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setShowUsageDashboard(true)
         setComposerText("")
         return
+      }
+      if (slashCmd === "compact") {
+        setComposerText("")
       }
       await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
@@ -2952,6 +2980,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
     if (event.name === "escape") {
+      if (compacting()) {
+        setStatus("compaction running — please wait")
+        showToast("info", "Compaction running", "Compaction cannot be interrupted safely yet.")
+        event.preventDefault()
+        return
+      }
       if (autocompleteApi?.visible()) {
         setComposerText("")
         event.preventDefault()
@@ -3172,7 +3206,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
             <box flexDirection="column">
               <textarea
-                placeholder="Ask anything..."
+                placeholder={compacting() ? "Compacting session… please wait" : "Ask anything..."}
                 placeholderColor={THEME.muted}
                 textColor={THEME.text}
                 focusedTextColor={THEME.text}
@@ -3263,16 +3297,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
-              <Show when={running()} fallback={
+              <Show when={running() || compacting()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
                   <text style={{ fg: THEME.muted }}>{`${status()}  •  `}</text>
-                  <text
-                    style={{ fg: "#f85149" }}
-                    onMouseDown={() => { if (runAbort) runAbort.abort() }}
-                  >Esc interrupt</text>
+                  <Show when={running()} fallback={<text style={{ fg: THEME.muted }}>Please wait</text>}>
+                    <text
+                      style={{ fg: "#f85149" }}
+                      onMouseDown={() => { if (runAbort) runAbort.abort() }}
+                    >Esc interrupt</text>
+                  </Show>
                 </box>
               </Show>
             </box>
@@ -3336,8 +3372,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
+          if (compacting()) {
+            setStatus("compaction running — please wait")
+            showToast("info", "Compaction running", "Please wait for compaction to finish before running commands.")
+            return
+          }
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage"])
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact"])
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")

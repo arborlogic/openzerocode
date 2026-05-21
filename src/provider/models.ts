@@ -101,12 +101,22 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
 }
 
+function normalizeModelConfigKey(model: string): string {
+  if (MODEL_CONFIGS[model]) return model
+
+  const slashIndex = model.lastIndexOf("/")
+  if (slashIndex === -1) return model
+
+  const candidate = model.slice(slashIndex + 1)
+  return MODEL_CONFIGS[candidate] ? candidate : model
+}
+
 export function getKnownModelConfig(model: string): ModelConfig | undefined {
-  return MODEL_CONFIGS[model]
+  return MODEL_CONFIGS[normalizeModelConfigKey(model)]
 }
 
 export function getModelConfig(model: string): ModelConfig {
-  return MODEL_CONFIGS[model] ?? DEFAULT_CONFIG
+  return MODEL_CONFIGS[normalizeModelConfigKey(model)] ?? DEFAULT_CONFIG
 }
 
 export function estimateTokens(text: string): number {
