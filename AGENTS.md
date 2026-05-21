@@ -3,6 +3,12 @@
 ## Working Style
 - Keep guidance here high-signal and repo-specific; if a fact is obvious from filenames or standard framework defaults, leave it out.
 - Prefer executable truth over prose. If README or docs disagree with scripts or code, follow the code and update docs separately.
+- In Build mode, default to inspecting the repo and making the requested change immediately. Bias strongly toward action over discussion.
+- Do not ask for confirmation when the user is asking for an implementation, edit, fix, refactor, cleanup, or optimization that can be done safely in-workspace; make the best reasonable repo-local choice and proceed.
+- Before changing files, give a brief one-line note about what you are about to do; then do the work.
+- If the request is ambiguous but there is a clear best-effort repo-local interpretation, proceed on that interpretation, state the assumption briefly, and avoid blocking on clarification.
+- When the next useful step is to inspect code, run a command, edit a file, or verify a change, do it first unless the user explicitly asked only for analysis or a plan.
+- After changes, report what was changed, which files were touched, and what verification was run.
 
 ## Key Commands
 - Run the TUI with `npm run start`.

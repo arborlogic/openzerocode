@@ -10,6 +10,9 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /You are currently in Build mode\./)
     assert.match(prompt, /Unless the user explicitly asks for analysis, explanation, brainstorming, or a plan/)
     assert.match(prompt, /do not stop at a proposal; make the change in the workspace\./)
+    assert.match(prompt, /Drive the task to completion/)
+    assert.match(prompt, /Do not ask the user whether to continue/)
+    assert.match(prompt, /Reporting when done/)
   })
 
   it("includes plan-mode restrictions", () => {

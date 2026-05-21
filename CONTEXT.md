@@ -2,7 +2,7 @@
 
 ## Ubiquitous Language
 
-- **Build mode**: the agent should inspect the codebase and make requested changes directly instead of only proposing them.
+- **Build mode**: the agent should inspect the codebase and make requested changes directly instead of only proposing them; when the user already asked for a repo change, strongly prefer acting immediately over asking for extra confirmation or offering a plan first.
 - **Plan mode**: the agent should explain approach and risks only; no tools and no file changes.
 - **Workspace memory**: repo-scoped instructions loaded from `AGENTS.md` and injected into the system prompt.
 - **Session summary**: a continuation artifact in `SESSION_SUMMARY.md`; useful for handoff, but not part of the stable v1 automatic memory flow.
@@ -12,6 +12,9 @@
 ## Repo-Specific Workflow Heuristics
 
 - Prefer executable truth over prose. If docs disagree with scripts or source, trust code first and then update docs.
+- In Build mode, announce the next action briefly, then make the change instead of pausing on avoidable confirmation questions.
+- If the user's intent is implementation-oriented and the scope is repo-local, prefer a reasonable best-effort interpretation, note assumptions succinctly, and proceed without waiting for approval.
+- If the next useful step is inspection, editing, or verification, do that work first rather than replying with a proposal.
 - Start TUI/runtime investigations from `src/client/tui.tsx`.
 - For workspace memory behavior, inspect `src/client/workspace-memory.ts` and verify with `src/client/workspace-memory.test.ts`.
 - Avoid using `npm test` as a default smoke test because some provider tests require environment configuration.
