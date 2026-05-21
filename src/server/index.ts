@@ -129,7 +129,7 @@ function handleListSessions(url: URL): Response {
 function handleGetSession(id: string): Response {
   const state = loadSessionState(id)
   if (!state) {
-    const meta = listSessions({ directory: null }).find((s) => s.id === id)
+    const meta = listSessions({ directory: null, includeEmpty: true }).find((s) => s.id === id)
     if (!meta) return errorResponse("Session not found", "NOT_FOUND", 404)
     return jsonResponse({
       id: meta.id,
@@ -143,7 +143,7 @@ function handleGetSession(id: string): Response {
       messages: [],
     })
   }
-  const meta = listSessions({ directory: null }).find((s) => s.id === id)
+  const meta = listSessions({ directory: null, includeEmpty: true }).find((s) => s.id === id)
   return jsonResponse({
     id,
     title: meta?.title,
@@ -172,7 +172,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
   }
 
   const state = loadSessionState(id)
-  const meta = listSessions({ directory: null }).find((s) => s.id === id)
+  const meta = listSessions({ directory: null, includeEmpty: true }).find((s) => s.id === id)
   if (!meta) return errorResponse("Session not found", "NOT_FOUND", 404)
 
   const workdir = meta.directory ?? process.cwd()
@@ -228,7 +228,8 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           writeChunk(value)
         }
 
-        // Persist updated history
+        // Persist updated history. The generator already emits its own
+        // "done" chunk before returning, so we don't double-emit here.
         saveSession(
           id,
           finalHistory,
@@ -239,8 +240,6 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           state?.permissionRules,
           state?.autoApprove,
         )
-
-        writeChunk({ type: "done" })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         writeChunk({ type: "error", message })
