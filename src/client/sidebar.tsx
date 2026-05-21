@@ -337,6 +337,15 @@ export function Sidebar(props: {
           })()}
         </Show>
 
+        <Show when={branch()}>
+          <box flexDirection="column">
+            <text style={{ fg: props.theme.accent }}>Branch</text>
+            <text style={{ fg: props.theme.muted }} wrapMode="none">
+              {truncatePath(branch() ?? "", Math.max(1, props.width - 4))}
+            </text>
+          </box>
+        </Show>
+
         <Show when={props.cwd}>
           <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Directory</text>
