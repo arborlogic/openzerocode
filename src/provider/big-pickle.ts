@@ -169,7 +169,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
           )
           const json = yield* Effect.promise(() => res.json()) as Effect.Effect<any>
           const ids = (json.data ?? []).map((m: any) => m.id) as string[]
-          return (input.filterModels ?? true) ? filterBigPickleModels(ids) : ids
+          const filtered = (input.filterModels ?? true) ? filterBigPickleModels(ids) : ids
+          return filtered.map((id) => ({ id }))
         }).pipe(Effect.orDie)
 
       return { complete, stream, models }

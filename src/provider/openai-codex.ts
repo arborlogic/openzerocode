@@ -278,7 +278,7 @@ export const layer = (input: { model?: string }) =>
           })
         }).pipe(Effect.orDie)
 
-      const models = () => Effect.succeed(MODELS)
+      const models = () => Effect.succeed(MODELS.map((id) => ({ id })))
 
       return { complete, stream, models }
     }).pipe(Effect.orDie),

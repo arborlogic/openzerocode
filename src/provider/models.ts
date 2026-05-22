@@ -1,3 +1,5 @@
+import type { ModelInfo } from "./types"
+
 export type ModelConfig = {
   contextLimit: number
   pricing?: {
@@ -115,8 +117,18 @@ export function getKnownModelConfig(model: string): ModelConfig | undefined {
   return MODEL_CONFIGS[normalizeModelConfigKey(model)]
 }
 
-export function getModelConfig(model: string): ModelConfig {
-  return MODEL_CONFIGS[normalizeModelConfigKey(model)] ?? DEFAULT_CONFIG
+export function getModelConfig(model: string, fallback?: ModelInfo | ModelConfig): ModelConfig {
+  const known = MODEL_CONFIGS[normalizeModelConfigKey(model)]
+  if (known) return known
+
+  if (fallback?.contextLimit || fallback?.pricing) {
+    return {
+      contextLimit: fallback.contextLimit ?? DEFAULT_CONFIG.contextLimit,
+      pricing: fallback.pricing ?? DEFAULT_CONFIG.pricing,
+    }
+  }
+
+  return DEFAULT_CONFIG
 }
 
 export function estimateTokens(text: string): number {

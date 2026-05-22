@@ -63,10 +63,19 @@ export type Chunk = {
   usage?: Usage
 }
 
+export type ModelInfo = {
+  id: string
+  contextLimit?: number
+  pricing?: {
+    input: number
+    output: number
+  }
+}
+
 export interface Interface {
   readonly complete: (req: CompletionRequest) => Effect.Effect<CompletionResult>
   readonly stream: (req: CompletionRequest) => Effect.Effect<ReadableStream<Chunk>>
-  readonly models: () => Effect.Effect<string[]>
+  readonly models: () => Effect.Effect<ModelInfo[]>
 }
 
 export class Provider extends Context.Service<Provider, Interface>()("@openzerocode/Provider") {}

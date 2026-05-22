@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
-import type { Message, ToolCall } from "../provider/types"
+import type { Message, ToolCall, ModelInfo } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
@@ -15,6 +15,7 @@ export type RunMode = "build" | "plan"
 
 type SessionUi = {
   abort: AbortSignal
+  modelInfo?: ModelInfo
   streamReasoningChunk: (text: string) => void
   streamAssistantChunk: (text: string) => void
   streamToolCallChunk: (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => void
@@ -41,6 +42,7 @@ type SessionRuntime = {
 export type StreamOptions = {
   abort: AbortSignal
   model: string
+  modelInfo?: ModelInfo
   mode: RunMode
   provider: string
   keyName: string
@@ -77,7 +79,7 @@ export async function* streamSession(
 
   const sendHistory = (() => {
     if (history.length === 0) return history
-    const { contextLimit } = getModelConfig(options.model)
+    const { contextLimit } = getModelConfig(options.model, options.modelInfo)
     const budget = Math.floor(contextLimit * 0.55)
     let used = 0
     let start = history.length
@@ -296,6 +298,7 @@ export async function runSession(
   const gen = streamSession(userInput, history, {
     abort: ui.abort,
     model: ui.model,
+    modelInfo: ui.modelInfo,
     mode: ui.mode,
     provider: ui.provider,
     keyName: ui.keyName,

@@ -18,7 +18,7 @@ describe("opencode-zen provider", () => {
       }).pipe(Effect.provide(testLayer))
     )
     assert.ok(models.length > 0)
-    assert.ok(models.includes("big-pickle"))
+    assert.ok(models.some((model) => model.id === "big-pickle"))
   })
 
   it("complete returns a response", async () => {

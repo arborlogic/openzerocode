@@ -8,10 +8,10 @@ import { existsSync, readdirSync, statSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { platform } from "os"
 import { promisify } from "node:util"
-import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
+import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
-import { Provider } from "../provider/types"
+import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
@@ -95,6 +95,7 @@ if (args[0] === "serve") {
 
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
+let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider, currentModel)
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
@@ -168,8 +169,13 @@ type DisplayTurn = {
   userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
+function refreshCurrentModelInfo() {
+  currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
+}
+
 function rebuildLayer() {
   currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
+  refreshCurrentModelInfo()
 }
 
 function defaultModelForCurrentProvider(providerId: string) {
@@ -390,8 +396,8 @@ function fmtPrice(value: number) {
   return `$${value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`
 }
 
-function modelHint(model: string) {
-  const cfg = getKnownModelConfig(model)
+function modelHint(model: string, fallback?: ModelInfo) {
+  const cfg = getKnownModelConfig(model) ?? (fallback?.contextLimit ? getModelConfig(model, fallback) : undefined)
   if (!cfg) return ""
   if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
   if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
@@ -807,7 +813,7 @@ function App() {
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
   const [cwdRevision, setCwdRevision] = createSignal(0)
-  const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
+  const [providerModels, setProviderModels] = createSignal<Record<string, ModelInfo[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
@@ -980,18 +986,24 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     return currentModel
   })
 
+  const modelInfoLabel = createMemo(() => {
+    selectionRevision()
+    return currentModelInfo
+  })
+
   const activeProviderKeyLabel = createMemo(() => {
     providerConfigRevision()
     return getActiveConfiguredProviderKeyName(currentProvider) ?? "none"
   })
 
-  const applyProviderModel = (providerId: string, model: string, persist = false) => {
+  const applyProviderModel = (providerId: string, model: string, persist = false, modelInfo?: ModelInfo) => {
     try {
       const nextProvider = providerId
       const nextModel = nextProvider === "opencode-zen" ? normalizeBigPickleModel(model) : model
       currentLayer = Layer.merge(buildLayer(nextProvider, nextModel), toolLayer)
       currentProvider = nextProvider
       currentModel = nextModel
+      currentModelInfo = modelInfo ?? getCachedModelInfo(nextProvider, nextModel)
       setSelectionRevision((value) => value + 1)
       if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       refreshSessions()
@@ -1004,6 +1016,14 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
 
   const loadModelsForProvider = async (providerId: string) => {
     if (providerModels()[providerId] || providerModelsLoading() === providerId) return
+    const cached = getCachedModels(providerId)
+    if (cached.length > 0) {
+      setProviderModels((prev) => ({ ...prev, [providerId]: cached }))
+      if (providerId === currentProvider) {
+        currentModelInfo = cached.find((model) => model.id === currentModel) ?? currentModelInfo
+        setSelectionRevision((value) => value + 1)
+      }
+    }
     setProviderModelsLoading(providerId)
     setProviderModelsError((prev) => ({ ...prev, [providerId]: "" }))
     try {
@@ -1015,8 +1035,13 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
           return yield* provider.models()
         }).pipe(Effect.provide(layer)),
       )
-      const unique = [...new Set(models)].sort((a, b) => a.localeCompare(b))
-      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [defaultModel] }))
+      const unique = setCachedModels(providerId, models)
+      const resolved = unique.length > 0 ? unique : [{ id: defaultModel }]
+      setProviderModels((prev) => ({ ...prev, [providerId]: resolved }))
+      if (providerId === currentProvider) {
+        currentModelInfo = resolved.find((model) => model.id === currentModel) ?? getCachedModelInfo(currentProvider, currentModel)
+        setSelectionRevision((value) => value + 1)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setProviderModelsError((prev) => ({ ...prev, [providerId]: message }))
@@ -1027,7 +1052,16 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
 
   const ensureModelsForProvider = async (providerId: string) => {
     if (!providerModels()[providerId] && providerModelsLoading() !== providerId) {
-      await loadModelsForProvider(providerId)
+      const cached = getCachedModels(providerId)
+      if (cached.length > 0) {
+        setProviderModels((prev) => ({ ...prev, [providerId]: cached }))
+        if (providerId === currentProvider) {
+          currentModelInfo = cached.find((model) => model.id === currentModel) ?? currentModelInfo
+          setSelectionRevision((value) => value + 1)
+        }
+      } else {
+        await loadModelsForProvider(providerId)
+      }
     }
     return providerModels()[providerId] ?? []
   }
@@ -1065,7 +1099,8 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     setProviderConfigRevision((value) => value + 1)
     await ensureModelsForProvider("openai-codex")
     const model = defaultModelForCurrentProvider("openai-codex")
-    applyProviderModel("openai-codex", model, true)
+    const modelInfo = providerModels()["openai-codex"]?.find((entry) => entry.id === model)
+    applyProviderModel("openai-codex", model, true, modelInfo)
     setStatus("Codex authorized — switched to openai-codex")
     setNotices((prev) => [...prev, {
       kind: "system",
@@ -1488,7 +1523,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const filter = paletteInput().trim().toLowerCase()
     const filteredModels = !filter
       ? models
-      : models.filter((model) => model.toLowerCase().includes(filter))
+      : models.filter((model) => model.id.toLowerCase().includes(filter))
     const visibleModels = filteredModels.slice(0, 10)
     const items: PaletteItem[] = []
 
@@ -1528,13 +1563,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }
 
-    for (const model of visibleModels) {
+    for (const modelInfo of visibleModels) {
+      const model = modelInfo.id
       const isCurrent = providerId === providerLabel() && model === modelLabel()
       items.push({
         label: `${isCurrent ? ">" : " "} ${model}`,
-        hint: truncateText(modelHint(model), PALETTE_HINT_MAX()),
+        hint: truncateText(modelHint(model, modelInfo), PALETTE_HINT_MAX()),
         onSelect: () => {
-          if (!applyProviderModel(providerId, model, true)) return
+          if (!applyProviderModel(providerId, model, true, modelInfo)) return
           setStatus(`provider/model -> ${providerId}/${model}`)
           setShowPalette(false)
           setPaletteMode("actions")
@@ -1602,7 +1638,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               }
               await ensureModelsForProvider("openai-codex")
               const model = defaultModelForCurrentProvider("openai-codex")
-              if (!applyProviderModel("openai-codex", model, true)) {
+              const modelInfo = providerModels()["openai-codex"]?.find((entry) => entry.id === model)
+              if (!applyProviderModel("openai-codex", model, true, modelInfo)) {
                 setStatus("Failed to activate Codex auth")
                 return
               }
@@ -2231,7 +2268,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     const currentMessages = messages()
-    const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
+    const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel, currentModelInfo).contextLimit)
     if (head.length === 0) {
       setStatus("session too short to compact")
       showToast("info", "Compaction skipped", "Session is still too short to compact.")
@@ -2321,7 +2358,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     // Suggest compaction when context is near limit, but let the user decide.
     {
-      const cfg = getModelConfig(currentModel)
+      const cfg = getModelConfig(currentModel, currentModelInfo)
       if (estimateContextTokens(messages(), input) > cfg.contextLimit * CONTEXT_WARNING_THRESHOLD) {
         setNotices((prev) => {
           const text = "Context is getting full — you can run /compact now if you want to reduce session history."
@@ -2368,6 +2405,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
         scrollBottom,
         model: currentModel,
+        modelInfo: currentModelInfo,
         mode: mode(),
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
@@ -2493,11 +2531,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
           const models = await ensureModelsForProvider(id)
           const fallbackModel = defaultModelForCurrentProvider(id)
-          const nextModel = models.includes(currentModel)
+          const nextModel = models.some((entry) => entry.id === currentModel)
             ? currentModel
-            : models[0] ?? fallbackModel
+            : models[0]?.id ?? fallbackModel
           if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
-          if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
+          const nextModelInfo = providerModels()[id]?.find((entry) => entry.id === nextModel)
+          if (!applyProviderModel(id, nextModel, true, nextModelInfo)) return { ok: false, message: `Failed to switch provider: ${id}` }
           return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
         },
         currentModel,
@@ -2508,10 +2547,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           const provider = PROVIDERS[providerId]
           if (!provider) return { ok: false, message: `Unknown provider: ${providerId}` }
           const models = await ensureModelsForProvider(providerId)
-          if (models.length > 0 && !models.includes(modelId)) {
+          if (models.length > 0 && !models.some((entry) => entry.id === modelId)) {
             return { ok: false, message: `Model not found for ${providerId}: ${modelId}` }
           }
-          if (!applyProviderModel(providerId, modelId, true)) return { ok: false, message: `Failed to switch model: ${providerId}/${modelId}` }
+          const nextModelInfo = providerModels()[providerId]?.find((entry) => entry.id === modelId)
+          if (!applyProviderModel(providerId, modelId, true, nextModelInfo)) return { ok: false, message: `Failed to switch model: ${providerId}/${modelId}` }
           return { ok: true, message: `Model switched to ${providerId}/${modelId}` }
         },
         mode: mode(),
@@ -3355,6 +3395,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           width={SIDEBAR_WIDTH}
           provider={providerLabel()}
           model={modelLabel()}
+          modelInfo={modelInfoLabel()}
           sessionTitle={sessionMeta()?.title}
           cwd={currentCwd()}
           sessionId={sessionId()}
@@ -3383,6 +3424,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             width={SIDEBAR_WIDTH}
             provider={providerLabel()}
             model={modelLabel()}
+            modelInfo={modelInfoLabel()}
             sessionTitle={sessionMeta()?.title}
             cwd={currentCwd()}
             sessionId={sessionId()}

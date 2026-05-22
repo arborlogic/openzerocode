@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { Provider, type Chunk, type CompletionRequest, type CompletionResult, type ToolCall, type Usage } from "./types"
+import { Provider, type Chunk, type CompletionRequest, type CompletionResult, type ModelInfo, type ToolCall, type Usage } from "./types"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 // Zero-API streams using the OpenAI Responses API SSE format,
@@ -174,7 +174,14 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             fetch(`${baseURL}/models`, { headers: headers() })
           )
           const json = yield* Effect.promise(() => res.json()) as Effect.Effect<any>
-          return (json.data ?? []).map((m: any) => m.id) as string[]
+          return (json.data ?? []).map((m: any) => ({
+            id: m.id,
+            contextLimit: typeof m.context_window === "number" ? m.context_window : undefined,
+            pricing:
+              typeof m.input_price === "number" && typeof m.output_price === "number"
+                ? { input: m.input_price, output: m.output_price }
+                : undefined,
+          } satisfies ModelInfo)) as ModelInfo[]
         }).pipe(Effect.orDie)
 
       return { complete, stream, models }
