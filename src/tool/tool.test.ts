@@ -1,7 +1,8 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { readFileSync, writeFileSync, mkdtempSync, existsSync, mkdirSync } from "fs"
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, mkdirSync, readdirSync, rmSync } from "fs"
 import { join } from "path"
+import { homedir } from "os"
 import { tmpdir } from "os"
 import { Effect, Schema } from "effect"
 import { Def, Context, Result } from "./types"
@@ -193,10 +194,22 @@ describe("edit tool", () => {
 })
 
 describe("web_fetch tool", () => {
+  const originalFetch = globalThis.fetch
+
   it("fetches a URL", async () => {
-    const fetch = await Effect.runPromise(WebFetchTool)
-    const result = await Effect.runPromise(fetch.execute({ url: "https://example.com", format: "text" }, testCtx()))
-    assert.equal(result.title, "Fetched https://example.com")
-    assert.ok(result.output.includes("Example Domain"))
+    globalThis.fetch = (async () =>
+      new Response("<html><body><h1>Example Domain</h1></body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      })) as unknown as typeof fetch
+
+    try {
+      const fetchTool = await Effect.runPromise(WebFetchTool)
+      const result = await Effect.runPromise(fetchTool.execute({ url: "https://example.com", format: "text" }, testCtx()))
+      assert.equal(result.title, "Fetched https://example.com")
+      assert.ok(result.output.includes("Example Domain"))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 })

@@ -8,6 +8,7 @@ export class Context {
   readonly root: string
   readonly ask: (input: Omit<PermissionRequest, "id">) => Effect.Effect<void>
   readonly metadata: (input: { title?: string; metadata?: Metadata }) => Effect.Effect<void>
+  readonly recoveryGroupId?: string
 
   constructor(input: {
     abort: AbortSignal
@@ -15,12 +16,14 @@ export class Context {
     root: string
     ask: (input: Omit<PermissionRequest, "id">) => Effect.Effect<void>
     metadata: (input: { title?: string; metadata?: Metadata }) => Effect.Effect<void>
+    recoveryGroupId?: string
   }) {
     this.abort = input.abort
     this.cwd = input.cwd
     this.root = input.root
     this.ask = input.ask
     this.metadata = input.metadata
+    this.recoveryGroupId = input.recoveryGroupId
   }
 }
 

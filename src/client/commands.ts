@@ -3,6 +3,8 @@ import { HELP_CONTENT } from "./help-content"
 import type { DisplayBlock } from "./tui"
 import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
+import { isExperimentEnabled, setExperimentEnabled } from "./experiments"
+import { restoreRecoveryCheckpoint } from "../tool/recovery"
 
 export type SlashCommandDef = {
   name: string
@@ -34,6 +36,7 @@ export type CommandContext = {
   openModelList: () => void
   openHelp: () => void
   openUsageDashboard: () => void
+  openRecoveryList: () => void
   compactSession: () => Promise<void>
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
@@ -47,6 +50,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
   { name: "mode", description: "Toggle build / plan mode" },
   { name: "memory", description: "Show loaded workspace memory files and prompt-memory status" },
+  { name: "experiment", description: "Manage experiments: /experiment recovery on|off|list|restore <id>" },
   { name: "model", description: "Switch model: /model <name> or /model list" },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
@@ -131,6 +135,58 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "usage") {
     ctx.openUsageDashboard()
+    return true
+  }
+
+  if (cmd === "experiment") {
+    const [featureRaw, actionRaw, ...rest] = arg.split(/\s+/).filter(Boolean)
+    const feature = featureRaw?.toLowerCase()
+    const action = actionRaw?.toLowerCase()
+
+    if (!feature || feature === "status") {
+      notifyCommand(ctx, "info", "Experiments", `Lightweight recovery: ${isExperimentEnabled("lightweightRecovery") ? "ON" : "OFF"}`)
+      return true
+    }
+
+    if (feature !== "recovery" && feature !== "lightweight-recovery") {
+      notifyCommand(ctx, "error", "Unknown experiment", "Usage: /experiment recovery on|off|status|list|restore <id>")
+      return true
+    }
+
+    if (!action || action === "status") {
+      notifyCommand(ctx, "info", "Lightweight recovery", isExperimentEnabled("lightweightRecovery") ? "ON" : "OFF")
+      return true
+    }
+
+    if (action === "on" || action === "enable") {
+      setExperimentEnabled("lightweightRecovery", true)
+      notifyCommand(ctx, "success", "Lightweight recovery enabled", "write/edit tools will save pre-change checkpoints")
+      return true
+    }
+
+    if (action === "off" || action === "disable") {
+      setExperimentEnabled("lightweightRecovery", false)
+      notifyCommand(ctx, "success", "Lightweight recovery disabled")
+      return true
+    }
+
+    if (action === "list") {
+      ctx.openRecoveryList()
+      return true
+    }
+
+    if (action === "restore") {
+      const id = rest.join(" ").trim()
+      if (!id) {
+        notifyCommand(ctx, "error", "Missing checkpoint id", "Usage: /experiment recovery restore <id>")
+        return true
+      }
+      const result = await restoreRecoveryCheckpoint(process.cwd(), id)
+      notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "Recovery restored" : "Recovery restore failed", result.message)
+      return true
+    }
+
+    notifyCommand(ctx, "error", "Invalid experiment action", "Usage: /experiment recovery on|off|status|list|restore <id>")
     return true
   }
 

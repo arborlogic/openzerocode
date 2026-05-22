@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
 import { readFile, writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
+import { createRecoveryCheckpoint, finalizeRecoveryCheckpoint } from "./recovery"
 
 const Parameters = Schema.Struct({
   filePath: Schema.String,
@@ -30,7 +31,11 @@ export const EditTool = Effect.gen(function* () {
           }
           const updated = content.replaceAll(args.oldString, args.newString)
           const count = content.split(args.oldString).length - 1
-          yield* Effect.promise(() => writeFile(target, updated, "utf-8"))
+          yield* Effect.promise(async () => {
+            const checkpoint = await createRecoveryCheckpoint({ cwd: ctx.cwd, filePath: args.filePath, target, operation: "edit", groupId: ctx.recoveryGroupId })
+            await writeFile(target, updated, "utf-8")
+            await finalizeRecoveryCheckpoint(checkpoint, target)
+          })
           return new Result({ title: "Edited", output: `Replaced ${count} occurrence(s) in ${args.filePath}` })
         }
 
@@ -39,7 +44,11 @@ export const EditTool = Effect.gen(function* () {
           return new Result({ title: "Error", output: `oldString not found in file: ${args.filePath}` })
         }
         const updated = content.slice(0, idx) + args.newString + content.slice(idx + args.oldString.length)
-        yield* Effect.promise(() => writeFile(target, updated, "utf-8"))
+        yield* Effect.promise(async () => {
+          const checkpoint = await createRecoveryCheckpoint({ cwd: ctx.cwd, filePath: args.filePath, target, operation: "edit", groupId: ctx.recoveryGroupId })
+          await writeFile(target, updated, "utf-8")
+          await finalizeRecoveryCheckpoint(checkpoint, target)
+        })
         return new Result({ title: "Edited", output: `Replaced 1 occurrence in ${args.filePath}` })
       }).pipe(Effect.orDie),
   })

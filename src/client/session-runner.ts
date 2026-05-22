@@ -239,6 +239,8 @@ export async function* streamSession(
       return resultHistory
     }
 
+    const recoveryGroupId = toolCalls.length > 1 ? toolCalls.map((call) => call.id).join(":") : undefined
+
     for (const call of toolCalls) {
       if (options.abort.aborted) {
         return resultHistory
@@ -266,6 +268,7 @@ export async function* streamSession(
             catch: (e) => new Error(String(e)),
           }) as Effect.Effect<void>,
           metadata: () => Effect.void,
+          recoveryGroupId,
         })).pipe(Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` })))),
       )
 

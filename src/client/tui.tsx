@@ -36,6 +36,8 @@ import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
+import { isExperimentEnabled, setExperimentEnabled } from "./experiments"
+import { formatRecoveryCheckpoint, listRecoveryCheckpoints, restoreRecoveryCheckpoint } from "../tool/recovery"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
@@ -796,7 +798,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "recovery" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -809,6 +811,8 @@ function App() {
   const [sessionRevision, setSessionRevision] = createSignal(0)
   const [lockPollRevision, setLockPollRevision] = createSignal(0)
   const [geassRevision, setGeassRevision] = createSignal(0)
+  const [experimentRevision, setExperimentRevision] = createSignal(0)
+  const [recoveryRevision, setRecoveryRevision] = createSignal(0)
   const [selectionRevision, setSelectionRevision] = createSignal(0)
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
@@ -816,6 +820,7 @@ function App() {
   const [providerModels, setProviderModels] = createSignal<Record<string, ModelInfo[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
+  const [recoveryCheckpoints, setRecoveryCheckpoints] = createSignal<Awaited<ReturnType<typeof listRecoveryCheckpoints>>>([])
   const streamState = createStreamState()
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [toasts, setToasts] = createSignal<ToastItem[]>([])
@@ -1076,6 +1081,19 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     void loadModelsForProvider(providerId)
   }
 
+  const openRecoveryList = () => {
+    setShowPalette(true)
+    setPalettePendingDelete(null)
+    setPaletteInput("")
+    setPaletteMode("recovery")
+    setPaletteIndex(0)
+    void listRecoveryCheckpoints(process.cwd()).then((checkpoints) => {
+      setRecoveryCheckpoints(checkpoints)
+      setRecoveryRevision((value) => value + 1)
+      setPaletteIndex(firstSelectablePaletteIndex(recoveryPaletteItems()))
+    })
+  }
+
   const openProviderKeyPalette = (providerId: string) => {
     setPalettePendingDelete(null)
     setPaletteProviderKeyTarget(providerId)
@@ -1224,6 +1242,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
     geassRevision()
+    experimentRevision()
     return [
       {
         label: "INPUT",
@@ -1362,7 +1381,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Experiment",
-        hint: "GEASS …",
+        hint: `GEASS, recovery ${isExperimentEnabled("lightweightRecovery") ? "ON" : "OFF"}`,
         onSelect: () => {
           setPalettePendingDelete(null)
           setPaletteMode("geass")
@@ -1810,7 +1829,30 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   
   const geassPaletteItems = createMemo<PaletteItem[]>(() => {
     geassRevision()
+    experimentRevision()
+    const recoveryEnabled = isExperimentEnabled("lightweightRecovery")
     return [
+      {
+        label: "EXPERIMENTS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: recoveryEnabled ? "Disable lightweight recovery" : "Enable lightweight recovery",
+        hint: recoveryEnabled ? "ON" : "OFF (default)",
+        onSelect: () => {
+          setExperimentEnabled("lightweightRecovery", !recoveryEnabled)
+          setExperimentRevision(v => v + 1)
+          setStatus(`lightweight recovery ${!recoveryEnabled ? "enabled" : "disabled"}`)
+          setShowPalette(false)
+        },
+      },
+      {
+        label: "Recovery checkpoints",
+        hint: "select to restore",
+        onSelect: openRecoveryList,
+      },
+      { label: "", onSelect: () => {} },
       {
         label: "GEASS",
         kind: "section",
@@ -1848,6 +1890,46 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
     ]
+  })
+
+  const recoveryPaletteItems = createMemo<PaletteItem[]>(() => {
+    recoveryRevision()
+    const checkpoints = recoveryCheckpoints()
+    const items: PaletteItem[] = [
+      {
+        label: "RECOVERY CHECKPOINTS",
+        kind: "section",
+        onSelect: () => {},
+      },
+    ]
+
+    if (checkpoints.length === 0) {
+      items.push({ label: "No checkpoints found", kind: "section", onSelect: () => {} })
+    }
+
+    for (const checkpoint of checkpoints.slice(0, 50)) {
+      items.push({
+        label: formatRecoveryCheckpoint(checkpoint),
+        hint: "restore",
+        onSelect: async () => {
+          const result = await restoreRecoveryCheckpoint(process.cwd(), checkpoint.id)
+          showToast(result.ok ? "success" : "error", result.ok ? "Recovery restored" : "Recovery restore failed", result.message)
+          setStatus(result.message)
+          setShowPalette(false)
+          setPaletteMode("actions")
+        },
+      })
+    }
+
+    items.push({ label: "", onSelect: () => {} })
+    items.push({
+      label: "← Back",
+      onSelect: () => {
+        setPaletteMode("geass")
+        setPaletteIndex(firstSelectablePaletteIndex(geassPaletteItems()))
+      },
+    })
+    return items
   })
 
   const userMessageActionItems = createMemo<PaletteItem[]>(() => {
@@ -1903,6 +1985,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? displayPaletteItems()
           : paletteMode() === "geass"
             ? geassPaletteItems()
+          : paletteMode() === "recovery"
+            ? recoveryPaletteItems()
           : paletteMode() === "userMessageActions"
             ? userMessageActionItems()
           : actionPaletteItems(),
@@ -2591,6 +2675,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         openUsageDashboard: () => {
           setShowUsageDashboard(true)
         },
+        openRecoveryList,
         compactSession: compactCurrentSession,
         refreshSessions,
         codexLogin: runCodexLogin,
@@ -3530,6 +3615,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Key name · ${paletteCodexKeynameTarget()}`
                         : paletteMode() === "timeline"
                           ? "Timeline"
+                          : paletteMode() === "recovery"
+                            ? "Recovery Checkpoints"
                           : paletteMode() === "userMessageActions"
                             ? "Message Actions"
                       : "Command Palette"}
@@ -3615,6 +3702,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   ? "Enter confirm  •  Esc back"
                   : paletteMode() === "sessions"
                   ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                  : paletteMode() === "recovery"
+                  ? "Type to filter  •  ↑↓ navigate  •  Enter restore  •  Esc back"
                   : paletteMode() === "directories"
                   ? "Type path  •  Tab complete  •  Enter select/change  •  Esc back"
                   : paletteMode() === "models"

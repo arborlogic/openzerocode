@@ -64,6 +64,8 @@ export function runLoop(
         return history
       }
 
+      const recoveryGroupId = toolCalls.length > 1 ? toolCalls.map((call) => call.id).join(":") : undefined
+
       for (const call of toolCalls) {
         const args = parseToolArgs(call.function.arguments ?? "{}")
         const def = tools.find((t) => t.id === (call.function.name ?? ""))
@@ -87,6 +89,7 @@ export function runLoop(
           root: config.root,
           ask: (input) => config.ask(input),
           metadata: () => Effect.void,
+          recoveryGroupId,
         })
 
         const toolResult = yield* def.execute(args, ctx).pipe(

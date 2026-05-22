@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
 import { mkdir, writeFile } from "fs/promises"
 import { dirname, resolve } from "path"
+import { createRecoveryCheckpoint, finalizeRecoveryCheckpoint } from "./recovery"
 
 const Parameters = Schema.Struct({
   filePath: Schema.String,
@@ -22,7 +23,9 @@ export const WriteTool = Effect.gen(function* () {
         const target = resolve(ctx.cwd, args.filePath)
         yield* Effect.promise(async () => {
           await mkdir(dirname(target), { recursive: true })
+          const checkpoint = await createRecoveryCheckpoint({ cwd: ctx.cwd, filePath: args.filePath, target, operation: "write", groupId: ctx.recoveryGroupId })
           await writeFile(target, args.content, "utf-8")
+          await finalizeRecoveryCheckpoint(checkpoint, target)
         })
         return new Result({ title: "Written", output: `Wrote ${args.filePath}` })
       }).pipe(Effect.orDie),

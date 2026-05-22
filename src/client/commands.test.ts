@@ -34,6 +34,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
     openUsageDashboard: mock(() => {}),
+    openRecoveryList: mock(() => {}),
     compactSession: mock(() => Promise.resolve()),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
@@ -56,6 +57,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
     assert.ok(names.includes("commit"))
+    assert.ok(names.includes("experiment"))
     assert.ok(names.includes("compact"))
     assert.ok(names.includes("exit"))
   })
@@ -212,6 +214,28 @@ describe("executeCommand", () => {
       const args = first.arguments ?? first
       assert.equal(args[0], "info")
       assert.equal(args[1], "Workspace memory")
+    })
+  })
+
+  describe("/experiment", () => {
+    it("shows experiment status", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/experiment", ctx)
+      assert.ok(result)
+      const calls = (ctx.showToast as any).mock.calls
+      assert.ok(calls.length > 0)
+      const first = calls[0]
+      const args = first.arguments ?? first
+      assert.equal(args[0], "info")
+      assert.equal(args[1], "Experiments")
+      assert.ok(String(args[2]).includes("Lightweight recovery"))
+    })
+
+    it("opens recovery list palette", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/experiment recovery list", ctx)
+      assert.ok(result)
+      assert.ok((ctx.openRecoveryList as any).mock.calls.length > 0)
     })
   })
 
