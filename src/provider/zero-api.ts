@@ -74,11 +74,12 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const complete = (req: CompletionRequest): Effect.Effect<CompletionResult> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          const { max_tokens, ...rest } = req as any
+          // Strip non-wire fields (max_tokens duplicated below if needed; signal is local-only).
+          const { max_tokens, signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages), model, stream: false }
 
           const res = yield* Effect.promise(() =>
-            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body) })
+            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal })
           )
           if (!res.ok) {
             const text = yield* Effect.promise(() => res.text())
@@ -101,11 +102,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const stream = (req: CompletionRequest): Effect.Effect<ReadableStream<Chunk>> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          const { max_tokens, ...rest } = req as any
+          const { max_tokens, signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages), model, stream: true }
 
           const res = yield* Effect.promise(() =>
-            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body) })
+            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal })
           )
           if (!res.ok) {
             const text = yield* Effect.promise(() => res.text())

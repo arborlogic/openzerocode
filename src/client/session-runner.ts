@@ -123,6 +123,11 @@ export async function* streamSession(
           messages: requestMessages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           stream: true,
+          // Threading abort into the provider's fetch so the upstream HTTP
+          // request is torn down when the user cancels — without this, the
+          // read loop below would break out but the network request kept
+          // running in the background until the upstream finished.
+          signal: options.abort,
         })
       })).catch((error) => {
         lastError = error
@@ -155,9 +160,25 @@ export async function* streamSession(
     let lastUsageCachedInput = 0
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
+    // If the user aborts while we're blocked inside reader.read() waiting for
+    // the next chunk, the check at the top of the loop wouldn't fire — wire
+    // the abort directly into reader.cancel() so the read unblocks immediately
+    // and the underlying ReadableStream tears down the source fetch.
+    const abortHandler = () => { reader.cancel().catch(() => {}) }
+    options.abort.addEventListener("abort", abortHandler, { once: true })
+    try {
     while (true) {
       if (options.abort.aborted) break
-      const { done, value } = await reader.read()
+      let done: boolean
+      let value: any
+      try {
+        const result = await reader.read()
+        done = result.done ?? false
+        value = result.value
+      } catch {
+        // Reader was cancelled (e.g. by abort) or upstream errored mid-stream.
+        break
+      }
       if (done) break
       if (value.finish_reason) finishReason = value.finish_reason
       if (value.usage) {
@@ -194,6 +215,13 @@ export async function* streamSession(
         }
         yield { type: "status", text: tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool..." }
       }
+    }
+    } finally {
+      options.abort.removeEventListener("abort", abortHandler)
+      // Best-effort: if we exited the loop without aborting (e.g. normal done),
+      // releaseLock() lets the stream be GC'd. If we aborted, the cancel above
+      // already tore it down.
+      try { reader.releaseLock() } catch {}
     }
 
     if (!options.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {

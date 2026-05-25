@@ -40,6 +40,13 @@ export type CompletionRequest = {
   stream: boolean
   max_tokens?: number
   temperature?: number
+  /**
+   * Optional AbortSignal threaded into the underlying fetch so the upstream
+   * HTTP request is torn down promptly when the caller cancels. Without this,
+   * stream consumers can break out of their read loop but the network request
+   * keeps running in the background until the upstream finishes.
+   */
+  signal?: AbortSignal
 }
 
 export type Usage = {

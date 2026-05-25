@@ -97,11 +97,13 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
 
       const complete = (req: CompletionRequest) =>
         Effect.gen(function* () {
+          const { signal, ...wire } = req
           const res = yield* Effect.promise(() =>
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
               headers: headers(),
-              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: false }),
+              body: JSON.stringify({ ...wire, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: false }),
+              signal,
             })
           )
           if (!res.ok) {
@@ -124,11 +126,13 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
 
       const stream = (req: CompletionRequest) =>
         Effect.gen(function* () {
+          const { signal, ...wire } = req
           const res = yield* Effect.promise(() =>
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
               headers: headers(),
-              body: JSON.stringify({ ...req, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true, stream_options: { include_usage: true } }),
+              body: JSON.stringify({ ...wire, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true, stream_options: { include_usage: true } }),
+              signal,
             })
           )
           if (!res.ok) {

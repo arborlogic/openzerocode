@@ -189,11 +189,13 @@ export const layer = (input: { model?: string }) =>
       const complete = (req: CompletionRequest) =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
+          const { signal, ...wire } = req
           const res = yield* Effect.promise(async () =>
             fetch(CODEX_API_ENDPOINT, {
               method: "POST",
               headers: await headers(),
-              body: JSON.stringify({ ...toCodexRequestBody({ ...req, model }), stream: false }),
+              body: JSON.stringify({ ...toCodexRequestBody({ ...wire, model }), stream: false }),
+              signal,
             })
           )
           if (!res.ok) {
@@ -207,11 +209,13 @@ export const layer = (input: { model?: string }) =>
       const stream = (req: CompletionRequest) =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
+          const { signal, ...wire } = req
           const res = yield* Effect.promise(async () =>
             fetch(CODEX_API_ENDPOINT, {
               method: "POST",
               headers: await headers(),
-              body: JSON.stringify({ ...toCodexRequestBody({ ...req, model }), stream: true }),
+              body: JSON.stringify({ ...toCodexRequestBody({ ...wire, model }), stream: true }),
+              signal,
             })
           )
           if (!res.ok) {
