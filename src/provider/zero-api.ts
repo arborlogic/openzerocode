@@ -93,6 +93,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             model: json.model ?? model,
             message: createAssistantMessage({
               content: choice?.message?.content ?? undefined,
+              reasoning_content: choice?.message?.reasoning_content ?? undefined,
               tool_calls: choice?.message?.tool_calls,
             }),
             usage: usageFromChatCompletion(json.usage) ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 },
@@ -154,7 +155,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       const delta = raw.choices[0]?.delta ?? {}
                       const finish = raw.choices[0]?.finish_reason
                       const chunk: Chunk = {
-                        delta: { content: delta.content ?? undefined },
+                        delta: { content: delta.content ?? undefined, reasoning_content: delta.reasoning_content ?? undefined },
                         finish_reason: finish ?? undefined,
                         usage: raw.usage ? usageFromChatCompletion(raw.usage) : undefined,
                       }
