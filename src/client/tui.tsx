@@ -785,6 +785,7 @@ function App() {
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
+  const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   type PendingApproval = {
@@ -2426,6 +2427,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         mode: mode(),
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
+        reasoning_effort: reasoningEffort(),
         onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),
@@ -2573,6 +2575,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
         mode: mode(),
         setMode,
+        reasoningEffort: reasoningEffort(),
+        setReasoningEffort,
         messages,
         setMessages,
         setDraft: setComposerText,

@@ -3,6 +3,7 @@ import { HELP_CONTENT } from "./help-content"
 import type { DisplayBlock } from "./tui"
 import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
+import { getModelConfig } from "../provider/models"
 
 export type SlashCommandDef = {
   name: string
@@ -19,6 +20,8 @@ export type CommandContext = {
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
   mode: "build" | "plan"
   setMode: (mode: "build" | "plan") => void
+  reasoningEffort: "low" | "medium" | "high" | "max" | undefined
+  setReasoningEffort: (effort: "low" | "medium" | "high" | "max" | undefined) => void
   messages: () => Message[]
   setMessages: Setter<Message[]>
   setDraft: (text: string) => void
@@ -46,6 +49,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
   { name: "mode", description: "Toggle build / plan mode" },
+  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off" },
   { name: "memory", description: "Show loaded workspace memory files and prompt-memory status" },
   { name: "model", description: "Switch model: /model <name> or /model list" },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
@@ -114,6 +118,23 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
       notifyCommand(ctx, "success", "Mode updated", `Mode set to ${arg}`)
     } else {
       notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan")
+    }
+    return true
+  }
+
+  if (cmd === "reasoning") {
+    if (!arg || arg === "off") {
+      ctx.setReasoningEffort(undefined)
+      notifyCommand(ctx, "info", "Reasoning effort", "Disabled (default)")
+    } else if (arg === "low" || arg === "medium" || arg === "high" || arg === "max") {
+      ctx.setReasoningEffort(arg)
+      const modelCfg = getModelConfig(ctx.currentModel, undefined)
+      const msg = modelCfg.reasoning
+        ? `Set to ${arg}`
+        : `Set to ${arg} (note: current model "${ctx.currentModel}" does not support reasoning_effort; it will be ignored until you switch to a reasoning model like deepseek-v4-pro)`
+      notifyCommand(ctx, modelCfg.reasoning ? "success" : "warning", "Reasoning effort", msg)
+    } else {
+      notifyCommand(ctx, "error", "Invalid reasoning effort", "Usage: /reasoning low|medium|high|max|off")
     }
     return true
   }

@@ -28,6 +28,7 @@ type SessionUi = {
   mode: RunMode
   provider: string
   keyName: string
+  reasoning_effort?: "low" | "medium" | "high" | "max"
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
 }
 
@@ -46,6 +47,8 @@ export type StreamOptions = {
   mode: RunMode
   provider: string
   keyName: string
+  /** Reasoning effort for supported models (e.g. DeepSeek V4 Pro, OpenAI o-series). */
+  reasoning_effort?: "low" | "medium" | "high" | "max"
   /** Working directory passed to tools as cwd/root. Defaults to process.cwd(). */
   workdir?: string
 }
@@ -71,6 +74,17 @@ export async function* streamSession(
     content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
   }
   const workdir = options.workdir ?? process.cwd()
+  // Only pass reasoning_effort to models that support it (e.g. DeepSeek V4 Pro).
+  // Sending it to non-reasoning models can cause API errors (OpenAI) or is silently ignored.
+  const effectiveReasoningEffort = (() => {
+    if (!options.reasoning_effort) return undefined
+    const modelCfg = getModelConfig(options.model, options.modelInfo)
+    if (!modelCfg.reasoning) {
+      // Silently skip: the /reasoning command already warns the user in the UI.
+      return undefined
+    }
+    return options.reasoning_effort
+  })()
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(options.mode) }
   const userMessage: Message = { role: "user", content: userInput }
   const compactionMessage: Message[] = runtime.compactionSummary
@@ -123,6 +137,7 @@ export async function* streamSession(
           messages: requestMessages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           stream: true,
+          reasoning_effort: effectiveReasoningEffort,
           // Threading abort into the provider's fetch so the upstream HTTP
           // request is torn down when the user cancels — without this, the
           // read loop below would break out but the network request kept
@@ -330,6 +345,7 @@ export async function runSession(
     mode: ui.mode,
     provider: ui.provider,
     keyName: ui.keyName,
+    reasoning_effort: ui.reasoning_effort,
   }, runtime)
 
   while (true) {
