@@ -18,6 +18,14 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     contextLimit: 128_000,
     pricing: { input: 0, output: 0 },
   },
+  "deepseek-v4-flash": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.14, output: 0.28 },
+  },
+  "deepseek-v4-pro": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.74, output: 3.48 },
+  },
   "gpt-5.4": {
     contextLimit: 1_000_000,
     pricing: { input: 2.5, output: 15 },
