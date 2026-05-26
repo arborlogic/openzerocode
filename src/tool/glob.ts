@@ -9,26 +9,43 @@ const Parameters = Schema.Struct({
 })
 type Args = { pattern: string; path?: string }
 
-function matchGlob(pattern: string, name: string): boolean {
-  const re = new RegExp("^" + pattern.replace(/\*/g, ".*").replace(/\?/g, ".") + "$")
-  return re.test(name)
+function matchGlob(pattern: string, candidate: string): boolean {
+  const segments = pattern.split("/")
+  const target = candidate.split(path.sep).join("/")
+
+  const segmentToRegex = (segment: string) => segment
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+
+  const regexSource = segments.map((segment) => {
+    if (segment === "**") return ".*"
+    return segmentToRegex(segment)
+  }).join("/")
+
+  return new RegExp(`^${regexSource}$`).test(target)
 }
 
-async function walkFiles(dir: string, pattern: string, abs: boolean): Promise<string[]> {
+async function walkFiles(root: string, searchRoot: string, pattern: string): Promise<string[]> {
   const results: string[] = []
-  async function walk(d: string) {
-    const entries = await readdir(d, { withFileTypes: true })
+
+  async function walk(current: string) {
+    const entries = await readdir(current, { withFileTypes: true })
     for (const entry of entries) {
-      const full = path.join(d, entry.name)
+      const full = path.join(current, entry.name)
       if (entry.isDirectory()) {
         if (entry.name.startsWith(".") || entry.name === "node_modules") continue
         await walk(full)
-      } else if (matchGlob(pattern, entry.name)) {
-        results.push(abs ? full : entry.name)
+      } else {
+        const relative = path.relative(root, full)
+        if (matchGlob(pattern, relative)) {
+          results.push(full)
+        }
       }
     }
   }
-  await walk(dir)
+
+  await walk(searchRoot)
   return results
 }
 
@@ -42,12 +59,12 @@ export const GlobTool = Effect.gen(function* () {
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
         yield* ctx.ask({ permission: "glob", patterns: [args.pattern] })
-        const cwd = args.path ?? ctx.cwd
-        const paths = yield* Effect.promise(() => walkFiles(cwd, args.pattern, true))
+        const searchRoot = path.resolve(ctx.cwd, args.path ?? ".")
+        const paths = yield* Effect.promise(() => walkFiles(searchRoot, searchRoot, args.pattern))
         return new Result({
           title: `Glob: ${args.pattern}`,
           output: paths.length > 0 ? paths.join("\n") : "(no matches)",
         })
-      }),
+      }).pipe(Effect.orDie),
   })
 })

@@ -115,7 +115,7 @@ export function setCurrentSessionId(id: string | null) {
   writeIndex(index)
 }
 
-export function createSession(model: string, provider: string, messages?: Message[]): SessionMeta {
+export function createSession(model: string, provider: string, messages?: Message[], workdir?: string): SessionMeta {
   const id = generateId()
   const now = Date.now()
   const meta: SessionMeta = {
@@ -126,7 +126,7 @@ export function createSession(model: string, provider: string, messages?: Messag
     messageCount: messages?.length ?? 0,
     createdAt: now,
     updatedAt: now,
-    directory: process.cwd(),
+    directory: workdir ?? process.cwd(),
   }
   const index = readIndex()
   index.sessions.push(meta)

@@ -8,10 +8,10 @@ import { existsSync, readdirSync, statSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { platform } from "os"
 import { promisify } from "node:util"
-import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel } from "../provider/index"
+import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
-import { Provider } from "../provider/types"
+import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
@@ -22,11 +22,11 @@ import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToas
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { getKnownModelConfig, getModelConfig, estimateTokens } from "../provider/models"
-import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages } from "./session-compact"
+import { getKnownModelConfig, getModelConfig } from "../provider/models"
+import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, estimateContextTokens, CONTEXT_WARNING_THRESHOLD } from "./session-compact"
 import { formatProviderError } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
-import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig } from "../provider/config"
+import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
 import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
@@ -56,18 +56,46 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log(`openzerocode v${VERSION}`)
   console.log()
   console.log("Usage: openzerocode [options] [prompt...]")
+  console.log("       openzerocode serve [--port PORT] [--host HOST]")
   console.log()
   console.log("Options:")
   console.log("  -v, --version            Show version number")
   console.log("  -h, --help               Show this help message")
+  console.log()
+  console.log("Commands:")
+  console.log("  serve                    Start an HTTP server exposing the streaming session API")
+  console.log("    --port PORT            Port to listen on (default: 4096)")
+  console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
   console.log()
   console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
   console.log("Otherwise, the terminal UI is launched.")
   process.exit(0)
 }
 
+if (args[0] === "serve") {
+  const flagValue = (name: string, fallback: string): string => {
+    const eq = args.find((a) => a.startsWith(`${name}=`))
+    if (eq) return eq.slice(name.length + 1)
+    const idx = args.indexOf(name)
+    if (idx >= 0 && args[idx + 1]) return args[idx + 1]!
+    return fallback
+  }
+  const port = Number.parseInt(flagValue("--port", "4096"), 10)
+  const host = flagValue("--host", "127.0.0.1")
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    console.error(`Invalid port: ${flagValue("--port", "4096")}`)
+    process.exit(1)
+  }
+  const { startServer } = await import("../server/index")
+  await startServer({ port, host })
+  // Bun.serve() keeps the event loop alive but returns immediately. Block here
+  // so the rest of this module (which boots the TUI) never executes.
+  await new Promise<never>(() => {})
+}
+
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
+let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider, currentModel)
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
@@ -141,8 +169,13 @@ type DisplayTurn = {
   userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
+function refreshCurrentModelInfo() {
+  currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
+}
+
 function rebuildLayer() {
   currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
+  refreshCurrentModelInfo()
 }
 
 function defaultModelForCurrentProvider(providerId: string) {
@@ -363,8 +396,8 @@ function fmtPrice(value: number) {
   return `$${value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`
 }
 
-function modelHint(model: string) {
-  const cfg = getKnownModelConfig(model)
+function modelHint(model: string, fallback?: ModelInfo) {
+  const cfg = getKnownModelConfig(model) ?? (fallback?.contextLimit ? getModelConfig(model, fallback) : undefined)
   if (!cfg) return ""
   if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
   if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
@@ -749,6 +782,7 @@ function App() {
   const [status, setStatus] = createSignal("waiting for input")
   const [draft, setDraft] = createSignal("")
   const [running, setRunning] = createSignal(false)
+  const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
@@ -762,7 +796,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -779,7 +813,7 @@ function App() {
   const [providerConfigRevision, setProviderConfigRevision] = createSignal(0)
   const [gitRefreshRevision, setGitRefreshRevision] = createSignal(0)
   const [cwdRevision, setCwdRevision] = createSignal(0)
-  const [providerModels, setProviderModels] = createSignal<Record<string, string[]>>({})
+  const [providerModels, setProviderModels] = createSignal<Record<string, ModelInfo[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
   const streamState = createStreamState()
@@ -834,7 +868,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   createEffect(() => {
-    if (!running()) return
+    if (!running() && !compacting()) return
     const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
     return () => clearInterval(id)
   })
@@ -952,18 +986,24 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     return currentModel
   })
 
+  const modelInfoLabel = createMemo(() => {
+    selectionRevision()
+    return currentModelInfo
+  })
+
   const activeProviderKeyLabel = createMemo(() => {
     providerConfigRevision()
     return getActiveConfiguredProviderKeyName(currentProvider) ?? "none"
   })
 
-  const applyProviderModel = (providerId: string, model: string, persist = false) => {
+  const applyProviderModel = (providerId: string, model: string, persist = false, modelInfo?: ModelInfo) => {
     try {
       const nextProvider = providerId
       const nextModel = nextProvider === "opencode-zen" ? normalizeBigPickleModel(model) : model
       currentLayer = Layer.merge(buildLayer(nextProvider, nextModel), toolLayer)
       currentProvider = nextProvider
       currentModel = nextModel
+      currentModelInfo = modelInfo ?? getCachedModelInfo(nextProvider, nextModel)
       setSelectionRevision((value) => value + 1)
       if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       refreshSessions()
@@ -976,6 +1016,14 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
 
   const loadModelsForProvider = async (providerId: string) => {
     if (providerModels()[providerId] || providerModelsLoading() === providerId) return
+    const cached = getCachedModels(providerId)
+    if (cached.length > 0) {
+      setProviderModels((prev) => ({ ...prev, [providerId]: cached }))
+      if (providerId === currentProvider) {
+        currentModelInfo = cached.find((model) => model.id === currentModel) ?? currentModelInfo
+        setSelectionRevision((value) => value + 1)
+      }
+    }
     setProviderModelsLoading(providerId)
     setProviderModelsError((prev) => ({ ...prev, [providerId]: "" }))
     try {
@@ -987,8 +1035,13 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
           return yield* provider.models()
         }).pipe(Effect.provide(layer)),
       )
-      const unique = [...new Set(models)].sort((a, b) => a.localeCompare(b))
-      setProviderModels((prev) => ({ ...prev, [providerId]: unique.length > 0 ? unique : [defaultModel] }))
+      const unique = setCachedModels(providerId, models)
+      const resolved = unique.length > 0 ? unique : [{ id: defaultModel }]
+      setProviderModels((prev) => ({ ...prev, [providerId]: resolved }))
+      if (providerId === currentProvider) {
+        currentModelInfo = resolved.find((model) => model.id === currentModel) ?? getCachedModelInfo(currentProvider, currentModel)
+        setSelectionRevision((value) => value + 1)
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setProviderModelsError((prev) => ({ ...prev, [providerId]: message }))
@@ -999,7 +1052,16 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
 
   const ensureModelsForProvider = async (providerId: string) => {
     if (!providerModels()[providerId] && providerModelsLoading() !== providerId) {
-      await loadModelsForProvider(providerId)
+      const cached = getCachedModels(providerId)
+      if (cached.length > 0) {
+        setProviderModels((prev) => ({ ...prev, [providerId]: cached }))
+        if (providerId === currentProvider) {
+          currentModelInfo = cached.find((model) => model.id === currentModel) ?? currentModelInfo
+          setSelectionRevision((value) => value + 1)
+        }
+      } else {
+        await loadModelsForProvider(providerId)
+      }
     }
     return providerModels()[providerId] ?? []
   }
@@ -1037,7 +1099,8 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
     setProviderConfigRevision((value) => value + 1)
     await ensureModelsForProvider("openai-codex")
     const model = defaultModelForCurrentProvider("openai-codex")
-    applyProviderModel("openai-codex", model, true)
+    const modelInfo = providerModels()["openai-codex"]?.find((entry) => entry.id === model)
+    applyProviderModel("openai-codex", model, true, modelInfo)
     setStatus("Codex authorized — switched to openai-codex")
     setNotices((prev) => [...prev, {
       kind: "system",
@@ -1460,7 +1523,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const filter = paletteInput().trim().toLowerCase()
     const filteredModels = !filter
       ? models
-      : models.filter((model) => model.toLowerCase().includes(filter))
+      : models.filter((model) => model.id.toLowerCase().includes(filter))
     const visibleModels = filteredModels.slice(0, 10)
     const items: PaletteItem[] = []
 
@@ -1500,13 +1563,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }
 
-    for (const model of visibleModels) {
+    for (const modelInfo of visibleModels) {
+      const model = modelInfo.id
       const isCurrent = providerId === providerLabel() && model === modelLabel()
       items.push({
         label: `${isCurrent ? ">" : " "} ${model}`,
-        hint: truncateText(modelHint(model), PALETTE_HINT_MAX()),
+        hint: truncateText(modelHint(model, modelInfo), PALETTE_HINT_MAX()),
         onSelect: () => {
-          if (!applyProviderModel(providerId, model, true)) return
+          if (!applyProviderModel(providerId, model, true, modelInfo)) return
           setStatus(`provider/model -> ${providerId}/${model}`)
           setShowPalette(false)
           setPaletteMode("actions")
@@ -1574,7 +1638,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               }
               await ensureModelsForProvider("openai-codex")
               const model = defaultModelForCurrentProvider("openai-codex")
-              if (!applyProviderModel("openai-codex", model, true)) {
+              const modelInfo = providerModels()["openai-codex"]?.find((entry) => entry.id === model)
+              if (!applyProviderModel("openai-codex", model, true, modelInfo)) {
                 setStatus("Failed to activate Codex auth")
                 return
               }
@@ -1688,6 +1753,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteNewKeyName("")
           setPaletteInput("")
           setPaletteMode("addProviderKeyName")
+          setPaletteIndex(0)
+        },
+      })
+    }
+    {
+      const currentBaseURL = getStoredProviderConfig(providerId)?.baseURL
+      items.push({
+        label: "Edit base URL...",
+        hint: currentBaseURL ?? "default",
+        onSelect: () => {
+          setPaletteInput(currentBaseURL ?? "")
+          setPaletteMode("editProviderBaseURL")
           setPaletteIndex(0)
         },
       })
@@ -1822,7 +1899,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const paletteItems = createMemo<PaletteItem[]>(() =>
-    paletteMode() === "sessions"
+    paletteMode() === "editProviderBaseURL"
+      ? [
+          { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel · leave blank for default", kind: "section" as const, onSelect: () => {} },
+        ]
+      : paletteMode() === "sessions"
       ? sessionPaletteItems()
       : paletteMode() === "directories"
         ? directoryPaletteItems()
@@ -1847,7 +1929,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1861,14 +1943,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -2050,6 +2132,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   const doSwitchSession = (id: string) => {
+    if (running() || compacting()) {
+      setStatus("cannot switch sessions while busy")
+      showToast("info", "Session busy", "Please wait for the current response or compaction to finish.")
+      return
+    }
     doSaveCurrent()
     const loaded = loadSessionState(id)
     if (loaded?.provider && loaded.model) {
@@ -2116,6 +2203,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   };
 
   const doCreateNewSession = () => {
+    if (running() || compacting()) {
+      setStatus("cannot create a session while busy")
+      showToast("info", "Session busy", "Please wait for the current response or compaction to finish.")
+      return
+    }
     doSaveCurrent()
     const meta = createSession(currentModel, currentProvider)
     setSessionId(meta.id)
@@ -2151,7 +2243,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const doChangeDirectory = (path: string) => {
-    if (running()) return { ok: false, message: "Cannot change directory while a response is running." }
+    if (running() || compacting()) return { ok: false, message: "Cannot change directory while a response or compaction is running." }
     const next = resolveDirectoryPath(path, currentCwd())
     if (!isDirectory(next)) return { ok: false, message: `Directory not found: ${path}` }
 
@@ -2182,11 +2274,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const compactCurrentSession = async () => {
     if (running()) {
+      setStatus("response running — compaction skipped")
       showToast("info", "Compaction skipped", "A response is already running.")
       return
     }
+    if (compacting()) {
+      setStatus("compaction already running")
+      showToast("info", "Compaction running", "Please wait for the current compaction to finish.")
+      return
+    }
+
     const currentMessages = messages()
-    const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel).contextLimit)
+    const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel, currentModelInfo).contextLimit)
     if (head.length === 0) {
       setStatus("session too short to compact")
       showToast("info", "Compaction skipped", "Session is still too short to compact.")
@@ -2195,8 +2294,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     setPalettePendingDelete(null)
     setShowPalette(false)
-    setStatus("compacting session...")
-    setRunning(true)
+    setCompacting(true)
+    setStatus(`compacting ${head.length} earlier messages...`)
+    showToast("info", "Compaction started", "Summarizing earlier session history…", 2000)
+    queueMicrotask(scrollBottom)
 
     const transcript = buildCompactionTranscript(head)
     const prompt = [
@@ -2249,7 +2350,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       showToast("error", "Compaction failed", errorText)
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     } finally {
-      setRunning(false)
+      setCompacting(false)
     }
   }
 
@@ -2272,12 +2373,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Suggest compaction when context is near limit (> 80%), but let the user decide.
-    // Use JSON.stringify to capture all message content (parts, tool_calls, reasoning).
+    // Suggest compaction when context is near limit, but let the user decide.
     {
-      const cfg = getModelConfig(currentModel)
-      const rawMessages = stripCompactSummaryMessages(messages())
-      if (estimateTokens(JSON.stringify(rawMessages) + input) > cfg.contextLimit * 0.8) {
+      const cfg = getModelConfig(currentModel, currentModelInfo)
+      if (estimateContextTokens(messages(), input) > cfg.contextLimit * CONTEXT_WARNING_THRESHOLD) {
         setNotices((prev) => {
           const text = "Context is getting full — you can run /compact now if you want to reduce session history."
           const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
@@ -2323,6 +2422,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
         scrollBottom,
         model: currentModel,
+        modelInfo: currentModelInfo,
         mode: mode(),
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
@@ -2404,6 +2504,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     const rawInput = draft().trim()
     if (!rawInput) return
+    if (compacting()) {
+      setStatus("compaction running — please wait")
+      showToast("info", "Compaction running", "Please wait for compaction to finish before sending input.")
+      return
+    }
 
     let input = rawInput
     for (const [marker, content] of pastedContent) {
@@ -2443,11 +2548,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (!provider) return { ok: false, message: `Unknown provider: ${id}` }
           const models = await ensureModelsForProvider(id)
           const fallbackModel = defaultModelForCurrentProvider(id)
-          const nextModel = models.includes(currentModel)
+          const nextModel = models.some((entry) => entry.id === currentModel)
             ? currentModel
-            : models[0] ?? fallbackModel
+            : models[0]?.id ?? fallbackModel
           if (!nextModel) return { ok: false, message: `No models available for provider: ${id}` }
-          if (!applyProviderModel(id, nextModel, true)) return { ok: false, message: `Failed to switch provider: ${id}` }
+          const nextModelInfo = providerModels()[id]?.find((entry) => entry.id === nextModel)
+          if (!applyProviderModel(id, nextModel, true, nextModelInfo)) return { ok: false, message: `Failed to switch provider: ${id}` }
           return { ok: true, message: `Provider switched to ${id} (${nextModel})` }
         },
         currentModel,
@@ -2458,10 +2564,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           const provider = PROVIDERS[providerId]
           if (!provider) return { ok: false, message: `Unknown provider: ${providerId}` }
           const models = await ensureModelsForProvider(providerId)
-          if (models.length > 0 && !models.includes(modelId)) {
+          if (models.length > 0 && !models.some((entry) => entry.id === modelId)) {
             return { ok: false, message: `Model not found for ${providerId}: ${modelId}` }
           }
-          if (!applyProviderModel(providerId, modelId, true)) return { ok: false, message: `Failed to switch model: ${providerId}/${modelId}` }
+          const nextModelInfo = providerModels()[providerId]?.find((entry) => entry.id === modelId)
+          if (!applyProviderModel(providerId, modelId, true, nextModelInfo)) return { ok: false, message: `Failed to switch model: ${providerId}/${modelId}` }
           return { ok: true, message: `Model switched to ${providerId}/${modelId}` }
         },
         mode: mode(),
@@ -2540,6 +2647,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setShowUsageDashboard(true)
         setComposerText("")
         return
+      }
+      if (slashCmd === "compact") {
+        setComposerText("")
       }
       await executeCommand(input, ctx)
       if (input !== "/exit" && input !== "/quit") {
@@ -2770,6 +2880,40 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "editProviderBaseURL") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("providerKeys")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = paletteInput().trim()
+          const target = paletteProviderKeyTarget()
+          const result = setConfiguredProviderBaseURL(target, value || undefined)
+          setStatus(result.message)
+          if (result.ok) {
+            setProviderConfigRevision(v => v + 1)
+            setProviderModels((prev) => {
+              const next = { ...prev }
+              delete next[target]
+              return next
+            })
+            setProviderModelsError((prev) => {
+              const next = { ...prev }
+              delete next[target]
+              return next
+            })
+            if (target === currentProvider) rebuildLayer()
+            setPaletteInput("")
+            setPaletteMode("providerKeys")
+            setPaletteIndex(0)
+          }
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "codexKeyname") {
         if (event.name === "escape") {
           setPaletteInput("")
@@ -2954,6 +3098,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
     if (event.name === "escape") {
+      if (compacting()) {
+        setStatus("compaction running — please wait")
+        showToast("info", "Compaction running", "Compaction cannot be interrupted safely yet.")
+        event.preventDefault()
+        return
+      }
       if (autocompleteApi?.visible()) {
         setComposerText("")
         event.preventDefault()
@@ -3174,7 +3324,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
             <box flexDirection="column">
               <textarea
-                placeholder="Ask anything..."
+                placeholder={compacting() ? "Compacting session… please wait" : "Ask anything..."}
                 placeholderColor={THEME.muted}
                 textColor={THEME.text}
                 focusedTextColor={THEME.text}
@@ -3265,16 +3415,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
-              <Show when={running()} fallback={
+              <Show when={running() || compacting()} fallback={
                 <text style={{ fg: THEME.muted }}>{`  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
                   <text style={{ fg: THEME.muted }}>{`${status()}  •  `}</text>
-                  <text
-                    style={{ fg: "#f85149" }}
-                    onMouseDown={() => { if (runAbort) runAbort.abort() }}
-                  >Esc interrupt</text>
+                  <Show when={running()} fallback={<text style={{ fg: THEME.muted }}>Please wait</text>}>
+                    <text
+                      style={{ fg: "#f85149" }}
+                      onMouseDown={() => { if (runAbort) runAbort.abort() }}
+                    >Esc interrupt</text>
+                  </Show>
                 </box>
               </Show>
             </box>
@@ -3294,6 +3446,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           width={SIDEBAR_WIDTH}
           provider={providerLabel()}
           model={modelLabel()}
+          modelInfo={modelInfoLabel()}
           sessionTitle={sessionMeta()?.title}
           cwd={currentCwd()}
           sessionId={sessionId()}
@@ -3322,6 +3475,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             width={SIDEBAR_WIDTH}
             provider={providerLabel()}
             model={modelLabel()}
+            modelInfo={modelInfoLabel()}
             sessionTitle={sessionMeta()?.title}
             cwd={currentCwd()}
             sessionId={sessionId()}
@@ -3338,8 +3492,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
+          if (compacting()) {
+            setStatus("compaction running — please wait")
+            showToast("info", "Compaction running", "Please wait for compaction to finish before running commands.")
+            return
+          }
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage"])
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact"])
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")
@@ -3420,6 +3579,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Key Value · ${paletteNewKeyName()}`
                         : paletteMode() === "codexKeyname"
                           ? `Key name · ${paletteCodexKeynameTarget()}`
+                        : paletteMode() === "editProviderBaseURL"
+                          ? `Base URL · ${paletteProviderKeyTarget()}`
                         : paletteMode() === "timeline"
                           ? "Timeline"
                           : paletteMode() === "userMessageActions"
@@ -3434,7 +3595,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}

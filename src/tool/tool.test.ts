@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "fs"
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, mkdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { Effect, Schema } from "effect"
@@ -12,12 +12,13 @@ import { EditTool } from "./edit"
 import { WebFetchTool } from "./web-fetch"
 import { GrepTool } from "./grep"
 import { ToolRegistry, layer } from "./registry"
+import { GlobTool } from "./glob"
 
-function testCtx(): Context {
+function testCtx(cwd = process.cwd()): Context {
   return new Context({
     abort: new AbortController().signal,
-    cwd: process.cwd(),
-    root: process.cwd(),
+    cwd,
+    root: cwd,
     ask: () => Effect.void,
     metadata: () => Effect.void,
   })
@@ -53,6 +54,28 @@ describe("tool", () => {
     assert.ok(!result.output.includes("command not found"))
   })
 
+  it("grep: resolves relative path and nested include from ctx.cwd", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-grep-session-"))
+    const nestedDir = join(sessionDir, "src", "nested")
+    const nestedFile = join(nestedDir, "sample.ts")
+    mkdirSync(nestedDir, { recursive: true })
+    writeFileSync(nestedFile, "const alpha = 1\nconst needle = 2\n", { encoding: "utf-8", flag: "w" })
+    const grep = await Effect.runPromise(GrepTool)
+    const result = await Effect.runPromise(grep.execute({ pattern: "needle", path: ".", include: "src/**/*.ts" }, testCtx(sessionDir)))
+    assert.ok(result.output.includes("sample.ts:2:const needle = 2"))
+  })
+
+  it("glob: resolves relative path and matches nested patterns from ctx.cwd", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-glob-session-"))
+    const nestedDir = join(sessionDir, "src", "nested")
+    const nestedFile = join(nestedDir, "sample.ts")
+    mkdirSync(nestedDir, { recursive: true })
+    writeFileSync(nestedFile, "export const value = 1\n", { encoding: "utf-8", flag: "w" })
+    const glob = await Effect.runPromise(GlobTool)
+    const result = await Effect.runPromise(glob.execute({ pattern: "src/**/*.ts", path: "." }, testCtx(sessionDir)))
+    assert.ok(result.output.includes(nestedFile))
+  })
+
   it("write: creates file with content", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
     const filePath = join(dir, "test.txt")
@@ -69,6 +92,31 @@ describe("tool", () => {
     const write = await Effect.runPromise(WriteTool)
     await Effect.runPromise(write.execute({ filePath, content: "new content" }, testCtx()))
     assert.equal(readFileSync(filePath, "utf-8"), "new content")
+  })
+
+  it("write/read/edit/bash resolve relative paths from ctx.cwd", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-session-"))
+    const outsideDir = mkdtempSync(join(tmpdir(), "ozc-outside-"))
+    const ctx = testCtx(sessionDir)
+
+    const write = await Effect.runPromise(WriteTool)
+    await Effect.runPromise(write.execute({ filePath: "nested/test.txt", content: "alpha beta" }, ctx))
+    assert.ok(existsSync(join(sessionDir, "nested", "test.txt")))
+    assert.ok(!existsSync(join(outsideDir, "nested", "test.txt")))
+
+    const read = await Effect.runPromise(ReadTool)
+    const readResult = await Effect.runPromise(read.execute({ filePath: "nested/test.txt" }, ctx))
+    assert.equal(readResult.output, "alpha beta")
+
+    const edit = await Effect.runPromise(EditTool)
+    await Effect.runPromise(edit.execute({ filePath: "nested/test.txt", oldString: "beta", newString: "gamma", replaceAll: false }, ctx))
+    assert.equal(readFileSync(join(sessionDir, "nested", "test.txt"), "utf-8"), "alpha gamma")
+
+    const bash = await Effect.runPromise(BashTool)
+    const bashResult = await Effect.runPromise(bash.execute({ command: "pwd && test -f nested/test.txt && echo ok" }, ctx))
+    const lines = bashResult.output.split("\n")
+    assert.ok(lines[0].endsWith(sessionDir) || sessionDir.endsWith(lines[0]))
+    assert.equal(lines.at(-1), "ok")
   })
 })
 

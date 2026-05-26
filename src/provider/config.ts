@@ -67,6 +67,21 @@ export function resolveConfiguredProviderBaseURL(providerId: string): string | u
   return getStoredProviderConfig(providerId)?.baseURL
 }
 
+export function setConfiguredProviderBaseURL(providerId: string, baseURL: string | undefined): { ok: boolean; message: string } {
+  const config = readProviderConfig()
+  config.providers ??= {}
+  const provider = config.providers[providerId] ?? {}
+  const trimmed = baseURL?.trim()
+  if (!trimmed) {
+    delete provider.baseURL
+  } else {
+    provider.baseURL = trimmed
+  }
+  config.providers[providerId] = provider
+  writeProviderConfig(config)
+  return { ok: true, message: trimmed ? `Base URL for ${providerId} -> ${trimmed}` : `Base URL for ${providerId} cleared` }
+}
+
 export function setActiveConfiguredProviderKey(providerId: string, keyName: string): { ok: boolean; message: string } {
   const config = readProviderConfig()
   const provider = config.providers?.[providerId]

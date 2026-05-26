@@ -18,11 +18,12 @@ type SearchMatch = {
 }
 
 function globToRegExp(pattern: string) {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&")
-  return new RegExp(`^${escaped.replace(/\*/g, ".*").replace(/\?/g, ".")}$`)
+  const normalized = pattern.split(path.sep).join("/")
+  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`^${escaped.replace(/\*\*/g, "::DOUBLE_STAR::").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/::DOUBLE_STAR::/g, ".*")}$`)
 }
 
-async function walkFiles(dir: string, include?: string): Promise<string[]> {
+async function walkFiles(root: string, include?: string): Promise<string[]> {
   const results: string[] = []
   const includeRe = include ? globToRegExp(include) : undefined
 
@@ -35,13 +36,14 @@ async function walkFiles(dir: string, include?: string): Promise<string[]> {
         await walk(full)
         continue
       }
-      if (!includeRe || includeRe.test(entry.name)) {
+      const relative = path.relative(root, full).split(path.sep).join("/")
+      if (!includeRe || includeRe.test(relative)) {
         results.push(full)
       }
     }
   }
 
-  await walk(dir)
+  await walk(root)
   return results
 }
 
@@ -88,13 +90,13 @@ export const GrepTool = Effect.gen(function* () {
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
         yield* ctx.ask({ permission: "grep", patterns: [args.pattern] })
-        const searchPath = args.path ?? ctx.cwd
+        const searchPath = path.resolve(ctx.cwd, args.path ?? ".")
         const rgArgs = ["-n", args.pattern]
         if (args.include) rgArgs.push("--glob", args.include)
         rgArgs.push(searchPath)
 
         const stdout = yield* Effect.promise(async () => {
-          const result = spawnSync("rg", rgArgs, { encoding: "utf-8" })
+          const result = spawnSync("rg", rgArgs, { encoding: "utf-8", cwd: searchPath })
           if (result.error?.name === "Error" && "code" in result.error && result.error.code === "ENOENT") {
             return searchWithFallback(args.pattern, searchPath, args.include)
           }
@@ -113,6 +115,6 @@ export const GrepTool = Effect.gen(function* () {
           title: `Grep: ${args.pattern}`,
           output: stdout || "(no matches)",
         })
-      }),
+      }).pipe(Effect.orDie),
   })
 })

@@ -1,5 +1,5 @@
 import { Effect, Layer } from "effect"
-import { Provider, type Chunk, type CompletionRequest, type CompletionResult, type ToolCall, type Usage } from "./types"
+import { Provider, type Chunk, type CompletionRequest, type CompletionResult, type ModelInfo, type ToolCall, type Usage } from "./types"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 // Zero-API streams using the OpenAI Responses API SSE format,
@@ -74,11 +74,12 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const complete = (req: CompletionRequest): Effect.Effect<CompletionResult> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          const { max_tokens, ...rest } = req as any
+          // Strip non-wire fields (max_tokens duplicated below if needed; signal is local-only).
+          const { max_tokens, signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages), model, stream: false }
 
           const res = yield* Effect.promise(() =>
-            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body) })
+            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal })
           )
           if (!res.ok) {
             const text = yield* Effect.promise(() => res.text())
@@ -92,6 +93,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             model: json.model ?? model,
             message: createAssistantMessage({
               content: choice?.message?.content ?? undefined,
+              reasoning_content: choice?.message?.reasoning_content ?? undefined,
               tool_calls: choice?.message?.tool_calls,
             }),
             usage: usageFromChatCompletion(json.usage) ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 },
@@ -101,11 +103,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const stream = (req: CompletionRequest): Effect.Effect<ReadableStream<Chunk>> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          const { max_tokens, ...rest } = req as any
+          const { max_tokens, signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages), model, stream: true }
 
           const res = yield* Effect.promise(() =>
-            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body) })
+            fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal })
           )
           if (!res.ok) {
             const text = yield* Effect.promise(() => res.text())
@@ -153,7 +155,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       const delta = raw.choices[0]?.delta ?? {}
                       const finish = raw.choices[0]?.finish_reason
                       const chunk: Chunk = {
-                        delta: { content: delta.content ?? undefined },
+                        delta: { content: delta.content ?? undefined, reasoning_content: delta.reasoning_content ?? undefined },
                         finish_reason: finish ?? undefined,
                         usage: raw.usage ? usageFromChatCompletion(raw.usage) : undefined,
                       }
@@ -174,7 +176,14 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
             fetch(`${baseURL}/models`, { headers: headers() })
           )
           const json = yield* Effect.promise(() => res.json()) as Effect.Effect<any>
-          return (json.data ?? []).map((m: any) => m.id) as string[]
+          return (json.data ?? []).map((m: any) => ({
+            id: m.id,
+            contextLimit: typeof m.context_window === "number" ? m.context_window : undefined,
+            pricing:
+              typeof m.input_price === "number" && typeof m.output_price === "number"
+                ? { input: m.input_price, output: m.output_price }
+                : undefined,
+          } satisfies ModelInfo)) as ModelInfo[]
         }).pipe(Effect.orDie)
 
       return { complete, stream, models }

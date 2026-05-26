@@ -1,12 +1,19 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
 import { getKnownModelConfig, getModelConfig, estimateTokens, estimateCost } from "./models"
+import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
   it("returns config for known models", () => {
     const cfg = getKnownModelConfig("gpt-4o")
     assert.ok(cfg)
     assert.equal(cfg?.contextLimit, 128_000)
+  })
+
+  it("normalizes provider-prefixed model ids", () => {
+    const cfg = getKnownModelConfig("openaicodex/gpt-5.4")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
   })
 
   it("returns undefined for unknown models", () => {
@@ -38,6 +45,48 @@ describe("getModelConfig", () => {
     const cfg = getModelConfig("openrouter/auto")
     assert.equal(cfg.contextLimit, 2_000_000)
     assert.equal(cfg.pricing, undefined)
+  })
+
+  it("uses fallback metadata for unknown models", () => {
+    const fallback: ModelInfo = {
+      id: "zero/new-runtime-model",
+      contextLimit: 128_000,
+      pricing: { input: 5, output: 15 },
+    }
+    const cfg = getModelConfig("zero/new-runtime-model", fallback)
+    assert.equal(cfg.contextLimit, 128_000)
+    assert.equal(cfg.pricing?.input, 5)
+    assert.equal(cfg.pricing?.output, 15)
+  })
+
+  it("uses fallback pricing even when only fallback pricing is present", () => {
+    const fallback: ModelInfo = {
+      id: "zero/some-new-model",
+      pricing: { input: 0.2, output: 0.8 },
+    }
+    const cfg = getModelConfig("zero/some-new-model", fallback)
+    assert.equal(cfg.contextLimit, 128_000)
+    assert.equal(cfg.pricing?.input, 0.2)
+    assert.equal(cfg.pricing?.output, 0.8)
+  })
+
+  it("still uses known config over fallback metadata", () => {
+    const fallback: ModelInfo = {
+      id: "gpt-4o",
+      contextLimit: 256_000,
+      pricing: { input: 5, output: 15 },
+    }
+    const cfg = getModelConfig("gpt-4o", fallback)
+    assert.equal(cfg.contextLimit, 128_000)
+    assert.equal(cfg.pricing?.input, 2.5)
+    assert.equal(cfg.pricing?.output, 10)
+  })
+
+  it("uses normalized config for provider-prefixed model ids", () => {
+    const cfg = getModelConfig("openaicodex/gpt-5.4")
+    assert.equal(cfg.contextLimit, 1_000_000)
+    assert.equal(cfg.pricing?.input, 2.5)
+    assert.equal(cfg.pricing?.output, 15)
   })
 })
 

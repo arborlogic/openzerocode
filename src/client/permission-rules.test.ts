@@ -7,7 +7,7 @@ describe("isSafePermission", () => {
     assert.equal(isSafePermission("read"), true)
     assert.equal(isSafePermission("grep"), true)
     assert.equal(isSafePermission("glob"), true)
-    assert.equal(isSafePermission("web-fetch"), true)
+    assert.equal(isSafePermission("web_fetch"), true)
     assert.equal(isSafePermission("edit"), false)
   })
 })

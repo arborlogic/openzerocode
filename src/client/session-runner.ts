@@ -1,19 +1,21 @@
 import { Effect } from "effect"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
-import type { Message, ToolCall } from "../provider/types"
+import type { Message, ToolCall, ModelInfo } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
 import { estimateTokens, getModelConfig } from "../provider/models"
+import type { StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build" | "plan"
 
 type SessionUi = {
   abort: AbortSignal
+  modelInfo?: ModelInfo
   streamReasoningChunk: (text: string) => void
   streamAssistantChunk: (text: string) => void
   streamToolCallChunk: (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => void
@@ -37,29 +39,47 @@ type SessionRuntime = {
   ask: (request: Omit<PermissionRequest, "id">) => Promise<void>
 }
 
-export async function runSession(
+export type StreamOptions = {
+  abort: AbortSignal
+  model: string
+  modelInfo?: ModelInfo
+  mode: RunMode
+  provider: string
+  keyName: string
+  /** Working directory passed to tools as cwd/root. Defaults to process.cwd(). */
+  workdir?: string
+}
+
+/**
+ * Core streaming agent loop as an async generator. Yields StreamChunks for
+ * every text token, reasoning chunk, tool call delta, tool result, status
+ * update, and the final usage / done / error events.
+ *
+ * The full message list (including the user message and all assistant/tool
+ * messages produced this run) is exposed via the generator's return value.
+ */
+export async function* streamSession(
   userInput: string,
   history: Message[],
-  ui: SessionUi,
+  options: StreamOptions,
   runtime: SessionRuntime,
-): Promise<Message[]> {
+): AsyncGenerator<StreamChunk, Message[], void> {
   const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
   const retrySchedule = [2000, 5000, 10000]
   const CONTINUE_AFTER_LENGTH: Message = {
     role: "system",
     content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
   }
-  const systemMessage: Message = { role: "system", content: runtime.systemPrompt(ui.mode) }
+  const workdir = options.workdir ?? process.cwd()
+  const systemMessage: Message = { role: "system", content: runtime.systemPrompt(options.mode) }
   const userMessage: Message = { role: "user", content: userInput }
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
 
-  // Always trim history to a token budget so step 0 doesn't send unbounded context
   const sendHistory = (() => {
     if (history.length === 0) return history
-    const { contextLimit } = getModelConfig(ui.model)
-    // Reserve ~45% for system prompt, current turn messages, and the response
+    const { contextLimit } = getModelConfig(options.model, options.modelInfo)
     const budget = Math.floor(contextLimit * 0.55)
     let used = 0
     let start = history.length
@@ -69,30 +89,25 @@ export async function runSession(
       used += cost
       start = i
     }
-    // Don't begin with orphaned tool messages (their assistant call would be missing)
     while (start < history.length && history[start]?.role === "tool") start++
     return history.slice(start)
   })()
 
   const allMessages: Message[] = [systemMessage, ...compactionMessage, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
-  ui.addMessage(userMessage)
+  yield { type: "message", message: userMessage }
 
   const tools = await runtime.runSync(Effect.gen(function* () {
     const r = yield* ToolRegistry
     return yield* r.all()
   }))
-  const toolDefs = ui.mode === "plan" ? [] : convertToolsToDefs(tools)
+  const toolDefs = options.mode === "plan" ? [] : convertToolsToDefs(tools)
 
-  // Permanent prefix (sent every step): system + compaction + userMsg.
-  // History is only sent in step 0 so the LLM can see prior context;
-  // from step >= 1 onward, compaction replaces history.
-  // currentTurnStart tracks where the step-0 turn messages begin in allMessages.
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
   const currentTurnStart = allMessages.length
 
   for (let step = 0; step < 50; step++) {
-    ui.setStatus("thinking...")
+    yield { type: "status", text: "thinking..." }
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
 
@@ -104,10 +119,15 @@ export async function runSession(
       stream = await runtime.runSync(Effect.gen(function* () {
         const p = yield* Provider
         return yield* p.stream({
-          model: ui.model,
+          model: options.model,
           messages: requestMessages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           stream: true,
+          // Threading abort into the provider's fetch so the upstream HTTP
+          // request is torn down when the user cancels — without this, the
+          // read loop below would break out but the network request kept
+          // running in the background until the upstream finished.
+          signal: options.abort,
         })
       })).catch((error) => {
         lastError = error
@@ -116,19 +136,18 @@ export async function runSession(
       if (stream) break
       if (!retry429 || !isRateLimitError(lastError) || attempt >= retrySchedule.length) break
       const wait = retrySchedule[attempt]
-      ui.setStatus(`rate limited, retry in ${Math.round(wait / 1000)}s...`)
-      ui.notify(`rate limited, retrying in ${Math.round(wait / 1000)}s`, "system")
+      yield { type: "status", text: `rate limited, retry in ${Math.round(wait / 1000)}s...` }
+      yield { type: "notice", kind: "system", text: `rate limited, retrying in ${Math.round(wait / 1000)}s` }
       await delay(wait)
     }
 
     if (!stream) {
-      ui.setStatus("waiting for input")
       const errorText = formatProviderError(lastError)
-      ui.notify(errorText, "error")
-      // Add error as an assistant message so it persists in history after notice clears
+      yield { type: "notice", kind: "error", text: errorText }
       const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
       resultHistory.push(errorMsg)
-      ui.addMessage(errorMsg)
+      yield { type: "message", message: errorMsg }
+      yield { type: "error", message: errorText }
       return resultHistory
     }
 
@@ -141,9 +160,25 @@ export async function runSession(
     let lastUsageCachedInput = 0
     const acc = new Map<number, AccToolCall>()
     const reader = stream.getReader()
+    // If the user aborts while we're blocked inside reader.read() waiting for
+    // the next chunk, the check at the top of the loop wouldn't fire — wire
+    // the abort directly into reader.cancel() so the read unblocks immediately
+    // and the underlying ReadableStream tears down the source fetch.
+    const abortHandler = () => { reader.cancel().catch(() => {}) }
+    options.abort.addEventListener("abort", abortHandler, { once: true })
+    try {
     while (true) {
-      if (ui.abort.aborted) break
-      const { done, value } = await reader.read()
+      if (options.abort.aborted) break
+      let done: boolean
+      let value: any
+      try {
+        const result = await reader.read()
+        done = result.done ?? false
+        value = result.value
+      } catch {
+        // Reader was cancelled (e.g. by abort) or upstream errored mid-stream.
+        break
+      }
       if (done) break
       if (value.finish_reason) finishReason = value.finish_reason
       if (value.usage) {
@@ -153,17 +188,15 @@ export async function runSession(
       }
       if (value.delta.content) {
         content += value.delta.content
-        ui.streamAssistantChunk(value.delta.content)
-        ui.setStatus("generating...")
-        ui.scrollBottom()
+        yield { type: "text", content: value.delta.content }
+        yield { type: "status", text: "generating..." }
       }
       if (value.delta.reasoning_content !== undefined) {
         hasReasoning = true
         if (value.delta.reasoning_content) {
           reasoning += value.delta.reasoning_content
-          ui.streamReasoningChunk(value.delta.reasoning_content)
-          ui.setStatus("reasoning...")
-          ui.scrollBottom()
+          yield { type: "reasoning", content: value.delta.reasoning_content }
+          yield { type: "status", text: "reasoning..." }
         }
       }
       for (const tc of value.tool_calls ?? []) {
@@ -173,22 +206,29 @@ export async function runSession(
         if (tc.function?.arguments) next.arguments += tc.function.arguments
         if (tc.index !== undefined) next.index = tc.index
         acc.set(tc.index ?? 0, next)
-        ui.streamToolCallChunk(tc.index ?? 0, {
+        yield {
+          type: "tool_call_delta",
+          index: tc.index ?? 0,
           id: tc.id,
           tool: tc.function?.name,
           argumentsChunk: tc.function?.arguments,
-        })
-        ui.setStatus(tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool...")
-        ui.scrollBottom()
+        }
+        yield { type: "status", text: tc.function?.name ? `preparing tool: ${tc.function.name}` : "preparing tool..." }
       }
     }
-
-    if (!ui.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {
-      ui.onUsage?.(lastUsageInput, lastUsageOutput, lastUsageCachedInput)
+    } finally {
+      options.abort.removeEventListener("abort", abortHandler)
+      // Best-effort: if we exited the loop without aborting (e.g. normal done),
+      // releaseLock() lets the stream be GC'd. If we aborted, the cancel above
+      // already tore it down.
+      try { reader.releaseLock() } catch {}
     }
 
-    if (ui.abort.aborted) {
-      ui.setStatus("waiting for input")
+    if (!options.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {
+      yield { type: "usage", inputTokens: lastUsageInput, outputTokens: lastUsageOutput, cachedInputTokens: lastUsageCachedInput }
+    }
+
+    if (options.abort.aborted) {
       return resultHistory
     }
 
@@ -206,34 +246,29 @@ export async function runSession(
       tool_calls: toolCalls,
     })
     resultHistory.push(assistantMessage)
-    ui.addMessage(assistantMessage)
+    yield { type: "message", message: assistantMessage }
 
     if (!toolCalls) {
       if (finishReason === "length") {
-        // Push minimal message to save context window tokens on continuation.
-        // The model does not need to re-read its full partial output;
-        // the CONTINUE_AFTER_LENGTH instruction is sufficient.
         allMessages.push(createAssistantMessage({ content: "" }))
         allMessages.push(CONTINUE_AFTER_LENGTH)
-        ui.notify("response hit token limit, continuing...", "system")
-        ui.setStatus("continuing response...")
+        yield { type: "notice", kind: "system", text: "response hit token limit, continuing..." }
+        yield { type: "status", text: "continuing response..." }
         continue
       }
       allMessages.push(assistantMessage)
-      ui.setStatus("waiting for input")
+      yield { type: "done" }
       return resultHistory
     }
 
     allMessages.push(assistantMessage)
 
-    if (ui.abort.aborted) {
-      ui.setStatus("waiting for input")
+    if (options.abort.aborted) {
       return resultHistory
     }
 
     for (const call of toolCalls) {
-      if (ui.abort.aborted) {
-        ui.setStatus("waiting for input")
+      if (options.abort.aborted) {
         return resultHistory
       }
       const name = call.function.name ?? "unknown"
@@ -242,18 +277,18 @@ export async function runSession(
         const errorMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: `Unknown tool: ${name}`, error: true })
         allMessages.push(errorMsg)
         resultHistory.push(errorMsg)
-        ui.addMessage(errorMsg)
+        yield { type: "tool_result", id: call.id, name, output: `Unknown tool: ${name}`, error: true }
+        yield { type: "message", message: errorMsg }
         continue
       }
 
-      ui.setStatus(`running tool: ${name}`)
-      ui.setStreamingToolResult({ id: call.id, tool: name, output: "running..." })
-      ui.scrollBottom()
+      yield { type: "status", text: `running tool: ${name}` }
+      yield { type: "tool_start", id: call.id, name, input: call.function.arguments ?? "" }
       const result = await Effect.runPromise(
         def.execute(runtime.parseJson(call.function.arguments ?? "{}"), new Context({
-          abort: ui.abort,
-          cwd: process.cwd(),
-          root: process.cwd(),
+          abort: options.abort,
+          cwd: workdir,
+          root: workdir,
           ask: (req) => Effect.tryPromise({
             try: () => runtime.ask(req),
             catch: (e) => new Error(String(e)),
@@ -263,16 +298,84 @@ export async function runSession(
       )
 
       const text = convertToolResult(result)
-      ui.setStreamingToolResult({ id: call.id, tool: name, output: text, error: result.title === "Error" })
+      const isError = result.title === "Error"
+      yield { type: "tool_result", id: call.id, name, output: text, error: isError }
       const toolMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: text })
       allMessages.push(toolMsg)
       resultHistory.push(toolMsg)
-      ui.addMessage(toolMsg)
-      ui.scrollBottom()
+      yield { type: "message", message: toolMsg }
     }
 
-    ui.setStatus("thinking...")
+    yield { type: "status", text: "thinking..." }
   }
 
+  yield { type: "done" }
   return resultHistory
+}
+
+/**
+ * TUI-facing wrapper. Consumes streamSession() and translates each chunk into
+ * the existing SessionUi callbacks so the TUI render path is unchanged.
+ */
+export async function runSession(
+  userInput: string,
+  history: Message[],
+  ui: SessionUi,
+  runtime: SessionRuntime,
+): Promise<Message[]> {
+  const gen = streamSession(userInput, history, {
+    abort: ui.abort,
+    model: ui.model,
+    modelInfo: ui.modelInfo,
+    mode: ui.mode,
+    provider: ui.provider,
+    keyName: ui.keyName,
+  }, runtime)
+
+  while (true) {
+    const { value, done } = await gen.next()
+    if (done) {
+      ui.setStatus("waiting for input")
+      return value
+    }
+
+    const chunk = value
+    switch (chunk.type) {
+      case "text":
+        ui.streamAssistantChunk(chunk.content)
+        ui.scrollBottom()
+        break
+      case "reasoning":
+        ui.streamReasoningChunk(chunk.content)
+        ui.scrollBottom()
+        break
+      case "tool_call_delta":
+        ui.streamToolCallChunk(chunk.index, { id: chunk.id, tool: chunk.tool, argumentsChunk: chunk.argumentsChunk })
+        ui.scrollBottom()
+        break
+      case "tool_start":
+        ui.setStreamingToolResult({ id: chunk.id, tool: chunk.name, output: "running..." })
+        ui.scrollBottom()
+        break
+      case "tool_result":
+        ui.setStreamingToolResult({ id: chunk.id, tool: chunk.name, output: chunk.output, error: chunk.error })
+        ui.scrollBottom()
+        break
+      case "status":
+        ui.setStatus(chunk.text)
+        break
+      case "notice":
+        ui.notify(chunk.text, chunk.kind)
+        break
+      case "usage":
+        ui.onUsage?.(chunk.inputTokens, chunk.outputTokens, chunk.cachedInputTokens)
+        break
+      case "message":
+        ui.addMessage(chunk.message)
+        break
+      case "error":
+      case "done":
+        break
+    }
+  }
 }

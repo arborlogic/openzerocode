@@ -1,9 +1,9 @@
 import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import type { Message } from "../provider/types"
+import type { Message, ModelInfo } from "../provider/types"
 import { getModelConfig, estimateCost } from "../provider/models"
-import { isCompactSummaryMessage } from "./session-compact"
+import { isCompactSummaryMessage, estimateContextTokens } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
 import { isEnabled, isConnected } from "../browser/geass-client"
@@ -153,6 +153,7 @@ export function Sidebar(props: {
   }
   width: number
   model: string
+  modelInfo?: ModelInfo
   provider: string
   sessionTitle?: string
   sessionId?: string
@@ -203,7 +204,7 @@ export function Sidebar(props: {
     })
   })
 
-  const modelCfg = createMemo(() => getModelConfig(props.model))
+  const modelCfg = createMemo(() => getModelConfig(props.model, props.modelInfo))
 
   const tokenUsage = createMemo(() => {
     let inputChars = 0
@@ -215,12 +216,15 @@ export function Sidebar(props: {
     }
     const input = Math.max(0, Math.round(inputChars / 4))
     const output = Math.max(0, Math.round(outputChars / 4))
-    return { input, output, total: input + output }
+    return { input, output }
   })
 
   const totalInputTokens = createMemo(() => tokenUsage().input)
   const totalOutputTokens = createMemo(() => tokenUsage().output)
-  const totalTokens = createMemo(() => tokenUsage().total)
+  // Context total must match the compaction-warning trigger: JSON.stringify the
+  // full message objects (parts, tool calls, reasoning) so tool-heavy sessions
+  // are not under-reported as 1% while the warning fires.
+  const totalTokens = createMemo(() => estimateContextTokens(props.messages()))
   const contextPercent = createMemo(() => {
     const limit = modelCfg().contextLimit
     if (!limit) return 0

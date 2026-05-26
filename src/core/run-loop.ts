@@ -49,6 +49,7 @@ export function runLoop(
         messages: allMessages,
         tools: toolDefs.length > 0 ? toolDefs : undefined,
         stream: false,
+        signal: config.abort,
       })
 
       const toolCalls = result.message.tool_calls

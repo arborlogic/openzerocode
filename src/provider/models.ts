@@ -1,3 +1,5 @@
+import type { ModelInfo } from "./types"
+
 export type ModelConfig = {
   contextLimit: number
   pricing?: {
@@ -15,6 +17,14 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "big-pickle": {
     contextLimit: 128_000,
     pricing: { input: 0, output: 0 },
+  },
+  "deepseek-v4-flash": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.14, output: 0.28 },
+  },
+  "deepseek-v4-pro": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.74, output: 3.48 },
   },
   "gpt-5.4": {
     contextLimit: 1_000_000,
@@ -101,12 +111,32 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
 }
 
-export function getKnownModelConfig(model: string): ModelConfig | undefined {
-  return MODEL_CONFIGS[model]
+function normalizeModelConfigKey(model: string): string {
+  if (MODEL_CONFIGS[model]) return model
+
+  const slashIndex = model.lastIndexOf("/")
+  if (slashIndex === -1) return model
+
+  const candidate = model.slice(slashIndex + 1)
+  return MODEL_CONFIGS[candidate] ? candidate : model
 }
 
-export function getModelConfig(model: string): ModelConfig {
-  return MODEL_CONFIGS[model] ?? DEFAULT_CONFIG
+export function getKnownModelConfig(model: string): ModelConfig | undefined {
+  return MODEL_CONFIGS[normalizeModelConfigKey(model)]
+}
+
+export function getModelConfig(model: string, fallback?: ModelInfo | ModelConfig): ModelConfig {
+  const known = MODEL_CONFIGS[normalizeModelConfigKey(model)]
+  if (known) return known
+
+  if (fallback?.contextLimit || fallback?.pricing) {
+    return {
+      contextLimit: fallback.contextLimit ?? DEFAULT_CONFIG.contextLimit,
+      pricing: fallback.pricing ?? DEFAULT_CONFIG.pricing,
+    }
+  }
+
+  return DEFAULT_CONFIG
 }
 
 export function estimateTokens(text: string): number {

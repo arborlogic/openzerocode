@@ -22,6 +22,7 @@ export const BashTool = Effect.gen(function* () {
           encoding: "utf-8",
           timeout: args.timeout ?? 60000,
           maxBuffer: 10 * 1024 * 1024,
+          cwd: ctx.cwd,
         })
         const stdout = result.stdout?.trim() ?? ""
         const stderr = result.stderr?.trim() ?? ""

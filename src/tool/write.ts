@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
-import { writeFile } from "fs/promises"
+import { mkdir, writeFile } from "fs/promises"
+import { dirname, resolve } from "path"
 
 const Parameters = Schema.Struct({
   filePath: Schema.String,
@@ -18,7 +19,11 @@ export const WriteTool = Effect.gen(function* () {
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
         yield* ctx.ask({ permission: "write", patterns: [args.filePath] })
-        yield* Effect.promise(() => writeFile(args.filePath, args.content, "utf-8"))
+        const target = resolve(ctx.cwd, args.filePath)
+        yield* Effect.promise(async () => {
+          await mkdir(dirname(target), { recursive: true })
+          await writeFile(target, args.content, "utf-8")
+        })
         return new Result({ title: "Written", output: `Wrote ${args.filePath}` })
       }).pipe(Effect.orDie),
   })

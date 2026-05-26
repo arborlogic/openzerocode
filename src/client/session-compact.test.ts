@@ -7,6 +7,7 @@ import {
   selectCompactionTail,
   buildCompactionTranscript,
   createCompactSummaryMessage,
+  estimateContextTokens,
   COMPACT_SUMMARY_PREFIX,
 } from "./session-compact"
 
@@ -69,6 +70,28 @@ describe("createCompactSummaryMessage", () => {
     assert.equal(msg.role, "system")
     assert.ok(msg.content?.startsWith(COMPACT_SUMMARY_PREFIX))
     assert.ok(msg.content?.includes("executed 3 commands"))
+  })
+})
+
+describe("estimateContextTokens", () => {
+  it("counts serialized message fields, not just content", () => {
+    const withToolPayload: Message[] = [
+      assistantWithTools([{ id: "c1", name: "read", args: "x".repeat(400) }]),
+      toolMsg("c1", "y".repeat(400)),
+    ]
+    const contentOnly: Message[] = withToolPayload.map((msg) => ({ role: msg.role, content: msg.content }))
+
+    assert.ok(
+      estimateContextTokens(withToolPayload) > estimateContextTokens(contentOnly),
+      "expected tool calls and tool outputs to increase the context estimate",
+    )
+  })
+
+  it("strips compact summaries and includes pending input", () => {
+    const msgs = [user("hello"), compactSummary("old summary ".repeat(200))]
+
+    assert.equal(estimateContextTokens(msgs), estimateContextTokens([user("hello")]))
+    assert.ok(estimateContextTokens(msgs, "next prompt".repeat(100)) > estimateContextTokens(msgs))
   })
 })
 

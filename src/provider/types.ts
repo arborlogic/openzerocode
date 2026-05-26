@@ -40,6 +40,13 @@ export type CompletionRequest = {
   stream: boolean
   max_tokens?: number
   temperature?: number
+  /**
+   * Optional AbortSignal threaded into the underlying fetch so the upstream
+   * HTTP request is torn down promptly when the caller cancels. Without this,
+   * stream consumers can break out of their read loop but the network request
+   * keeps running in the background until the upstream finishes.
+   */
+  signal?: AbortSignal
 }
 
 export type Usage = {
@@ -63,10 +70,19 @@ export type Chunk = {
   usage?: Usage
 }
 
+export type ModelInfo = {
+  id: string
+  contextLimit?: number
+  pricing?: {
+    input: number
+    output: number
+  }
+}
+
 export interface Interface {
   readonly complete: (req: CompletionRequest) => Effect.Effect<CompletionResult>
   readonly stream: (req: CompletionRequest) => Effect.Effect<ReadableStream<Chunk>>
-  readonly models: () => Effect.Effect<string[]>
+  readonly models: () => Effect.Effect<ModelInfo[]>
 }
 
 export class Provider extends Context.Service<Provider, Interface>()("@openzerocode/Provider") {}
