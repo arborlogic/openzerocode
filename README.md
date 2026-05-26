@@ -1,5 +1,7 @@
 # OpenZeroCode
 
+[繁體中文](./README.zh-TW.md) | [简体中文](./README.zh-CN.md)
+
 > **Terminal-first AI coding agent — inspired by [OpenCode](https://github.com/sst/opencode).**
 
 OpenZeroCode is a local-first, TUI-driven AI coding assistant adapted from the OpenCode direction. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, and working memory.

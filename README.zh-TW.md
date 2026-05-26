@@ -1,0 +1,320 @@
+# OpenZeroCode
+
+語言：[English](./README.md) | [简体中文](./README.zh-CN.md) | [繁體中文](./README.zh-TW.md)
+
+> **以終端機為優先的 AI 程式開發代理，靈感來自 [OpenCode](https://github.com/sst/opencode)。**
+
+OpenZeroCode 是一個本機優先、由 TUI 驅動的 AI 程式開發助手，沿著 OpenCode 的方向改造而來。它移除了對 `zero` 雲端服務的依賴，專注於自包含的終端機體驗，內建工具、多 Provider 支援，以及工作區記憶。
+
+![OpenZeroCode 預覽](./preview01.png)
+
+---
+
+## 靈感來源
+
+本專案**深受 OpenCode 啟發**。OpenCode 是 [SST](https://sst.dev) 建構的終端機原生 AI 程式開發代理。OpenZeroCode 最初延續了 OpenCode 的架構方向，之後逐步發展出自己的定位：
+
+- **相同基礎**：SolidJS 終端機 UI（`@opentui`）、Provider 抽象、工具系統、會話持久化
+- **不同重點**：本機優先、獨立於 `zero` 生態、便於擴充自訂工作流程
+- **共同脈絡**：Provider 註冊、工具註冊和建置流程模式都承襲自 OpenCode 的設計思路
+
+感謝 OpenCode 專案的設計，本專案正是站在它的基礎上誕生的。
+
+---
+
+## 目前狀態
+
+這個 repo 仍在積極實作中。目前已具備：
+
+- **基於 Solid 的終端機 UI**：入口位於 `src/client/tui.tsx`，支援串流回應、推理展示和命令面板
+- **Build / Plan 模式切換**：在結構化執行和自由探索之間切換
+- **Provider 切換**：使用你自己的 API Key（OpenRouter、自訂端點等）
+- **模型切換**：執行中切換模型
+- **多會話持久化**：會話儲存於 `~/.openzerocode/sessions`
+- **會話管理**：重新命名、刪除、壓縮會話
+- **側邊欄上下文**：Token 用量、費用追蹤、Git diff 摘要
+- **工作區提示記憶**：將 `AGENTS.md` 指令和 `CONTEXT.md` 專案上下文注入系統提示詞
+- **會話交接**：使用 `SESSION_SUMMARY.md` 保存精簡的本機續接筆記
+- **7 個內建工具**：
+
+| 工具 | 說明 |
+|------|------|
+| `read` | 讀取檔案內容 |
+| `write` | 寫入或覆寫檔案 |
+| `grep` | 依模式搜尋檔案內容 |
+| `glob` | 依 glob 模式尋找檔案 |
+| `bash` | 執行 shell 命令 |
+| `edit` | 定向字串替換編輯 |
+| `web-fetch` | 從 URL 取得內容 |
+
+![OpenZeroCode TUI 會話](./snapshot01.png)
+
+---
+
+## 快速開始
+
+### 前置條件
+
+- **bun** >= 1.2
+- `PATH` 中可用的 **npm**（用於開發安裝流程和 npm 發布）
+
+### 從 npm 安裝
+
+目前支援的預先建置 npm 目標：
+
+- `darwin-arm64`
+- `linux-x64`
+- `linux-arm64`
+- `win32-x64`
+
+安裝：
+
+```bash
+npm install -g openzerocode
+```
+
+根套件會安裝一個很小的 Node 啟動器，並在執行時解析符合平台的可選套件。
+
+### 從原始碼安裝
+
+```bash
+git clone https://github.com/arborlogic/openzerocode.git
+cd openzerocode
+python3 scripts/dev-install.py
+```
+
+這是目前支援的本機開發安裝路徑。它會安裝依賴，使用帶時間戳的 `-dev.YYYYMMDDHHMMSS` 版本後綴重新建置 `dist/openzerocode`，並執行 `npm install -g .`，讓全域 `openzerocode` 命令指向本機建置的二進位檔。
+
+### 執行
+
+```bash
+openzerocode
+```
+
+### 開發模式
+
+```bash
+npm run dev
+```
+
+### 更新
+
+```bash
+git pull
+python3 scripts/dev-install.py
+```
+
+這會更新依賴、重新建置二進位檔，並從你的本機 checkout 重新安裝全域 `openzerocode` 命令。
+
+### npm 打包流程
+
+發布到 npm 的產物採用「根啟動器 + 平台套件」的結構：
+
+- 根套件 `openzerocode` 只包含 Node 啟動器 `bin/openzerocode.js`
+- 平台二進位檔位於 `@openzerocode/<target>` 可選依賴中
+- 目前支援目標：`darwin-arm64`、`linux-x64`、`linux-arm64`、`win32-x64`
+
+典型流程：
+
+1. **建置本機二進位檔**
+
+   ```bash
+   npm run build
+   ```
+
+   這會執行 `scripts/build.sh`，預設輸出 `dist/openzerocode`。
+
+2. **產生 `npm/` 發布暫存結構**
+
+   ```bash
+   node scripts/create-platform-packages.mjs
+   ```
+
+   這會建立：
+
+   - `npm/package.json`：根 npm 套件 manifest
+   - `npm/bin/openzerocode.js`：依平台分派到對應二進位檔的啟動器
+   - `npm/packages/<target>/package.json`：各平台套件 manifest
+   - `npm/README.md`、`npm/LICENSE`、`npm/bin/package.json`：發布輔助檔案
+
+3. **在對應原生平台建置各平台二進位檔**
+
+   ```bash
+   scripts/build-platform-package.sh darwin-arm64
+   scripts/build-platform-package.sh linux-x64
+   scripts/build-platform-package.sh linux-arm64
+   scripts/build-platform-package.sh win32-x64
+   ```
+
+   `scripts/build-platform-package.sh` 必須在符合的宿主平台執行。例如，`linux-arm64` 必須在 `linux-arm64` 機器上建置。建置成功後會輸出到：
+
+   - `npm/packages/<target>/bin/openzerocode`
+   - Windows 目標：`npm/packages/win32-x64/bin/openzerocode.exe`
+
+4. **打包或發布 npm 套件**
+
+   完成暫存結構和平台二進位建置後，在 `npm/` 和各 `npm/packages/<target>/` 目錄中執行 `npm pack` 或 `npm publish`。
+
+   建議順序：
+
+   - 先發布平台套件 `@openzerocode/<target>`
+   - 再發布根套件 `openzerocode`
+
+5. **CI / 發布檢查清單**
+
+   發布前後請確認：
+
+   - 更新根目錄 `package.json` / `package-lock.json` 版本，並建立符合的 git tag，例如套件版本 `0.3.2` 對應 tag `v0.3.2`
+   - 如果發布包含面向使用者的變更，確認 changelog 或 release notes 已準備好
+   - 執行 `npm run typecheck`
+   - 重新執行 `node scripts/create-platform-packages.mjs`，確認 `npm/` 和 `npm/packages/<target>/` 下的暫存檔案是最新的
+   - 合併到 `main`，接著推送 `v*` tag 觸發 GitHub Actions 發布流程
+   - `.github/workflows/build.yml` 目前會在 tag push 時建置平台套件、發布各 `@openzerocode/<target>`，並建立符合的 GitHub Release
+   - 工作流程目前還不會自動發布根套件 `openzerocode`；若要讓 `npm install -g openzerocode` 可用，仍需從 `npm/` 手動發布根套件
+   - 發布後，在乾淨環境中驗證 `npm install -g openzerocode` 和 `openzerocode --version`
+
+這種結構讓 `npm install -g openzerocode` 保持輕量，同時由 npm 解析平台專屬可選套件中的真實可執行檔。
+
+### 命令列參數
+
+| 參數 | 作用 |
+|------|------|
+| `--build` | 以 build 模式啟動 |
+| `--plan` | 以 plan 模式啟動 |
+| `--model <name>` | 覆蓋預設模型 |
+| `--provider <name>` | 覆蓋預設 Provider |
+
+### 備用入口
+
+```bash
+npm run start:tui
+```
+
+---
+
+## Provider 設定
+
+Provider 憑證可以寫入本機設定檔：
+
+```text
+~/.openzerocode/providers.json
+```
+
+格式：
+
+```json
+{
+  "providers": {
+    "openrouter": {
+      "activeKey": "default",
+      "keys": {
+        "default": "sk-or-...",
+        "backup": "sk-or-..."
+      }
+    }
+  }
+}
+```
+
+**說明：**
+
+- 每個 Provider 可以有多個命名 key。
+- `activeKey` 決定執行時使用該 Provider 的哪個 key。
+- 設定檔中的值優先順序高於環境變數。
+- 可以在 TUI 中使用這些斜線命令查看和切換 key：
+  - `/provider-key path`
+  - `/provider-key list <provider>`
+  - `/provider-key use <provider> <key-name>`
+
+---
+
+## 開發
+
+```bash
+# 型別檢查
+npm run typecheck
+
+# 執行所有單元測試（排除 Provider 整合測試）
+npm run test:unit
+
+# 執行單一測試檔
+npx tsx --test src/client/workspace-memory.test.ts
+```
+
+更多說明見 [DEVELOPMENT.md](./DEVELOPMENT.md)，包括：
+
+- 建置獨立二進位檔
+- 跨平台發布
+- 建置系統與 `Bun.build()` 編譯
+
+---
+
+## 架構
+
+```text
+┌─ TUI client ──────────────────────────────────┐
+│  src/client/tui.tsx                            │
+│  - transcript / response rendering             │
+│  - command palette & autocomplete              │
+│  - session management (create, rename, delete) │
+│  - build / plan mode toggle                    │
+│  - sidebar: token usage, cost, git summary     │
+│  - working memory injection                    │
+└────────┬───────────────────────────────────────┘
+         │
+         ├── provider layer ─────────────────────┐
+         │  src/provider/registry.ts             │
+         │  - OpenRouter (openrouter)            │
+         │  - Big Pickle (big-pickle)            │
+         │  - Extensible via registry            │
+         └───────────────────────────────────────┘
+         │
+         └── tool layer ─────────────────────────┐
+            src/tool/registry.ts                 │
+            - read / write / grep / glob         │
+            - bash / edit / web-fetch            │
+            - Permission system                  │
+            └────────────────────────────────────┘
+```
+
+## 工作區記憶模型
+
+OpenZeroCode 將 repo 記憶拆分為三個輕量檔案：
+
+- `AGENTS.md`：穩定的 repo 專屬指令、工作流程和約束。
+- `CONTEXT.md`：背景上下文、共享詞彙，以及值得在提示詞中揭露的已知不一致。
+- `SESSION_SUMMARY.md`：給人類或後續續接用的簡短交接筆記；不會自動注入系統提示詞。
+
+目前自動提示詞組裝路徑會透過 `src/client/workspace-memory.ts` 從最近的工作區載入 `AGENTS.md` 和 `CONTEXT.md`。
+
+### 關鍵原始碼檔案
+
+| 檔案 | 用途 |
+|------|------|
+| `src/client/tui.tsx` | 主 TUI 入口和 UI 編排 |
+| `src/client/sessions.ts` | 會話持久化輔助邏輯 |
+| `src/client/workspace-memory.ts` | 將 `AGENTS.md` 和 `CONTEXT.md` 載入系統提示詞 |
+| `SESSION_SUMMARY.md` | 手動會話交接和續接筆記 |
+| `src/provider/registry.ts` | Provider 註冊和解析 |
+| `src/tool/registry.ts` | 內建工具註冊 |
+
+---
+
+## 與 OpenCode 的關係
+
+| 方面 | OpenCode | OpenZeroCode |
+|------|----------|--------------|
+| **執行時** | 需要 `zero` 雲端服務 | 自包含，本機優先 |
+| **TUI 框架** | `@opentui`（SolidJS） | `@opentui`（SolidJS），相同 |
+| **Provider 層** | OpenRouter 等 | OpenRouter、Big Pickle，可擴充 |
+| **工具系統** | 內建工具 | 同樣的 7 個工具 + 權限系統 |
+| **會話儲存** | 本機檔案 | `~/.openzerocode/` 下的本機檔案 |
+| **提示詞記憶** | 形態不定 | `AGENTS.md` + `CONTEXT.md` 注入本機系統提示詞 |
+| **雲端依賴** | 執行需要 `zero` | 無，完全離線可用 |
+| **二進位分發** | 平台專屬 npm 套件 | 平台專屬 npm 套件（`darwin-arm64`、`linux-x64`、`linux-arm64`、`win32-x64`）+ 透過 `python3 scripts/dev-install.py` 從原始碼優先本機安裝 |
+
+---
+
+## License
+
+MIT，見 [LICENSE](./LICENSE)。
