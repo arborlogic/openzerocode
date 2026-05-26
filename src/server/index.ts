@@ -165,7 +165,7 @@ function handleDeleteSession(id: string): Response {
 
 async function handlePrompt(id: string, req: Request): Promise<Response> {
   const body = await req.json().catch(() => null) as
-    | { text?: string; mode?: RunMode }
+    | { text?: string; mode?: RunMode; reasoning_effort?: "low" | "medium" | "high" | "max" }
     | null
   if (!body || typeof body.text !== "string" || !body.text.length) {
     return errorResponse("text is required", "BAD_REQUEST", 400)
@@ -208,6 +208,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           provider,
           keyName: "server",
           workdir,
+          reasoning_effort: body.reasoning_effort,
         }, {
           runSync,
           systemPrompt: (m) => buildSystemPrompt(m, agentsInstruction, contextInstruction),

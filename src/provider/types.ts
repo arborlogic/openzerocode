@@ -41,6 +41,15 @@ export type CompletionRequest = {
   max_tokens?: number
   temperature?: number
   /**
+   * Reasoning effort for supported models (e.g., DeepSeek V4 Pro, OpenAI o-series).
+   * Maps to the `reasoning_effort` parameter in OpenAI-compatible requests.
+   * - "low": minimal reasoning tokens, faster responses
+   * - "medium": balanced (default)
+   * - "high": more reasoning tokens, better for complex tasks
+   * - "max": maximum reasoning effort (DeepSeek V4 Pro extended level)
+   */
+  reasoning_effort?: "low" | "medium" | "high" | "max"
+  /**
    * Optional AbortSignal threaded into the underlying fetch so the upstream
    * HTTP request is torn down promptly when the caller cancels. Without this,
    * stream consumers can break out of their read loop but the network request
@@ -76,6 +85,7 @@ export type ModelInfo = {
   pricing?: {
     input: number
     output: number
+    cache_read?: number
   }
 }
 

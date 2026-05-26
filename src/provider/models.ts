@@ -5,7 +5,10 @@ export type ModelConfig = {
   pricing?: {
     input: number
     output: number
+    cache_read?: number
   }
+  /** Whether the model supports the `reasoning_effort` parameter (e.g. DeepSeek V4 Pro, OpenAI o-series). */
+  reasoning?: boolean
 }
 
 const DEFAULT_CONFIG: ModelConfig = {
@@ -24,7 +27,8 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   "deepseek-v4-pro": {
     contextLimit: 1_000_000,
-    pricing: { input: 1.74, output: 3.48 },
+    pricing: { input: 0.435, output: 0.87, cache_read: 0.003625 },
+    reasoning: true,
   },
   "gpt-5.4": {
     contextLimit: 1_000_000,
@@ -155,8 +159,13 @@ export function estimateTokens(text: string): number {
   return Math.max(0, Math.round(cjkCount / 2 + otherCount / 4))
 }
 
-export function estimateCost(model: string, inputTokens: number, outputTokens: number): number {
+export function estimateCost(model: string, inputTokens: number, outputTokens: number, cachedInputTokens?: number): number {
   const cfg = getModelConfig(model)
   if (!cfg.pricing) return 0
-  return (inputTokens * cfg.pricing.input + outputTokens * cfg.pricing.output) / 1_000_000
+  const cacheRead = cachedInputTokens ?? 0
+  const regularInput = inputTokens - cacheRead
+  const cacheCost = cacheRead * (cfg.pricing.cache_read ?? cfg.pricing.input)
+  const regularCost = regularInput * cfg.pricing.input
+  const outputCost = outputTokens * cfg.pricing.output
+  return ((regularInput > 0 ? regularCost : 0) + cacheCost + outputCost) / 1_000_000
 }
