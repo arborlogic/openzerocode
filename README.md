@@ -44,6 +44,8 @@ This repo is actively implemented. Current capabilities include:
   | `edit` | Targeted string replacement edits |
   | `web-fetch` | Fetch content from URLs |
 
+![OpenZeroCode TUI session](./snapshot01.png)
+
 ---
 
 ## Quick Start
