@@ -382,7 +382,7 @@ export function Sidebar(props: {
         <Show when={gitFiles().length > 0}>
           <box flexDirection="column">
             <box flexDirection="row" gap={1}>
-              <text style={{ fg: props.theme.accent }}>Changed Files</text>
+              <text style={{ fg: props.theme.accent }}>Modified Files</text>
               <text style={{ fg: "#7ee787" }}>+{totalAdditions()}</text>
               <text style={{ fg: "#f85149" }}>-{totalDeletions()}</text>
             </box>
