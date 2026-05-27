@@ -28,9 +28,11 @@ export const BashTool = Effect.gen(function* () {
         const stderr = result.stderr?.trim() ?? ""
 
         if (result.error) {
+          const partialOutput = [stdout, stderr].filter(Boolean).join("\n")
+          const message = [result.error.message || "command failed", partialOutput].filter(Boolean).join("\n")
           return new Result({
             title: `Bash error: ${args.command}`,
-            output: result.error.message || "command failed",
+            output: message,
           })
         }
 
