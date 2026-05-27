@@ -26,24 +26,33 @@ export function normalizeBigPickleModel(model: string) {
   return ANONYMOUS_MODELS.includes(model) ? model : "big-pickle"
 }
 
+// Standard SSE parser: accumulates data: lines until an empty line (event boundary),
+// then flushes the concatenated data. This avoids duplicate dispatch on data: + empty line.
 function parseSSE(text: string): { data: string; event?: string }[] {
   const messages: { data: string; event?: string }[] = []
   let event = ""
-  let data = ""
+  const dataLines: string[] = []
+
+  const flush = () => {
+    const data = dataLines.join("")
+    dataLines.length = 0
+    if (!data || data === "[DONE]") { event = ""; return }
+    try { JSON.parse(data) } catch { event = ""; return }
+    messages.push({ data, event })
+    event = ""
+  }
+
   for (const line of text.split("\n")) {
-    if (line.startsWith("event: ")) event = line.slice(7)
-    else if (line.startsWith("data: ")) {
-      data = line.slice(6)
-      if (data === "[DONE]") continue
-      try { JSON.parse(data) } catch { continue }
-      messages.push({ data, event })
-    } else if (line === "" && data) {
-      try { JSON.parse(data) } catch { continue }
-      messages.push({ data, event })
-      event = ""
-      data = ""
+    if (line.startsWith("event: ")) {
+      event = line.slice(7)
+    } else if (line.startsWith("data: ")) {
+      dataLines.push(line.slice(6))
+    } else if (line === "") {
+      flush()
     }
   }
+  // Flush any remaining data (handles streams that end without a final \n\n)
+  flush()
   return messages
 }
 
@@ -145,12 +154,62 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
           const reader = body.getReader()
           const decoder = new TextDecoder()
           let buffer = ""
+          // Timeout per individual read: if no bytes arrive within this window the
+          // stream is considered stalled and we tear it down so the caller can retry.
+          const READ_TIMEOUT_MS = 120_000
+
+          const readWithTimeout = async (): Promise<{ done: boolean; value?: Uint8Array }> => {
+            let timer: ReturnType<typeof setTimeout> | undefined
+            const timeout = new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("Stream read timeout")), READ_TIMEOUT_MS)
+            })
+            try {
+              const result = await Promise.race([reader.read(), timeout])
+              return result
+            } finally {
+              if (timer) clearTimeout(timer)
+            }
+          }
 
           const result = new ReadableStream<Chunk>({
             async pull(controller) {
               while (true) {
-                const { done, value } = await reader.read()
-                if (done) { controller.close(); return }
+                let done: boolean | undefined
+                let value: Uint8Array | undefined
+                try {
+                  const result = await readWithTimeout()
+                  done = result.done
+                  value = result.value
+                } catch (err) {
+                  // Read timed out or errored — cancel the underlying reader and
+                  // surface the failure to consumers instead of ending silently.
+                  try { await reader.cancel(err) } catch { /* ignore cancel failures */ }
+                  if (buffer) {
+                    const parts = buffer.split("\n\n")
+                    for (const part of parts) {
+                      if (!part) continue
+                      for (const msg of parseSSE(part)) {
+                        try { controller.enqueue(openaiChunkToChunk(JSON.parse(msg.data))) } catch { /* skip unparseable */ }
+                      }
+                    }
+                  }
+                  try { controller.error(err) } catch { /* already errored */ }
+                  return
+                }
+                if (done) {
+                  // Flush any remaining buffered data before closing.
+                  if (buffer) {
+                    const parts = buffer.split("\n\n")
+                    for (const part of parts) {
+                      if (!part) continue
+                      for (const msg of parseSSE(part)) {
+                        try { controller.enqueue(openaiChunkToChunk(JSON.parse(msg.data))) } catch { /* skip unparseable */ }
+                      }
+                    }
+                  }
+                  try { controller.close() } catch { /* already closed */ }
+                  return
+                }
                 buffer += decoder.decode(value, { stream: true })
                 const parts = buffer.split("\n\n")
                 buffer = parts.pop() ?? ""

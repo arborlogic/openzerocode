@@ -169,6 +169,15 @@ type DisplayTurn = {
   userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
+function formatCompactionMarker(info: CompactionInfo): string {
+  const count = info.sourceMessageCount === 1 ? "1 earlier message" : `${info.sourceMessageCount} earlier messages`
+  const createdAt = new Date(info.createdAt)
+  const when = Number.isNaN(createdAt.getTime())
+    ? ""
+    : ` · ${createdAt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+  return `↯ Session compacted · ${count} summarized${when}`
+}
+
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
 }
@@ -1273,6 +1282,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setProviderModelsError({})
           setProviderConfigRevision(v => v + 1)
           setSelectionRevision(v => v + 1)
+          setGitRefreshRevision(v => v + 1)
           // Check for modified/new/deleted files that may have been changed externally
           getGitFileChanges().then(({ modified, added, deleted }) => {
             const hints: string[] = []
@@ -2008,6 +2018,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const created: DisplayTurn = { entries: [] }
       result.push(created)
       return created
+    }
+
+    const info = compaction()
+    if (info) {
+      result.push({ entries: [{ kind: "system", text: formatCompactionMarker(info) }] })
     }
 
     const allMsgs = messages()

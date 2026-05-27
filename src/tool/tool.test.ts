@@ -44,6 +44,17 @@ describe("tool", () => {
     assert.equal(result.output.trim(), "hello")
   })
 
+  it("bash: timeout preserves partial output", async () => {
+    const bash = await Effect.runPromise(BashTool)
+    const result = await Effect.runPromise(
+      bash.execute({ command: "printf 'before timeout\\n'; sleep 2; printf 'after timeout\\n'", timeout: 100 }, testCtx()),
+    )
+    assert.ok(result.title.startsWith("Bash error:"))
+    assert.ok(result.output.includes("ETIMEDOUT"))
+    assert.ok(result.output.includes("before timeout"))
+    assert.ok(!result.output.includes("after timeout"))
+  })
+
   it("grep: finds matches without leaking shell errors", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
     const filePath = join(dir, "sample.ts")
