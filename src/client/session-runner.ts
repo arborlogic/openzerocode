@@ -309,7 +309,12 @@ export async function* streamSession(
             catch: (e) => new Error(String(e)),
           }) as Effect.Effect<void>,
           metadata: () => Effect.void,
-        })).pipe(Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` })))),
+        })).pipe(
+          // Safety net: if a tool hangs (runaway command, network stall, etc.)
+          // we time out after 5 minutes rather than locking the session forever.
+          Effect.timeout(300_000),
+          Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` }))),
+        ),
       )
 
       const text = convertToolResult(result)

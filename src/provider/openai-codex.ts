@@ -26,20 +26,31 @@ type ResponseOutputItem = {
   summary?: Array<{ type?: string; text?: string }>
 }
 
+// SSE parser that correctly joins multiple data: lines (per SSE spec).
 function parseSSE(text: string): { data: string; event?: string }[] {
   const messages: { data: string; event?: string }[] = []
   let event = ""
-  let data = ""
+  const dataLines: string[] = []
+
+  const flush = () => {
+    const data = dataLines.join("")
+    dataLines.length = 0
+    if (!data || data === "[DONE]") { event = ""; return }
+    try { JSON.parse(data) } catch { event = ""; return }
+    messages.push({ data, event })
+    event = ""
+  }
+
   for (const line of text.split("\n")) {
-    if (line.startsWith("event: ")) event = line.slice(7)
-    else if (line.startsWith("data: ")) data = line.slice(6)
-    else if (line === "" && data) {
-      if (data !== "[DONE]") messages.push({ data, event })
-      event = ""
-      data = ""
+    if (line.startsWith("event: ")) {
+      event = line.slice(7)
+    } else if (line.startsWith("data: ")) {
+      dataLines.push(line.slice(6))
+    } else if (line === "") {
+      flush()
     }
   }
-  if (data && data !== "[DONE]") messages.push({ data, event })
+  flush()
   return messages
 }
 
@@ -168,6 +179,36 @@ export function toCodexRequestBody(req: CompletionRequest) {
   }
 }
 
+/** Timeout for a single reader.read() call before we consider the stream stuck. */
+const STREAM_READ_TIMEOUT_MS = 60_000
+
+function readWithTimeout(reader: ReadableStreamDefaultReader<Uint8Array>, signal?: AbortSignal): Promise<{ done: boolean; value?: Uint8Array }> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error("Stream read timeout"))
+    }, STREAM_READ_TIMEOUT_MS)
+
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new Error("Aborted"))
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+
+    reader.read().then(
+      (result) => {
+        clearTimeout(timer)
+        signal?.removeEventListener("abort", onAbort)
+        resolve(result)
+      },
+      (err) => {
+        clearTimeout(timer)
+        signal?.removeEventListener("abort", onAbort)
+        reject(err)
+      }
+    )
+  })
+}
+
 export const layer = (input: { model?: string }) =>
   Layer.effect(
     Provider,
@@ -225,23 +266,73 @@ export const layer = (input: { model?: string }) =>
           const body = res.body
           if (!body) return yield* Effect.die(new Error("No response body"))
 
-          const reader = body.getReader()
+          const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>
           const decoder = new TextDecoder()
           let buffer = ""
           const argumentDeltas = new Set<number>()
+          let streamDone = false
 
           return new ReadableStream<Chunk>({
             async pull(controller) {
+              if (streamDone) return
               while (true) {
-                const { done, value } = await reader.read()
+                if (signal?.aborted) {
+                  const err = new Error("Aborted")
+                  try { await reader.cancel(err) } catch {}
+                  controller.error(err)
+                  return
+                }
+                let done: boolean
+                let value: Uint8Array | undefined
+                try {
+                  const result = await readWithTimeout(reader, signal)
+                  done = result.done
+                  value = result.value
+                } catch (err) {
+                  // Timeout or abort — cancel the underlying reader and surface
+                  // the failure to consumers instead of ending silently.
+                  try { await reader.cancel(err) } catch {}
+                  if (buffer) {
+                    for (const part of buffer.split("\n\n")) {
+                      if (!part) continue
+                      for (const msg of parseSSE(part)) {
+                        let raw: any
+                        try { raw = JSON.parse(msg.data) } catch { continue }
+                        const type = raw.type ?? msg.event
+                        if (type === "response.completed" || type === "response.incomplete") {
+                          try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                        }
+                      }
+                    }
+                  }
+                  try { controller.error(err) } catch {}
+                  return
+                }
                 if (done) {
-                  controller.close()
+                  streamDone = true
+                  // Flush remaining buffer on clean end-of-stream
+                  if (buffer) {
+                    for (const part of buffer.split("\n\n")) {
+                      if (!part) continue
+                      for (const msg of parseSSE(part)) {
+                        let raw: any
+                        try { raw = JSON.parse(msg.data) } catch { continue }
+                        const type = raw.type ?? msg.event
+                        if (type === "response.completed" || type === "response.incomplete") {
+                          try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                        }
+                      }
+                    }
+                    buffer = ""
+                  }
+                  try { controller.close() } catch {}
                   return
                 }
                 buffer += decoder.decode(value, { stream: true })
                 const parts = buffer.split("\n\n")
                 buffer = parts.pop() ?? ""
                 for (const part of parts) {
+                  if (!part) continue
                   for (const msg of parseSSE(part)) {
                     let raw: any
                     try { raw = JSON.parse(msg.data) } catch { continue }
