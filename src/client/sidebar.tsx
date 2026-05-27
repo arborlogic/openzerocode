@@ -27,14 +27,12 @@ type GitSnapshot = {
 }
 
 const execFileAsync = promisify(execFile)
-const EMPTY_GIT_SNAPSHOT: GitSnapshot = { files: [], branch: null, commits: [] }
+let pendingGitSnapshot: { cwd: string; promise: Promise<GitSnapshot> } | undefined
 
-let lastGitSnapshot = EMPTY_GIT_SNAPSHOT
-let pendingGitSnapshot: Promise<GitSnapshot> | undefined
-
-async function runGit(args: string[], timeout = 1000): Promise<string> {
+async function runGit(cwd: string, args: string[], timeout = 1000): Promise<string> {
   try {
     const { stdout } = await execFileAsync("git", args, {
+      cwd,
       encoding: "utf-8",
       timeout,
       maxBuffer: 1024 * 1024,
@@ -66,18 +64,17 @@ function parseRecentCommits(out: string): GitCommit[] {
   })
 }
 
-async function readGitSnapshot(): Promise<GitSnapshot> {
-  // Dedup concurrent calls: if a fetch is already in-flight, share its result.
-  // The 300 ms debounce in the component effect already prevents rapid
-  // successive reads, so we don't need an additional TTL cache here — without
-  // it the sidebar stays in sync with the actual working tree state.
-  if (pendingGitSnapshot) return pendingGitSnapshot
+async function readGitSnapshot(cwd: string): Promise<GitSnapshot> {
+  // Dedup concurrent calls within the same workspace: if a fetch is already
+  // in-flight, share its result. Keep cwd in the key so split workspaces don't
+  // reuse a snapshot from a different project.
+  if (pendingGitSnapshot?.cwd === cwd) return pendingGitSnapshot.promise
 
-  pendingGitSnapshot = Promise.all([
-    runGit(["diff", "--numstat", "HEAD"], 2000),
-    runGit(["status", "--porcelain"], 2000),
-    runGit(["rev-parse", "--abbrev-ref", "HEAD"], 1000),
-    runGit(["log", "--oneline", "-3"], 1000),
+  const promise = Promise.all([
+    runGit(cwd, ["diff", "--numstat", "HEAD"], 2000),
+    runGit(cwd, ["status", "--porcelain"], 2000),
+    runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"], 1000),
+    runGit(cwd, ["log", "--oneline", "-3"], 1000),
   ]).then(([diff, porcelain, branch, commits]) => {
     // 1) Parse tracked changes from --numstat (modified + staged additions)
     const fileMap = new Map<string, GitFile>()
@@ -112,17 +109,16 @@ async function readGitSnapshot(): Promise<GitSnapshot> {
       }
     }
 
-    const snapshot: GitSnapshot = {
+    return {
       files: [...fileMap.values()],
       branch: branch || null,
       commits: parseRecentCommits(commits),
     }
-    lastGitSnapshot = snapshot
-    return snapshot
   }).finally(() => {
-    pendingGitSnapshot = undefined
+    if (pendingGitSnapshot?.promise === promise) pendingGitSnapshot = undefined
   })
-  return pendingGitSnapshot
+  pendingGitSnapshot = { cwd, promise }
+  return promise
 }
 
 function truncatePath(path: string, maxLen: number): string {
@@ -178,30 +174,29 @@ export function Sidebar(props: {
     return () => clearInterval(id)
   })
 
-  createEffect(() => {
-    props.messages().length
+  const refreshGitSnapshot = (delayMs: number) => {
+    const cwd = props.cwd ?? process.cwd()
     const seq = ++gitRefreshSeq
     const id = setTimeout(() => {
-      void readGitSnapshot().then((snapshot) => {
+      void readGitSnapshot(cwd).then((snapshot) => {
         if (seq !== gitRefreshSeq) return
         setGitFiles(snapshot.files)
         setBranch(snapshot.branch)
         setCommits(snapshot.commits)
       })
-    }, 300)
+    }, delayMs)
     return () => clearTimeout(id)
+  }
+
+  createEffect(() => {
+    props.messages().length
+    return refreshGitSnapshot(300)
   })
 
   // Force refresh when gitRefreshKey changes (external trigger via palette)
   createEffect(() => {
     props.gitRefreshKey
-    const seq = ++gitRefreshSeq
-    void readGitSnapshot().then((snapshot) => {
-      if (seq !== gitRefreshSeq) return
-      setGitFiles(snapshot.files)
-      setBranch(snapshot.branch)
-      setCommits(snapshot.commits)
-    })
+    return refreshGitSnapshot(0)
   })
 
   const modelCfg = createMemo(() => getModelConfig(props.model, props.modelInfo))

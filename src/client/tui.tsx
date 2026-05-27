@@ -1273,6 +1273,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setProviderModelsError({})
           setProviderConfigRevision(v => v + 1)
           setSelectionRevision(v => v + 1)
+          setGitRefreshRevision(v => v + 1)
           // Check for modified/new/deleted files that may have been changed externally
           getGitFileChanges().then(({ modified, added, deleted }) => {
             const hints: string[] = []
