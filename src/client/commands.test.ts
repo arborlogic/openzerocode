@@ -14,6 +14,8 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     setCurrentModel: mock(() => Promise.resolve({ ok: true, message: "model set" })),
     mode: "build" as const,
     setMode: mock(() => {}),
+    reasoningEffort: "medium" as const,
+    setReasoningEffort: mock(() => {}),
     messages: () => messages,
     setMessages: mock((fn: any) => {
       if (typeof fn === "function") fn(messages)
