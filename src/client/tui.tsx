@@ -841,6 +841,10 @@ function App() {
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
+  setEnabled(_uiPrefs.geassEnabled)
+  if (_uiPrefs.geassEnabled) {
+    testConnection().then(() => setGeassRevision(v => v + 1))
+  }
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
@@ -1852,7 +1856,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: isEnabled() ? "Disable GEASS" : "Enable GEASS",
         hint: isEnabled() ? (isConnected() ? "● Online" : "○ Offline") : "",
         onSelect: () => {
-          setEnabled(!isEnabled())
+          const nextEnabled = !isEnabled()
+          setEnabled(nextEnabled)
+          saveUIPrefs({ geassEnabled: nextEnabled })
           setGeassRevision(v => v + 1)
           if (isEnabled()) {
             testConnection().then(() => setGeassRevision(v => v + 1))
