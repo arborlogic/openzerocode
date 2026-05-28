@@ -37,6 +37,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openHelp: mock(() => {}),
     openUsageDashboard: mock(() => {}),
     compactSession: mock(() => Promise.resolve()),
+    exportCompactSession: mock(() => {}),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     ...overrides,
@@ -59,6 +60,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("auto"))
     assert.ok(names.includes("commit"))
     assert.ok(names.includes("compact"))
+    assert.ok(names.includes("export"))
     assert.ok(names.includes("exit"))
   })
 

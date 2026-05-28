@@ -8,3 +8,4 @@ openzerocode-*.tgz
 *.local.db
 .env
 workspace/
+openzerocode-exports/

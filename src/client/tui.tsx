@@ -39,6 +39,7 @@ import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
+import { writeCompactTranscriptExport } from "./session-export"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -1352,6 +1353,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
+        label: "Export compact transcript",
+        hint: "/export",
+        onSelect: () => {
+          exportCompactSession()
+          setShowPalette(false)
+        },
+      },
+      {
         label: "Timeline",
         hint: formatTimelineHint(),
         onSelect: () => {
@@ -2142,6 +2151,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
   }
 
+  const exportCompactSession = () => {
+    try {
+      const path = writeCompactTranscriptExport({
+        sessionId: sessionId(),
+        title: sessionMeta()?.title,
+        compaction: compaction(),
+        messages: messages(),
+      })
+      setStatus(`exported compact transcript: ${path}`)
+      showToast("success", "Session exported", path, 5000)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatus("session export failed")
+      showToast("error", "Session export failed", message)
+    }
+  }
+
   const refreshSessions = () => {
     setSessionMeta(currentSessionMeta())
     setSessionRevision((v) => v + 1)
@@ -2628,6 +2654,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowUsageDashboard(true)
         },
         compactSession: compactCurrentSession,
+        exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,
       }
@@ -2667,7 +2694,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setComposerText("")
         return
       }
-      if (slashCmd === "compact") {
+      if (slashCmd === "compact" || slashCmd === "export") {
         setComposerText("")
       }
       await executeCommand(input, ctx)
