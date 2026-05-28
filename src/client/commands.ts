@@ -38,6 +38,7 @@ export type CommandContext = {
   openHelp: () => void
   openUsageDashboard: () => void
   compactSession: () => Promise<void>
+  exportCompactSession: () => void
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
 }
@@ -59,6 +60,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
   { name: "compact", description: "Summarize and compress earlier session history" },
+  { name: "export", description: "Export compact transcript: user asks, AI responses, and compact summary" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
 ]
 
@@ -157,6 +159,11 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "compact") {
     await ctx.compactSession()
+    return true
+  }
+
+  if (cmd === "export") {
+    ctx.exportCompactSession()
     return true
   }
 

@@ -190,9 +190,12 @@ export async function* streamSession(
         const result = await reader.read()
         done = result.done ?? false
         value = result.value
-      } catch {
-        // Reader was cancelled (e.g. by abort) or upstream errored mid-stream.
-        break
+      } catch (error) {
+        // Reader cancellation is expected during user aborts. Any other
+        // mid-stream failure must be surfaced; treating it as a normal EOF can
+        // silently stop an agent turn after a tool result with no final answer.
+        if (options.abort.aborted) break
+        throw error
       }
       if (done) break
       if (value.finish_reason) finishReason = value.finish_reason
@@ -352,51 +355,66 @@ export async function runSession(
     keyName: ui.keyName,
     reasoning_effort: ui.reasoning_effort,
   }, runtime)
+  const resultHistory: Message[] = [...history]
 
-  while (true) {
-    const { value, done } = await gen.next()
-    if (done) {
-      ui.setStatus("waiting for input")
-      return value
-    }
+  try {
+    while (true) {
+      const { value, done } = await gen.next()
+      if (done) {
+        ui.setStatus("waiting for input")
+        return value
+      }
 
-    const chunk = value
-    switch (chunk.type) {
-      case "text":
-        ui.streamAssistantChunk(chunk.content)
-        ui.scrollBottom()
-        break
-      case "reasoning":
-        ui.streamReasoningChunk(chunk.content)
-        ui.scrollBottom()
-        break
-      case "tool_call_delta":
-        ui.streamToolCallChunk(chunk.index, { id: chunk.id, tool: chunk.tool, argumentsChunk: chunk.argumentsChunk })
-        ui.scrollBottom()
-        break
-      case "tool_start":
-        ui.setStreamingToolResult({ id: chunk.id, tool: chunk.name, output: "running..." })
-        ui.scrollBottom()
-        break
-      case "tool_result":
-        ui.setStreamingToolResult({ id: chunk.id, tool: chunk.name, output: chunk.output, error: chunk.error })
-        ui.scrollBottom()
-        break
-      case "status":
-        ui.setStatus(chunk.text)
-        break
-      case "notice":
-        ui.notify(chunk.text, chunk.kind)
-        break
-      case "usage":
-        ui.onUsage?.(chunk.inputTokens, chunk.outputTokens, chunk.cachedInputTokens)
-        break
-      case "message":
-        ui.addMessage(chunk.message)
-        break
-      case "error":
-      case "done":
-        break
+      const chunk = value
+      switch (chunk.type) {
+        case "text":
+          ui.streamAssistantChunk(chunk.content)
+          ui.scrollBottom()
+          break
+        case "reasoning":
+          ui.streamReasoningChunk(chunk.content)
+          ui.scrollBottom()
+          break
+        case "tool_call_delta":
+          ui.streamToolCallChunk(chunk.index, { id: chunk.id, tool: chunk.tool, argumentsChunk: chunk.argumentsChunk })
+          ui.scrollBottom()
+          break
+        case "tool_start":
+          ui.setStreamingToolResult({ id: chunk.id, tool: chunk.name, output: "running..." })
+          ui.scrollBottom()
+          break
+        case "tool_result":
+          ui.setStreamingToolResult({ id: chunk.id, tool: chunk.name, output: chunk.output, error: chunk.error })
+          ui.scrollBottom()
+          break
+        case "status":
+          ui.setStatus(chunk.text)
+          break
+        case "notice":
+          ui.notify(chunk.text, chunk.kind)
+          break
+        case "usage":
+          ui.onUsage?.(chunk.inputTokens, chunk.outputTokens, chunk.cachedInputTokens)
+          break
+        case "message":
+          resultHistory.push(chunk.message)
+          ui.addMessage(chunk.message)
+          break
+        case "error":
+          ui.setStatus("error")
+          break
+        case "done":
+          break
+      }
     }
+  } catch (error) {
+    if (ui.abort.aborted) throw error
+    const errorText = formatProviderError(error)
+    ui.notify(errorText, "error")
+    ui.setStatus("error")
+    const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
+    resultHistory.push(errorMsg)
+    ui.addMessage(errorMsg)
+    return resultHistory
   }
 }

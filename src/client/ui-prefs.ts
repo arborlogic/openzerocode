@@ -6,12 +6,14 @@ type UIPrefs = {
   showCompletedTools: boolean
   showThinkingBlocks: boolean
   layoutMode: "horizontal" | "vertical"
+  geassEnabled: boolean
 }
 
 const DEFAULTS: UIPrefs = {
   showCompletedTools: false,
   showThinkingBlocks: true,
   layoutMode: "horizontal",
+  geassEnabled: false,
 }
 
 function getPrefsPath() {

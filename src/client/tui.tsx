@@ -39,6 +39,7 @@ import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
+import { writeCompactTranscriptExport } from "./session-export"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -840,6 +841,10 @@ function App() {
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
+  setEnabled(_uiPrefs.geassEnabled)
+  if (_uiPrefs.geassEnabled) {
+    testConnection().then(() => setGeassRevision(v => v + 1))
+  }
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
 const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
@@ -1352,6 +1357,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
+        label: "Export compact transcript",
+        hint: "/export",
+        onSelect: () => {
+          exportCompactSession()
+          setShowPalette(false)
+        },
+      },
+      {
         label: "Timeline",
         hint: formatTimelineHint(),
         onSelect: () => {
@@ -1843,7 +1856,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: isEnabled() ? "Disable GEASS" : "Enable GEASS",
         hint: isEnabled() ? (isConnected() ? "● Online" : "○ Offline") : "",
         onSelect: () => {
-          setEnabled(!isEnabled())
+          const nextEnabled = !isEnabled()
+          setEnabled(nextEnabled)
+          saveUIPrefs({ geassEnabled: nextEnabled })
           setGeassRevision(v => v + 1)
           if (isEnabled()) {
             testConnection().then(() => setGeassRevision(v => v + 1))
@@ -2140,6 +2155,23 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const msgs = messages()
     if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "")) return
     saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+  }
+
+  const exportCompactSession = () => {
+    try {
+      const path = writeCompactTranscriptExport({
+        sessionId: sessionId(),
+        title: sessionMeta()?.title,
+        compaction: compaction(),
+        messages: messages(),
+      })
+      setStatus(`exported compact transcript: ${path}`)
+      showToast("success", "Session exported", path, 5000)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setStatus("session export failed")
+      showToast("error", "Session export failed", message)
+    }
   }
 
   const refreshSessions = () => {
@@ -2628,6 +2660,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowUsageDashboard(true)
         },
         compactSession: compactCurrentSession,
+        exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,
       }
@@ -2667,7 +2700,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setComposerText("")
         return
       }
-      if (slashCmd === "compact") {
+      if (slashCmd === "compact" || slashCmd === "export") {
         setComposerText("")
       }
       await executeCommand(input, ctx)
