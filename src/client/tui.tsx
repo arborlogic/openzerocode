@@ -15,7 +15,7 @@ import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
-import { runSession, type RunMode } from "./session-runner"
+import { runSession, streamSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
@@ -34,7 +34,9 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
-import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
+import { testConnection, isConnected, isEnabled, setEnabled, readPage } from "../browser/geass-client"
+import { resolveSkillsDir, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
+import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -62,11 +64,16 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log("Options:")
   console.log("  -v, --version            Show version number")
   console.log("  -h, --help               Show this help message")
+  console.log("  -r, --run PROMPT         Run a single prompt headlessly (no TUI, auto-approve tools)")
   console.log()
   console.log("Commands:")
   console.log("  serve                    Start an HTTP server exposing the streaming session API")
   console.log("    --port PORT            Port to listen on (default: 4096)")
   console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
+  console.log()
+  console.log("Examples:")
+  console.log("  openzerocode                          Launch TUI")
+  console.log("  openzerocode --run 'reply a Threads post'  Headless agent run, stdout = result")
   console.log()
   console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
   console.log("Otherwise, the terminal UI is launched.")
@@ -92,6 +99,194 @@ if (args[0] === "serve") {
   // Bun.serve() keeps the event loop alive but returns immediately. Block here
   // so the rest of this module (which boots the TUI) never executes.
   await new Promise<never>(() => {})
+}
+
+// --run "prompt" — headless agent mode (no TUI, auto-approve all tools)
+{
+  const runFlagIdx = args.findIndex((a) => a === "--run" || a === "-r")
+  const headlessPrompt = runFlagIdx >= 0 && args[runFlagIdx + 1] ? args[runFlagIdx + 1] : undefined
+  if (headlessPrompt !== undefined) {
+    const provider = autoDetectProvider() ?? "opencode-zen"
+    const model = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider))
+    const layer = Layer.merge(buildLayer(provider, model), toolLayer)
+    const agentsInstruction = loadAgentsInstruction(process.cwd())
+    const contextInstruction = loadContextInstruction(process.cwd())
+
+    setEnabled(true)
+    await testConnection()
+
+    // ① LOAD — match current page URL to a skill, inject SKILL.md (+ LEARNINGS.md)
+    let activeSkill: LoadedSkill | undefined
+    if (isConnected()) {
+      const skillsDir = resolveSkillsDir(process.cwd())
+      if (skillsDir) {
+        try {
+          const page = await readPage()
+          if (page?.url) {
+            activeSkill = matchSkillByUrl(page.url, skillsDir)
+            if (activeSkill) {
+              process.stderr.write(`[skill: ${activeSkill.name}] matched by ${activeSkill.matchedBy}\n`)
+            }
+          }
+        } catch {
+          // page read failed — proceed without a skill
+        }
+      }
+    }
+    const skillSection = activeSkill ? buildSkillSection(activeSkill) : undefined
+
+    const runSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
+      Effect.runPromise(effect.pipe(Effect.provide(layer))) as Promise<A>
+
+    const runtime = {
+      runSync,
+      systemPrompt: (mode: RunMode) => {
+        const base = buildSystemPrompt(mode, agentsInstruction, contextInstruction)
+        return skillSection ? `${base}\n\n${skillSection}` : base
+      },
+      parseJson: (raw: string) => tryParseJSON(raw),
+      ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
+    }
+
+    const options: StreamOptions = {
+      abort: new AbortController().signal,
+      model,
+      mode: "build" as RunMode,
+      provider,
+      keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
+    }
+
+    let finalContent = ""
+    let runOutcome: RunOutcome = "success"
+    let runError: string | undefined
+    const runTools: RunToolEvent[] = []
+    const runToolIndex = new Map<string, RunToolEvent>()
+    const runStart = new Date()
+
+    const gen = streamSession(headlessPrompt, [], options, runtime)
+    for await (const chunk of gen) {
+      switch (chunk.type) {
+        case "text":
+          process.stdout.write(chunk.content)
+          finalContent += chunk.content
+          break
+        case "tool_start": {
+          process.stderr.write(`\n[tool: ${chunk.name}] ${chunk.input.slice(0, 120)}\n`)
+          const ev: RunToolEvent = { name: chunk.name, input: chunk.input }
+          runTools.push(ev)
+          runToolIndex.set(chunk.name + ":" + (runTools.length - 1), ev)
+          break
+        }
+        case "tool_result": {
+          process.stderr.write(`[done: ${chunk.name}] ${chunk.output.slice(0, 120)}\n`)
+          // Attach output to the most recent tool event with this name
+          for (let i = runTools.length - 1; i >= 0; i--) {
+            if (runTools[i].name === chunk.name && runTools[i].output === undefined) {
+              runTools[i].output = chunk.output
+              if (chunk.error) runTools[i].error = true
+              break
+            }
+          }
+          break
+        }
+        case "status":
+          process.stderr.write(`\r${chunk.text.padEnd(40)}\r`)
+          break
+        case "error":
+          process.stderr.write(`\nError: ${chunk.message}\n`)
+          runOutcome = "fail"
+          runError = chunk.message
+          break
+      }
+    }
+
+    // ③ CAPTURE — write run trajectory to skills/<skill>/runs/
+    let runRecordPath: string | undefined
+    if (activeSkill) {
+      runRecordPath = writeRunRecord({
+        skillName: activeSkill.name,
+        skillDir: activeSkill.dir,
+        prompt: headlessPrompt,
+        matchedBy: activeSkill.matchedBy,
+        pageUrl: (isConnected() ? await readPage().catch(() => undefined) : undefined)?.url,
+        model,
+        provider,
+        tools: runTools,
+        finalText: finalContent,
+        outcome: runOutcome,
+        errorMessage: runError,
+        startedAt: runStart,
+        endedAt: new Date(),
+      })
+      process.stderr.write(`\n[capture] ${runRecordPath}\n`)
+    }
+
+    // ④⑤ REFLECT — on failure, run a second headless pass to append learnings
+    const skipReflect = process.env.OPENZERO_NO_REFLECT === "1"
+    if (runOutcome === "fail" && activeSkill && runRecordPath && !skipReflect) {
+      process.stderr.write(`\n[reflect] starting reflection for skill: ${activeSkill.name}\n`)
+      const reflectModel = normalizeBigPickleModel(
+        process.env.OPENZERO_REFLECT_MODEL ?? process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider),
+      )
+      const reflectLayer = Layer.merge(buildLayer(provider, reflectModel), toolLayer)
+      const reflectRunSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
+        Effect.runPromise(effect.pipe(Effect.provide(reflectLayer))) as Promise<A>
+      const reflectRuntime = {
+        runSync: reflectRunSync,
+        systemPrompt: (mode: RunMode) => buildSystemPrompt(mode, agentsInstruction, contextInstruction),
+        parseJson: (raw: string) => tryParseJSON(raw),
+        ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
+      }
+      const reflectOptions: StreamOptions = {
+        abort: new AbortController().signal,
+        model: reflectModel,
+        mode: "build" as RunMode,
+        provider,
+        keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
+      }
+      const reflectPrompt = [
+        `You are reflecting on a failed agent run for the skill: ${activeSkill.name}.`,
+        ``,
+        `Files to read (use the read_file tool):`,
+        `1. SKILL.md (golden path): ${activeSkill.skillPath}`,
+        `2. Run record (trajectory): ${runRecordPath}`,
+        activeSkill.learnings ? `3. Existing LEARNINGS.md: ${activeSkill.dir}/LEARNINGS.md` : null,
+        ``,
+        `Your job:`,
+        `- Identify what failed: which step, which selector, which assumption was wrong.`,
+        `- If this is a KNOWLEDGE issue (wrong selector, wrong flow, wrong assumption):`,
+        `  Append a new learning entry to ${activeSkill.dir}/LEARNINGS.md using the format:`,
+        `  ## <date> <short description>`,
+        `  - Observed: <what happened>`,
+        `  - Fix/Alternative: <what to try instead>`,
+        `  - Confidence: low | medium | high`,
+        `  Create the file if it does not exist.`,
+        `- If this is a SCRIPT issue (bug in a .py or .js file):`,
+        `  Write a unified diff to ${activeSkill.dir}/runs/${new Date().toISOString().replace(/[:.]/g, "-")}-reflect.patch`,
+        `  Do NOT modify scripts directly.`,
+        `- Do NOT modify SKILL.md.`,
+        `- Do NOT make more than one file write.`,
+        `- Reply with a one-paragraph summary of what you found and what you wrote.`,
+      ]
+        .filter((l) => l !== null)
+        .join("\n")
+
+      const reflectGen = streamSession(reflectPrompt, [], reflectOptions, reflectRuntime)
+      for await (const chunk of reflectGen) {
+        if (chunk.type === "text") process.stderr.write(chunk.content)
+        else if (chunk.type === "tool_start")
+          process.stderr.write(`\n[reflect tool: ${chunk.name}] ${chunk.input.slice(0, 80)}\n`)
+        else if (chunk.type === "tool_result")
+          process.stderr.write(`[reflect done: ${chunk.name}]\n`)
+        else if (chunk.type === "error")
+          process.stderr.write(`\n[reflect error] ${chunk.message}\n`)
+      }
+      process.stderr.write("\n[reflect] done\n")
+    }
+
+    process.stdout.write("\n")
+    process.exit(runOutcome === "success" ? 0 : 1)
+  }
 }
 
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
