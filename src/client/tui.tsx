@@ -23,7 +23,7 @@ import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig } from "../provider/models"
-import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, estimateContextTokens, CONTEXT_WARNING_THRESHOLD } from "./session-compact"
+import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
@@ -170,13 +170,20 @@ type DisplayTurn = {
   userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
+function summaryPreview(summary: string, maxLen = 80): string {
+  const collapsed = summary.replace(/\s+/g, " ").trim()
+  if (collapsed.length <= maxLen) return collapsed
+  return collapsed.slice(0, maxLen).trimEnd() + "…"
+}
+
 function formatCompactionMarker(info: CompactionInfo): string {
   const count = info.sourceMessageCount === 1 ? "1 earlier message" : `${info.sourceMessageCount} earlier messages`
   const createdAt = new Date(info.createdAt)
   const when = Number.isNaN(createdAt.getTime())
     ? ""
     : ` · ${createdAt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
-  return `↯ Session compacted · ${count} summarized${when}`
+  const preview = info.summary ? ` · "${summaryPreview(info.summary)}"` : ""
+  return `↯ Session compacted · ${count} summarized${when}${preview}`
 }
 
 function refreshCurrentModelInfo() {
@@ -807,7 +814,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -847,7 +854,8 @@ function App() {
   }
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
-const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -890,6 +898,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
+  createEffect(() => { saveUIPrefs({ autoCompressionEnabled: autoCompressionEnabled() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -1356,6 +1365,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           void compactCurrentSession()
         },
       },
+      ...(compaction()?.summary
+        ? [{
+            label: "View compaction summary",
+            hint: "/compact view",
+            onSelect: () => {
+              viewCompactionSummary()
+            },
+          } satisfies PaletteItem]
+        : []),
       {
         label: "Export compact transcript",
         hint: "/export",
@@ -1386,10 +1404,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Experiment",
-        hint: "GEASS …",
+        hint: `auto compression ${autoCompressionEnabled() ? "ON" : "OFF"}, GEASS …`,
         onSelect: () => {
           setPalettePendingDelete(null)
-          setPaletteMode("geass")
+          setPaletteMode("experiments")
           setPaletteIndex(0)
         },
       },
@@ -1844,9 +1862,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   
-  const geassPaletteItems = createMemo<PaletteItem[]>(() => {
+  const experimentPaletteItems = createMemo<PaletteItem[]>(() => {
     geassRevision()
     return [
+      {
+        label: "EXPERIMENTS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Auto compression",
+        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        onSelect: () => {
+          const nextEnabled = !autoCompressionEnabled()
+          setAutoCompressionEnabled(nextEnabled)
+          saveUIPrefs({ autoCompressionEnabled: nextEnabled })
+          setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
+          setShowPalette(false)
+        },
+      },
       {
         label: "GEASS",
         kind: "section",
@@ -1944,8 +1978,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? timelinePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
-          : paletteMode() === "geass"
-            ? geassPaletteItems()
+          : paletteMode() === "experiments"
+            ? experimentPaletteItems()
           : paletteMode() === "userMessageActions"
             ? userMessageActionItems()
           : actionPaletteItems(),
@@ -2320,31 +2354,50 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return { ok: true, message: `Directory switched to ${displayPath(next)}` }
   }
 
-  const compactCurrentSession = async () => {
+  const viewCompactionSummary = () => {
+    const info = compaction()
+    if (!info || !info.summary) {
+      setStatus("no compaction summary yet")
+      showToast("info", "No compaction summary", "This session hasn't been compacted yet.")
+      return
+    }
+    const createdAt = new Date(info.createdAt)
+    const when = Number.isNaN(createdAt.getTime())
+      ? ""
+      : ` (${createdAt.toLocaleString()})`
+    const header = `↯ Compaction summary · ${info.sourceMessageCount} messages summarized${when}`
+    setNotices((prev) => [...prev, { kind: "system", text: `${header}\n\n${info.summary}` }])
+    setShowPalette(false)
+    queueMicrotask(scrollBottom)
+  }
+
+  const compactCurrentSession = async (opts: { automatic?: boolean } = {}) => {
     if (running()) {
       setStatus("response running — compaction skipped")
-      showToast("info", "Compaction skipped", "A response is already running.")
+      if (!opts.automatic) showToast("info", "Compaction skipped", "A response is already running.")
       return
     }
     if (compacting()) {
       setStatus("compaction already running")
-      showToast("info", "Compaction running", "Please wait for the current compaction to finish.")
+      if (!opts.automatic) showToast("info", "Compaction running", "Please wait for the current compaction to finish.")
       return
     }
 
     const currentMessages = messages()
     const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel, currentModelInfo).contextLimit)
     if (head.length === 0) {
-      setStatus("session too short to compact")
-      showToast("info", "Compaction skipped", "Session is still too short to compact.")
+      if (!opts.automatic) {
+        setStatus("session too short to compact")
+        showToast("info", "Compaction skipped", "Session is still too short to compact.")
+      }
       return
     }
 
     setPalettePendingDelete(null)
     setShowPalette(false)
     setCompacting(true)
-    setStatus(`compacting ${head.length} earlier messages...`)
-    showToast("info", "Compaction started", "Summarizing earlier session history…", 2000)
+    setStatus(opts.automatic ? `auto-compacting ${head.length} earlier messages...` : `compacting ${head.length} earlier messages...`)
+    showToast("info", opts.automatic ? "Auto compression started" : "Compaction started", "Summarizing earlier session history…", 2000)
     queueMicrotask(scrollBottom)
 
     const transcript = buildCompactionTranscript(head)
@@ -2390,12 +2443,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setCompaction(newCompaction)
       saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
       refreshSessions()
-      setStatus("session compacted")
-      showToast("success", "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
+      setStatus(opts.automatic ? "session auto-compressed" : "session compacted")
+      showToast("success", opts.automatic ? "Session auto-compressed" : "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
     } catch (error) {
       const errorText = formatProviderError(error)
-      setStatus("compaction failed")
-      showToast("error", "Compaction failed", errorText)
+      setStatus(opts.automatic ? "auto compression failed" : "compaction failed")
+      showToast("error", opts.automatic ? "Auto compression failed" : "Compaction failed", errorText)
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     } finally {
       setCompacting(false)
@@ -2421,10 +2474,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Suggest compaction when context is near limit, but let the user decide.
     {
       const cfg = getModelConfig(currentModel, currentModelInfo)
-      if (estimateContextTokens(messages(), input) > cfg.contextLimit * CONTEXT_WARNING_THRESHOLD) {
+      const nearContextLimit = shouldAutoCompactContext(messages(), input, cfg.contextLimit)
+      if (nearContextLimit && autoCompressionEnabled()) {
+        await compactCurrentSession({ automatic: true })
+      } else if (nearContextLimit) {
         setNotices((prev) => {
           const text = "Context is getting full — you can run /compact now if you want to reduce session history."
           const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
@@ -2433,6 +2488,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         })
       }
     }
+
+    if (abortSignal.aborted) return
 
     runAbort = new AbortController()
     abortSignal.addEventListener("abort", () => runAbort?.abort(), { once: true })
@@ -2660,6 +2717,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowUsageDashboard(true)
         },
         compactSession: compactCurrentSession,
+        viewCompactionSummary,
         exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,

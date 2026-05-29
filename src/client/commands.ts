@@ -38,6 +38,7 @@ export type CommandContext = {
   openHelp: () => void
   openUsageDashboard: () => void
   compactSession: () => Promise<void>
+  viewCompactionSummary: () => void
   exportCompactSession: () => void
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
@@ -59,7 +60,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
-  { name: "compact", description: "Summarize and compress earlier session history" },
+  { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)" },
   { name: "export", description: "Export compact transcript: user asks, AI responses, and compact summary" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
 ]
@@ -158,6 +159,10 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
   }
 
   if (cmd === "compact") {
+    if (arg === "view") {
+      ctx.viewCompactionSummary()
+      return true
+    }
     await ctx.compactSession()
     return true
   }

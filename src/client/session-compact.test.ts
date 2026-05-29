@@ -8,6 +8,8 @@ import {
   buildCompactionTranscript,
   createCompactSummaryMessage,
   estimateContextTokens,
+  shouldAutoCompactContext,
+  CONTEXT_WARNING_THRESHOLD,
   COMPACT_SUMMARY_PREFIX,
 } from "./session-compact"
 
@@ -92,6 +94,18 @@ describe("estimateContextTokens", () => {
 
     assert.equal(estimateContextTokens(msgs), estimateContextTokens([user("hello")]))
     assert.ok(estimateContextTokens(msgs, "next prompt".repeat(100)) > estimateContextTokens(msgs))
+  })
+})
+
+describe("shouldAutoCompactContext", () => {
+  it("returns true only after estimated context crosses the warning threshold", () => {
+    const messages = [user("hello ".repeat(200))]
+    const estimate = estimateContextTokens(messages)
+    const limitAboveThreshold = Math.ceil(estimate / CONTEXT_WARNING_THRESHOLD) + 100
+    const limitBelowThreshold = Math.max(1, Math.floor(estimate / CONTEXT_WARNING_THRESHOLD) - 100)
+
+    assert.equal(shouldAutoCompactContext(messages, "", limitAboveThreshold), false)
+    assert.equal(shouldAutoCompactContext(messages, "", limitBelowThreshold), true)
   })
 })
 

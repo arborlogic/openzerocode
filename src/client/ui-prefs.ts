@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from "fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 
@@ -7,6 +7,7 @@ type UIPrefs = {
   showThinkingBlocks: boolean
   layoutMode: "horizontal" | "vertical"
   geassEnabled: boolean
+  autoCompressionEnabled: boolean
 }
 
 const DEFAULTS: UIPrefs = {
@@ -14,6 +15,7 @@ const DEFAULTS: UIPrefs = {
   showThinkingBlocks: true,
   layoutMode: "horizontal",
   geassEnabled: false,
+  autoCompressionEnabled: false,
 }
 
 function getPrefsPath() {
