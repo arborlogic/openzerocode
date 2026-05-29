@@ -4,10 +4,10 @@ import { readdir } from "fs/promises"
 import path from "path"
 
 const Parameters = Schema.Struct({
-  pattern: Schema.String,
+  pattern: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
   path: Schema.optional(Schema.String),
 })
-type Args = { pattern: string; path?: string }
+type Args = { pattern: string | string[]; path?: string }
 
 function matchGlob(pattern: string, candidate: string): boolean {
   const segments = pattern.split("/")
@@ -58,12 +58,16 @@ export const GlobTool = Effect.gen(function* () {
     execute: (raw, ctx) =>
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
-        yield* ctx.ask({ permission: "glob", patterns: [args.pattern] })
+        const patterns = Array.isArray(args.pattern) ? args.pattern : [args.pattern]
+        yield* ctx.ask({ permission: "glob", patterns })
         const searchRoot = path.resolve(ctx.cwd, args.path ?? ".")
-        const paths = yield* Effect.promise(() => walkFiles(searchRoot, searchRoot, args.pattern))
+        const allPaths = yield* Effect.promise(() =>
+          Promise.all(patterns.map((p) => walkFiles(searchRoot, searchRoot, p)))
+            .then((results) => [...new Set(results.flat())])
+        )
         return new Result({
-          title: `Glob: ${args.pattern}`,
-          output: paths.length > 0 ? paths.join("\n") : "(no matches)",
+          title: `Glob: ${patterns.join(", ")}`,
+          output: allPaths.length > 0 ? allPaths.join("\n") : "(no matches)",
         })
       }).pipe(Effect.orDie),
   })

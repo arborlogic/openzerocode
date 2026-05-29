@@ -18,9 +18,27 @@ function tryParseJSON(raw: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw)
     return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {}
-  } catch {
-    return {}
-  }
+  } catch { /* fall through */ }
+  // Handle concatenated JSON objects: {"a":1}{"b":2} (a common model mistake)
+  // Fix by wrapping as array, then merging — duplicate keys become arrays.
+  try {
+    const fixed = "[" + raw.trim().replace(/\}\s*\{/g, "},{") + "]"
+    const arr = JSON.parse(fixed)
+    if (!Array.isArray(arr)) return {}
+    const merged: Record<string, unknown> = {}
+    for (const obj of arr) {
+      if (!obj || typeof obj !== "object") continue
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        if (k in merged) {
+          if (!Array.isArray(merged[k])) merged[k] = [merged[k]]
+          ;(merged[k] as unknown[]).push(v)
+        } else {
+          merged[k] = v
+        }
+      }
+    }
+    return merged
+  } catch { return {} }
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

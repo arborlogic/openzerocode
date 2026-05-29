@@ -455,7 +455,27 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 }
 
 function tryParseJSON(raw: string): Record<string, unknown> {
-  try { return JSON.parse(raw) } catch { return {} }
+  try { return JSON.parse(raw) } catch { /* fall through */ }
+  // Handle concatenated JSON objects: {"a":1}{"b":2} (a common model mistake)
+  // Fix by wrapping as array, then merging — duplicate keys become arrays.
+  try {
+    const fixed = "[" + raw.trim().replace(/\}\s*\{/g, "},{") + "]"
+    const arr = JSON.parse(fixed)
+    if (!Array.isArray(arr)) return {}
+    const merged: Record<string, unknown> = {}
+    for (const obj of arr) {
+      if (!obj || typeof obj !== "object") continue
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        if (k in merged) {
+          if (!Array.isArray(merged[k])) merged[k] = [merged[k]]
+          ;(merged[k] as unknown[]).push(v)
+        } else {
+          merged[k] = v
+        }
+      }
+    }
+    return merged
+  } catch { return {} }
 }
 
 const execFileAsync = promisify(execFile)
