@@ -15,6 +15,7 @@ import { BrowserTypeTool } from "./browser-type"
 import { BrowserSelectTool } from "./browser-select"
 import { BrowserScrollTool } from "./browser-scroll"
 import { BrowserScreenshotTool } from "./browser-screenshot"
+import { BrowserObserveVisualTool } from "./browser-observe-visual"
 
 export interface Interface {
   readonly all: () => Effect.Effect<readonly Def[]>
@@ -43,6 +44,7 @@ export const layer = Layer.effect(
       yield* BrowserSelectTool,
       yield* BrowserScrollTool,
       yield* BrowserScreenshotTool,
+      yield* BrowserObserveVisualTool,
     ]
     const custom: Def[] = []
 

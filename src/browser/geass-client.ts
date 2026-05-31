@@ -39,6 +39,35 @@ export interface PageSnapshot {
   capturedAt: number;
 }
 
+export interface ScreenshotResult {
+  base64: string;
+  format?: 'png';
+  width?: number;
+  height?: number;
+  viewport?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    deviceScaleFactor?: number;
+  };
+  url?: string;
+  title?: string;
+  capturedAt?: number;
+}
+
+export interface VisualObservation {
+  screenshot: ScreenshotResult;
+  page: PageSnapshot;
+}
+
+export interface VlmSettings {
+  enabled: boolean;
+  endpoint: string;
+  model: string;
+  timeoutMs: number;
+}
+
 export interface ActionResult {
   ok: boolean;
   detail: string;
@@ -122,6 +151,14 @@ export async function pressKey(args: { key?: string }): Promise<ActionResult> {
   return request('POST', 'press', args);
 }
 
-export async function screenshot(): Promise<{ base64: string }> {
+export async function screenshot(): Promise<ScreenshotResult> {
   return request('POST', 'screenshot');
+}
+
+export async function observeVisual(): Promise<VisualObservation> {
+  return request('POST', 'observe-visual');
+}
+
+export async function getVlmSettings(): Promise<VlmSettings> {
+  return request('GET', 'vlm-settings');
 }
