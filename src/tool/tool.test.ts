@@ -47,12 +47,18 @@ describe("tool", () => {
   it("bash: timeout preserves partial output", async () => {
     const bash = await Effect.runPromise(BashTool)
     const result = await Effect.runPromise(
-      bash.execute({ command: "printf 'before timeout\\n'; sleep 2; printf 'after timeout\\n'", timeout: 100 }, testCtx()),
+      bash.execute({ command: "printf 'before timeout\\n'; sleep 2; printf 'after timeout\\n'", timeout: 1000 }, testCtx()),
     )
     assert.ok(result.title.startsWith("Bash error:"))
     assert.ok(result.output.includes("ETIMEDOUT"))
     assert.ok(result.output.includes("before timeout"))
     assert.ok(!result.output.includes("after timeout"))
+  })
+
+  it("bash: clamps tiny timeouts so fast commands are not killed before startup", async () => {
+    const bash = await Effect.runPromise(BashTool)
+    const result = await Effect.runPromise(bash.execute({ command: "echo hello", timeout: 1 }, testCtx()))
+    assert.equal(result.output.trim(), "hello")
   })
 
   it("grep: finds matches without leaking shell errors", async () => {
