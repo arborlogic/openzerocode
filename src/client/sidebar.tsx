@@ -1,125 +1,11 @@
 import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
-import { execFile } from "node:child_process"
-import { promisify } from "node:util"
 import type { Message, ModelInfo } from "../provider/types"
 import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage, estimateContextTokens } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
 import { isEnabled, isConnected } from "../browser/geass-client"
-
-export type GitFile = {
-  path: string
-  additions: number
-  deletions: number
-  status: "modified" | "added"
-}
-
-type GitCommit = {
-  hash: string
-  subject: string
-}
-
-type GitSnapshot = {
-  files: GitFile[]
-  branch: string | null
-  commits: GitCommit[]
-}
-
-const execFileAsync = promisify(execFile)
-let pendingGitSnapshot: { cwd: string; promise: Promise<GitSnapshot> } | undefined
-
-async function runGit(cwd: string, args: string[], timeout = 1000): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync("git", args, {
-      cwd,
-      encoding: "utf-8",
-      timeout,
-      maxBuffer: 1024 * 1024,
-    })
-    return stdout.trim()
-  } catch {
-    return ""
-  }
-}
-
-function parseGitDiffNumstat(out: string): Omit<GitFile, "status">[] {
-  if (!out) return []
-  return out.split("\n").filter(Boolean).map((line) => {
-    const parts = line.split("\t")
-    const additions = Number.parseInt(parts[0] ?? "0", 10) || 0
-    const deletions = Number.parseInt(parts[1] ?? "0", 10) || 0
-    const filePath = parts.at(-1)?.trim() ?? ""
-    return { path: filePath, additions, deletions }
-  }).filter((file) => file.path.length > 0)
-}
-
-function parseRecentCommits(out: string): GitCommit[] {
-  if (!out) return []
-  return out.split("\n").filter(Boolean).map((line) => {
-    const spaceIdx = line.indexOf(" ")
-    const hash = spaceIdx >= 0 ? line.slice(0, spaceIdx) : line
-    const subject = spaceIdx >= 0 ? line.slice(spaceIdx + 1) : ""
-    return { hash, subject }
-  })
-}
-
-async function readGitSnapshot(cwd: string): Promise<GitSnapshot> {
-  // Dedup concurrent calls within the same workspace: if a fetch is already
-  // in-flight, share its result. Keep cwd in the key so split workspaces don't
-  // reuse a snapshot from a different project.
-  if (pendingGitSnapshot?.cwd === cwd) return pendingGitSnapshot.promise
-
-  const promise = Promise.all([
-    runGit(cwd, ["diff", "--numstat", "HEAD"], 2000),
-    runGit(cwd, ["status", "--porcelain"], 2000),
-    runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"], 1000),
-    runGit(cwd, ["log", "--oneline", "-3"], 1000),
-  ]).then(([diff, porcelain, branch, commits]) => {
-    // 1) Parse tracked changes from --numstat (modified + staged additions)
-    const fileMap = new Map<string, GitFile>()
-    for (const file of parseGitDiffNumstat(diff)) {
-      fileMap.set(file.path, { ...file, status: "modified" })
-    }
-
-    // 2) Overlay status from --porcelain: mark staged additions as "added"
-    for (const line of porcelain.split("\n").filter(Boolean)) {
-      const statusRaw = line.slice(0, 2)
-      const filePath = line.slice(3).trim()
-      if (!filePath) continue
-
-      // Staged addition (A in index column)
-      if (statusRaw[0] === "A") {
-        const existing = fileMap.get(filePath)
-        if (existing) {
-          existing.status = "added"
-        } else {
-          // Staged new file with no working-tree diff (empty file)
-          fileMap.set(filePath, { path: filePath, additions: 0, deletions: 0, status: "added" })
-        }
-        continue
-      }
-
-      // Untracked file (??)
-      if (statusRaw === "??") {
-        // Only add if not already tracked by --numstat
-        if (!fileMap.has(filePath)) {
-          fileMap.set(filePath, { path: filePath, additions: 0, deletions: 0, status: "added" })
-        }
-      }
-    }
-
-    return {
-      files: [...fileMap.values()],
-      branch: branch || null,
-      commits: parseRecentCommits(commits),
-    }
-  }).finally(() => {
-    if (pendingGitSnapshot?.promise === promise) pendingGitSnapshot = undefined
-  })
-  pendingGitSnapshot = { cwd, promise }
-  return promise
-}
+import { readGitSnapshot, type GitCommit, type GitFile } from "./git-snapshot"
 
 function truncatePath(path: string, maxLen: number): string {
   if (path.length <= maxLen) return path
@@ -136,6 +22,8 @@ function fmtCost(n: number): string {
   if (n < 0.01) return "$<0.01"
   return "$" + n.toFixed(2)
 }
+
+export type { GitFile }
 
 export function Sidebar(props: {
   messages: () => Message[]
@@ -397,8 +285,11 @@ export function Sidebar(props: {
                     <Show when={file.status === "added"}>
                       <text style={{ fg: "#7ee787" }}>+</text>
                     </Show>
+                    <Show when={file.status === "deleted"}>
+                      <text style={{ fg: "#f85149" }}>-</text>
+                    </Show>
                     <text
-                      style={{ fg: file.status === "added" ? "#7ee787" : props.theme.muted }}
+                      style={{ fg: file.status === "added" ? "#7ee787" : file.status === "deleted" ? "#f85149" : props.theme.muted }}
                       wrapMode="none"
                     >
                       {truncatePath(file.path, props.width - 8)}
