@@ -23,6 +23,10 @@ function fmtCost(n: number): string {
   return "$" + n.toFixed(2)
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
 export type { GitFile }
 
 export function Sidebar(props: {
@@ -117,6 +121,10 @@ export function Sidebar(props: {
 
   const totalAdditions = createMemo(() => gitFiles().reduce((sum, f) => sum + f.additions, 0))
   const totalDeletions = createMemo(() => gitFiles().reduce((sum, f) => sum + f.deletions, 0))
+  const fileCountsByStatus = createMemo(() => gitFiles().reduce((counts, file) => {
+    counts[file.status] += 1
+    return counts
+  }, { added: 0, deleted: 0, modified: 0 } satisfies Record<GitFile["status"], number>))
   const compacted = createMemo(() => props.messages().some(isCompactSummaryMessage))
 
   const percentColor = () => {
@@ -271,9 +279,21 @@ export function Sidebar(props: {
           <box flexDirection="column">
             <box flexDirection="row" gap={1}>
               <text style={{ fg: props.theme.accent }}>Modified Files</text>
+              <text style={{ fg: props.theme.muted }}>{gitFiles().length}</text>
               <text style={{ fg: "#7ee787" }}>+{totalAdditions()}</text>
               <text style={{ fg: "#f85149" }}>-{totalDeletions()}</text>
             </box>
+            <text style={{ fg: props.theme.muted }} wrapMode="none">
+              {(() => {
+                const counts = fileCountsByStatus()
+                const parts = [
+                  counts.modified > 0 ? pluralize(counts.modified, "modified") : "",
+                  counts.added > 0 ? pluralize(counts.added, "added") : "",
+                  counts.deleted > 0 ? pluralize(counts.deleted, "deleted") : "",
+                ].filter(Boolean)
+                return truncatePath(parts.join(", "), Math.max(1, props.width - 4))
+              })()}
+            </text>
             <For each={gitFiles()}>
               {(file) => (
                 <box
