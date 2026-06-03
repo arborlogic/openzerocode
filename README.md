@@ -12,7 +12,7 @@ OpenZeroCode is a local-first, TUI-driven AI coding assistant adapted from the O
 
 ## Inspiration
 
-This project is **heavily inspired by OpenCode** (by [SST](https://sst.dev)), a terminal-native AI coding agent. OpenZeroCode started as a fork of OpenCode's architecture and has since evolved its own identity:
+This project is **heavily inspired by OpenCode**, a terminal-native AI coding agent. OpenZeroCode started as a fork of OpenCode's architecture and has since evolved its own identity:
 
 - **Same foundation**: SolidJS terminal UI (`@opentui`), provider abstraction, tool system, session persistence
 - **Different focus**: Local-first, independent of the `zero` ecosystem, extensible for custom workflows
@@ -28,14 +28,16 @@ This repo is actively implemented. Current capabilities include:
 
 - **Solid-based terminal UI** in `src/client/tui.tsx` — streaming responses, reasoning display, command palette
 - **Build / Plan mode** toggle for structured vs. free-form agent behavior
-- **Provider switching** — bring your own API keys (OpenRouter, custom endpoints)
+- **Provider switching** — OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, plus configurable OpenAI-compatible endpoints
 - **Model switching** — switch models on the fly
 - **Multi-session persistence** under `~/.openzerocode/sessions`
-- **Session management** — rename, delete, compact
+- **Session management** — rename, delete, compact, timeline actions (revert/copy/fork)
+- **Headless and server modes** — `--run` for one-shot CLI runs and `serve` for the streaming HTTP API
 - **Sidebar context** — token usage, cost tracking, git diff summary
 - **Workspace prompt memory** — `AGENTS.md` instructions + `CONTEXT.md` project context injected into the system prompt
 - **Session handoff** — `SESSION_SUMMARY.md` for concise local continuation notes
-- **7 built-in tools**:
+- **GEASS browser tools** — optional browser navigation, reading, interaction, screenshots, and visual observation
+- **16 built-in tools**:
   | Tool | Description |
   |------|-------------|
   | `read` | Read file contents |
@@ -45,8 +47,17 @@ This repo is actively implemented. Current capabilities include:
   | `bash` | Execute shell commands |
   | `edit` | Targeted string replacement edits |
   | `web-fetch` | Fetch content from URLs |
+  | `todo-write` | Maintain structured task lists during multi-step work |
+  | `browser-navigate` | Navigate the connected GEASS browser to a URL |
+  | `browser-read` | Read structured content from the current GEASS browser page |
+  | `browser-click` | Click page elements in the GEASS browser |
+  | `browser-type` | Type into inputs in the GEASS browser |
+  | `browser-select` | Select dropdown options in the GEASS browser |
+  | `browser-scroll` | Scroll the current GEASS browser page |
+  | `browser-screenshot` | Capture a browser screenshot |
+  | `browser-observe-visual` | Inspect the current browser view visually |
 
-![OpenZeroCode TUI session](./snapshot01.png)
+![OpenZeroCode TUI session](./docs/assets/openzerocode-demo.gif)
 
 ---
 
@@ -54,8 +65,7 @@ This repo is actively implemented. Current capabilities include:
 
 ### Prerequisites
 
-- **bun** ≥ 1.2
-- **npm** on your `PATH` (used by the dev install flow and npm distribution)
+For source development, use **bun** ≥ 1.2 and **npm** on your `PATH`.
 
 ### Install from npm
 
@@ -163,26 +173,35 @@ Typical workflow:
 
    Before and after a release, verify:
 
-   - Update the root `package.json` / `package-lock.json` version, then create the matching git tag (for example package version `0.3.2` maps to tag `v0.3.2`)
+   - Update the root `package.json` / `package-lock.json` version, then create the matching git tag (for example package version `0.3.9` maps to tag `v0.3.9`)
    - Confirm changelog or release notes are ready if the release includes user-facing changes
    - Run `npm run typecheck`
    - Re-run `node scripts/create-platform-packages.mjs` and confirm the staged files under `npm/` and `npm/packages/<target>/` are current
    - Merge to `main`, then push the `v*` tag to trigger the GitHub Actions release workflow
-   - `.github/workflows/build.yml` currently builds the platform packages on tag push, publishes each `@openzerocode/<target>`, and creates a matching GitHub Release
-   - If a workflow failed and only needs a rerun, use `workflow_dispatch` from the Actions page; no version bump is needed in that case, but if you want a GitHub Release, provide the existing tag and select the related option
-   - Note: the workflow does not yet automatically publish the root `openzerocode` package; to make `npm install -g openzerocode` available, you still need to publish the root package from `npm/`
-   - After publishing, verify `npm install -g openzerocode` and `openzerocode --version` in a clean environment
+   - `.github/workflows/build.yml` always builds and uploads root/platform npm tarballs plus direct binary release archives (`.tar.gz` for Linux/macOS, `.zip` for Windows)
+   - Tag pushes create a matching GitHub Release with those artifacts and automatically publish npm packages
+   - npm publishing publishes platform packages first and then the root `openzerocode` package, skipping versions that already exist
+   - If a workflow failed and only needs a rerun, use `workflow_dispatch` from the Actions page; no version bump is needed in that case. Enable `publish_to_npm` to rerun npm publishing, or provide the existing tag and enable the release option to recreate/update the GitHub Release
+   - After publishing, verify `openzerocode --version` from the GitHub Release artifacts and verify `npm install -g openzerocode`
 
 This structure keeps `npm install -g openzerocode` lightweight while npm resolves the real executable from the platform-specific optional package.
 
-### Command-line flags
+### Command-line usage
 
-| Flag | Effect |
-|------|--------|
-| `--build` | Start in build mode |
-| `--plan` | Start in plan mode |
-| `--model <name>` | Override the default model |
-| `--provider <name>` | Override the default provider |
+```bash
+openzerocode                         # Launch the TUI
+openzerocode --version               # Print version
+openzerocode --help                  # Print CLI help
+openzerocode --run "fix the tests"    # Run one prompt headlessly with auto-approved tools
+openzerocode serve --port 4096       # Start the streaming HTTP API server
+```
+
+Environment overrides:
+
+| Variable | Effect |
+|----------|--------|
+| `OPENZERO_MODEL` | Override the default model used by headless `--run` mode |
+| `OPENZEROCODE_PROVIDER_CONFIG` | Override the provider config path (default `~/.openzerocode/providers.json`) |
 
 ### Alternative entrypoint
 
@@ -194,7 +213,7 @@ npm run start:tui
 
 ## Provider Configuration
 
-Provider credentials can be set in a local config file:
+Provider credentials can be set through environment variables or a local config file:
 
 ```text
 ~/.openzerocode/providers.json
@@ -210,21 +229,31 @@ Shape:
       "keys": {
         "default": "sk-or-...",
         "backup": "sk-or-..."
-      }
+      },
+      "baseURL": "https://openrouter.ai/api/v1"
     }
   }
 }
 ```
 
+**Supported providers:**
+
+| Provider id | Name | Environment keys |
+|-------------|------|------------------|
+| `opencode-zen` | OpenCode Zen | `OPENCODE_API`, `OPENCODE_API_KEY` (optional; anonymous free models are available) |
+| `openai` | OpenAI | `OPENAI_API_KEY` |
+| `openai-codex` | OpenAI Codex | ChatGPT OAuth via `/codex-login` |
+| `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
+| `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+
 **Notes:**
 
 - Each provider can have multiple named keys.
 - `activeKey` selects which key the runtime uses for that provider.
+- `baseURL` can override a provider's default endpoint for compatible APIs.
 - Config file values take precedence over environment variables.
-- You can inspect and switch keys inside the TUI with these slash commands:
-  - `/provider-key path`
-  - `/provider-key list <provider>`
-  - `/provider-key use <provider> <key-name>`
+- You can inspect and switch providers, models, and keys inside the TUI with slash commands and the command palette.
 
 ---
 
@@ -258,21 +287,22 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
 │  - session management (create, rename, delete) │
 │  - build / plan mode toggle                    │
 │  - sidebar: token usage, cost, git summary     │
-│  - working memory injection                    │
+│  - workspace memory + skill injection          │
 └────────┬───────────────────────────────────────┘
          │
          ├── provider layer ─────────────────────┐
          │  src/provider/registry.ts             │
-         │  - OpenRouter (openrouter)            │
-         │  - Big Pickle (big-pickle)            │
+         │  - OpenCode Zen (opencode-zen)         │
+         │  - OpenAI / OpenAI Codex              │
+         │  - OpenRouter / Zero-API / DeepSeek   │
          │  - Extensible via registry            │
          └───────────────────────────────────────┘
          │
          └── tool layer ─────────────────────────┐
             src/tool/registry.ts                 │
-            - read / write / grep / glob         │
-            - bash / edit / web-fetch            │
-            - Permission system                  │
+            - file/search/shell/edit/web tools    │
+            - todo + GEASS browser tools         │
+            - Permission / auto-approve system   │
             └────────────────────────────────────┘
 ```
 
@@ -296,6 +326,7 @@ The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` fr
 | `SESSION_SUMMARY.md` | Manual session handoff / continuation notes |
 | `src/provider/registry.ts` | Provider registration & resolution |
 | `src/tool/registry.ts` | Built-in tool registration |
+| `src/server/index.ts` | Streaming HTTP API server for `openzerocode serve` |
 
 ---
 
@@ -305,8 +336,8 @@ The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` fr
 |--------|----------|--------------|
 | **Runtime** | Requires `zero` cloud service | Self-contained, local-first |
 | **TUI framework** | `@opentui` (SolidJS) | `@opentui` (SolidJS) — same |
-| **Provider layer** | OpenRouter, others | OpenRouter, Big Pickle, extensible |
-| **Tool system** | Built-in tools | Same 7 tools + permission system |
+| **Provider layer** | OpenRouter, others | OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, extensible |
+| **Tool system** | Built-in tools | File/search/shell/edit/web tools + todo + GEASS browser tools + permission system |
 | **Session storage** | Local files | Local files under `~/.openzerocode/` |
 | **Prompt memory** | Varies | `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
 | **Cloud dependency** | Requires `zero` for operation | None — works entirely offline |
