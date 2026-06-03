@@ -6,16 +6,8 @@ REPO=arborlogic/openzerocode
 GITHUB_BASE_URL="${OPENZEROCODE_GITHUB_BASE_URL:-https://github.com}"
 GITHUB_API_BASE_URL="${OPENZEROCODE_GITHUB_API_BASE_URL:-https://api.github.com}"
 USER_INSTALL_DIR="$HOME/.openzerocode/bin"
-DEFAULT_INSTALL_DIR="/usr/local/bin"
-if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
-  DEFAULT_INSTALL_DIR="$USER_INSTALL_DIR"
-fi
+DEFAULT_INSTALL_DIR="$USER_INSTALL_DIR"
 INSTALL_DIR="${OPENZEROCODE_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-INSTALL_DIR_WAS_EXPLICIT=false
-if [[ -n "${OPENZEROCODE_INSTALL_DIR:-}" ]]; then
-  INSTALL_DIR_WAS_EXPLICIT=true
-fi
-USE_SUDO=false
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -36,7 +28,7 @@ Options:
 
 Environment:
   VERSION                 Install a specific version
-  OPENZEROCODE_INSTALL_DIR Install directory (default: /usr/local/bin; falls back to ~/.openzerocode/bin if sudo is unavailable or declined)
+  OPENZEROCODE_INSTALL_DIR Install directory (default: ~/.openzerocode/bin; set to /usr/local/bin for a system install)
 
 Examples:
   curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash
@@ -97,50 +89,15 @@ print_message() {
   echo -e "${color}${message}${NC}"
 }
 
-sudo_available() {
-  command -v sudo >/dev/null 2>&1
-}
-
-ensure_install_dir() {
-  if mkdir -p "$INSTALL_DIR" 2>/dev/null && [[ -w "$INSTALL_DIR" ]]; then
-    USE_SUDO=false
-    return
-  fi
-
-  if sudo_available; then
-    print_message info "${MUTED}Installing to ${NC}$INSTALL_DIR${MUTED} requires administrator privileges.${NC}"
-    if sudo -v; then
-      sudo mkdir -p "$INSTALL_DIR"
-      USE_SUDO=true
-      return
-    fi
-  fi
-
-  if [[ "$INSTALL_DIR_WAS_EXPLICIT" == "true" ]]; then
-    echo -e "${RED}Error: Cannot write to OPENZEROCODE_INSTALL_DIR ($INSTALL_DIR).${NC}" >&2
-    exit 1
-  fi
-
-  print_message warning "${ORANGE}Could not install to $DEFAULT_INSTALL_DIR; falling back to $USER_INSTALL_DIR.${NC}"
-  INSTALL_DIR="$USER_INSTALL_DIR"
-  mkdir -p "$INSTALL_DIR"
-  USE_SUDO=false
-}
+mkdir -p "$INSTALL_DIR"
 
 install_file() {
   local source=$1
   local destination=$2
 
-  if [[ "$USE_SUDO" == "true" ]]; then
-    sudo cp "$source" "$destination"
-    sudo chmod 755 "$destination"
-  else
-    cp "$source" "$destination"
-    chmod 755 "$destination"
-  fi
+  cp "$source" "$destination"
+  chmod 755 "$destination"
 }
-
-ensure_install_dir
 
 if [[ -n "$binary_path" ]]; then
   if [[ ! -f "$binary_path" ]]; then
@@ -339,6 +296,14 @@ fi
 echo -e ""
 echo -e "${MUTED}OpenZeroCode installed to:${NC} $INSTALL_DIR"
 echo -e ""
+if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  echo -e "${MUTED}If ${NC}openzerocode${MUTED} is not found after restarting your shell, add this to your shell config:${NC}"
+  case "$current_shell" in
+    fish) echo -e "  fish_add_path $INSTALL_DIR" ;;
+    *) echo -e "  export PATH=$INSTALL_DIR:\$PATH" ;;
+  esac
+  echo -e ""
+fi
 echo -e "cd <project>  ${MUTED}# Open directory${NC}"
 echo -e "openzerocode  ${MUTED}# Run command${NC}"
 echo -e ""

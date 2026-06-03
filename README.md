@@ -67,6 +67,16 @@ This repo is actively implemented. Current capabilities include:
 
 For source development, use **bun** ≥ 1.2 and **npm** on your `PATH`.
 
+### Install script
+
+The release installer follows opencode's user-level install style: it installs the binary to `~/.openzerocode/bin` and updates your shell config to add that directory to `PATH` when needed.
+
+```bash
+curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash
+```
+
+Use `--no-modify-path` if you want to update `PATH` manually, or set `OPENZEROCODE_INSTALL_DIR` to choose a different writable install directory.
+
 ### Install from npm
 
 Supported prebuilt npm targets:

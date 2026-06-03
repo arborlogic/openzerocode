@@ -68,6 +68,16 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 
 源码开发需要 **bun** >= 1.2，以及 `PATH` 中可用的 **npm**。
 
+### 安装脚本
+
+Release installer 参考 opencode 的用户级安装方式：默认把二进制文件安装到 `~/.openzerocode/bin`，并在需要时更新你的 shell 配置，把该目录加入 `PATH`。
+
+```bash
+curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash
+```
+
+如果想手动更新 `PATH`，可使用 `--no-modify-path`；也可以设置 `OPENZEROCODE_INSTALL_DIR` 指定其他可写入的安装目录。
+
 ### 从 npm 安装
 
 当前支持的预构建 npm 目标：
