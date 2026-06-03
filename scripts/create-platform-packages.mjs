@@ -7,7 +7,9 @@ const distRoot = path.join(root, "npm")
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
 
 const normalizeReadmeForNpm = (content) =>
-  content.replace(/!\[OpenZeroCode preview\]\((?:\.\/)?preview01\.png\)/g, "![OpenZeroCode preview](https://raw.githubusercontent.com/arborlogic/openzerocode/main/preview01.png)")
+  content
+    .replace(/!\[OpenZeroCode preview\]\((?:\.\/)?preview01\.png\)/g, "![OpenZeroCode preview](https://raw.githubusercontent.com/arborlogic/openzerocode/main/preview01.png)")
+    .replace(/!\[OpenZeroCode TUI session\]\((?:\.\/)?docs\/assets\/openzerocode-demo\.gif\)/g, "![OpenZeroCode TUI session](https://raw.githubusercontent.com/arborlogic/openzerocode/main/docs/assets/openzerocode-demo.gif)")
 
 const platforms = [
   { id: "darwin-arm64", os: ["darwin"], cpu: ["arm64"], binary: "openzerocode" },

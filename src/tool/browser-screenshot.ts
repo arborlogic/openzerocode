@@ -30,9 +30,23 @@ export const BrowserScreenshotTool = Effect.gen(function* () {
         }
 
         const result = yield* Effect.promise(() => Geass.screenshot())
+        const details = [
+          result.url ? `URL: ${result.url}` : undefined,
+          result.title ? `Title: ${result.title}` : undefined,
+          result.width && result.height ? `Image: ${result.width}x${result.height} ${result.format ?? 'png'}` : undefined,
+          result.viewport ? `Viewport: ${result.viewport.width}x${result.viewport.height}+${result.viewport.x}+${result.viewport.y}${result.viewport.deviceScaleFactor === undefined ? '' : ` @${result.viewport.deviceScaleFactor}x`}` : undefined,
+          result.capturedAt ? `Captured At: ${new Date(result.capturedAt).toISOString()}` : undefined,
+        ].filter(Boolean).join('\n')
+
         return new Result({
           title: "Screenshot",
-          output: `![screenshot](data:image/png;base64,${result.base64})`,
+          output: `${details ? `${details}\n\n` : ''}![screenshot](data:image/png;base64,${result.base64})`,
+          metadata: {
+            url: result.url,
+            width: result.width,
+            height: result.height,
+            viewport: result.viewport,
+          },
         })
       }).pipe(Effect.orDie),
   })

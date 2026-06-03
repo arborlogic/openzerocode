@@ -5,11 +5,11 @@ import { readdir, readFile } from "fs/promises"
 import path from "path"
 
 const Parameters = Schema.Struct({
-  pattern: Schema.String,
+  pattern: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
   path: Schema.optional(Schema.String),
-  include: Schema.optional(Schema.String),
+  include: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
 })
-type Args = { pattern: string; path?: string; include?: string }
+type Args = { pattern: string | string[]; path?: string; include?: string | string[] }
 
 type SearchMatch = {
   file: string
@@ -89,30 +89,35 @@ export const GrepTool = Effect.gen(function* () {
     execute: (raw, ctx) =>
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
-        yield* ctx.ask({ permission: "grep", patterns: [args.pattern] })
+        const patterns = Array.isArray(args.pattern) ? args.pattern : [args.pattern]
+        const includes = Array.isArray(args.include) ? args.include : args.include ? [args.include] : []
+        yield* ctx.ask({ permission: "grep", patterns })
         const searchPath = path.resolve(ctx.cwd, args.path ?? ".")
-        const rgArgs = ["-n", args.pattern]
-        if (args.include) rgArgs.push("--glob", args.include)
-        rgArgs.push(searchPath)
 
         const stdout = yield* Effect.promise(async () => {
-          const result = spawnSync("rg", rgArgs, { encoding: "utf-8", cwd: searchPath })
-          if (result.error?.name === "Error" && "code" in result.error && result.error.code === "ENOENT") {
-            return searchWithFallback(args.pattern, searchPath, args.include)
+          const outputs: string[] = []
+          for (const pat of patterns) {
+            const rgArgs = ["-n", pat]
+            for (const inc of includes) rgArgs.push("--glob", inc)
+            rgArgs.push(searchPath)
+            const result = spawnSync("rg", rgArgs, { encoding: "utf-8", cwd: searchPath })
+            if (result.error?.name === "Error" && "code" in result.error && result.error.code === "ENOENT") {
+              outputs.push(await searchWithFallback(pat, searchPath, includes[0]))
+            } else if (result.error) {
+              outputs.push(`rg failed: ${result.error.message}`)
+            } else if (result.status === 0) {
+              outputs.push(result.stdout || "(no matches)")
+            } else if (result.status === 1) {
+              outputs.push("(no matches)")
+            } else {
+              outputs.push(result.stderr?.trim() || result.stdout?.trim() || "(no matches)")
+            }
           }
-          if (result.error) {
-            return `rg failed: ${result.error.message}`
-          }
-          if (result.status === 0) {
-            return result.stdout || "(no matches)"
-          }
-          if (result.status === 1) {
-            return "(no matches)"
-          }
-          return result.stderr?.trim() || result.stdout?.trim() || "(no matches)"
+          const combined = outputs.filter(o => o !== "(no matches)").join("\n")
+          return combined || "(no matches)"
         })
         return new Result({
-          title: `Grep: ${args.pattern}`,
+          title: `Grep: ${patterns.join(", ")}`,
           output: stdout || "(no matches)",
         })
       }).pipe(Effect.orDie),

@@ -45,6 +45,10 @@ export function estimateContextTokens(messages: Message[], extraInput: string = 
   return estimateTokens(JSON.stringify(clean) + extraInput)
 }
 
+export function shouldAutoCompactContext(messages: Message[], extraInput: string, contextLimit: number): boolean {
+  return estimateContextTokens(messages, extraInput) > contextLimit * CONTEXT_WARNING_THRESHOLD
+}
+
 export function selectCompactionTail(messages: Message[], contextLimit: number): { head: Message[]; tail: Message[] } {
   const clean = stripCompactSummaryMessages(messages)
   if (clean.length <= 6) return { head: [], tail: clean }

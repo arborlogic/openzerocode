@@ -37,6 +37,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openHelp: mock(() => {}),
     openUsageDashboard: mock(() => {}),
     compactSession: mock(() => Promise.resolve()),
+    viewCompactionSummary: mock(() => {}),
     exportCompactSession: mock(() => {}),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),

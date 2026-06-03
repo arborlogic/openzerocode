@@ -69,6 +69,14 @@ export async function* streamSession(
 ): AsyncGenerator<StreamChunk, Message[], void> {
   const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
   const retrySchedule = [2000, 5000, 10000]
+  // Max model round-trips per run. Each tool-using turn costs one step, so a
+  // complex task (many edits/bash calls) can hit this. Configurable via env so
+  // long tasks can raise it without a rebuild; default stays conservative to
+  // avoid a runaway loop silently burning tokens.
+  const maxSteps = (() => {
+    const raw = Number.parseInt(process.env.OPENZEROCODE_MAX_STEPS ?? "", 10)
+    return Number.isFinite(raw) && raw > 0 ? raw : 50
+  })()
   const CONTINUE_AFTER_LENGTH: Message = {
     role: "system",
     content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
@@ -120,7 +128,7 @@ export async function* streamSession(
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
   const currentTurnStart = allMessages.length
 
-  for (let step = 0; step < 50; step++) {
+  for (let step = 0; step < maxSteps; step++) {
     yield { type: "status", text: "thinking..." }
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
@@ -332,6 +340,13 @@ export async function* streamSession(
     yield { type: "status", text: "thinking..." }
   }
 
+  // Reached the step cap without the model finishing. Surface it so the run
+  // isn't mistaken for a clean completion — and tell the user how to allow more.
+  yield {
+    type: "notice",
+    kind: "system",
+    text: `Stopped after reaching the step limit (${maxSteps}). The task may be unfinished — send "continue" to keep going, or raise OPENZEROCODE_MAX_STEPS for longer tasks.`,
+  }
   yield { type: "done" }
   return resultHistory
 }

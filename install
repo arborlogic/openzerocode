@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP=openzerocode
+REPO=arborlogic/openzerocode
+GITHUB_BASE_URL="${OPENZEROCODE_GITHUB_BASE_URL:-https://github.com}"
+GITHUB_API_BASE_URL="${OPENZEROCODE_GITHUB_API_BASE_URL:-https://api.github.com}"
+USER_INSTALL_DIR="$HOME/.openzerocode/bin"
+DEFAULT_INSTALL_DIR="/usr/local/bin"
+if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
+  DEFAULT_INSTALL_DIR="$USER_INSTALL_DIR"
+fi
+INSTALL_DIR="${OPENZEROCODE_INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+INSTALL_DIR_WAS_EXPLICIT=false
+if [[ -n "${OPENZEROCODE_INSTALL_DIR:-}" ]]; then
+  INSTALL_DIR_WAS_EXPLICIT=true
+fi
+USE_SUDO=false
+
+MUTED='\033[0;2m'
+RED='\033[0;31m'
+ORANGE='\033[38;5;214m'
+NC='\033[0m'
+
+usage() {
+  cat <<EOF
+OpenZeroCode Installer
+
+Usage: install [options]
+
+Options:
+  -h, --help              Display this help message
+  -v, --version <version> Install a specific version (e.g. 0.3.9 or v0.3.9)
+  -b, --binary <path>     Install from a local binary instead of downloading
+      --no-modify-path    Don't modify shell config files (.zshrc, .bashrc, etc.)
+
+Environment:
+  VERSION                 Install a specific version
+  OPENZEROCODE_INSTALL_DIR Install directory (default: /usr/local/bin; falls back to ~/.openzerocode/bin if sudo is unavailable or declined)
+
+Examples:
+  curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash
+  curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash -s -- --version 0.3.9
+  ./install --binary /path/to/openzerocode
+EOF
+}
+
+requested_version=${VERSION:-}
+no_modify_path=false
+binary_path=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -v|--version)
+      if [[ -n "${2:-}" ]]; then
+        requested_version="$2"
+        shift 2
+      else
+        echo -e "${RED}Error: --version requires a version argument${NC}" >&2
+        exit 1
+      fi
+      ;;
+    -b|--binary)
+      if [[ -n "${2:-}" ]]; then
+        binary_path="$2"
+        shift 2
+      else
+        echo -e "${RED}Error: --binary requires a path argument${NC}" >&2
+        exit 1
+      fi
+      ;;
+    --no-modify-path)
+      no_modify_path=true
+      shift
+      ;;
+    *)
+      echo -e "${ORANGE}Warning: Unknown option '$1'${NC}" >&2
+      shift
+      ;;
+  esac
+done
+
+print_message() {
+  local level=$1
+  local message=$2
+  local color=""
+
+  case "$level" in
+    error) color="${RED}" ;;
+    *) color="${NC}" ;;
+  esac
+
+  echo -e "${color}${message}${NC}"
+}
+
+sudo_available() {
+  command -v sudo >/dev/null 2>&1
+}
+
+ensure_install_dir() {
+  if mkdir -p "$INSTALL_DIR" 2>/dev/null && [[ -w "$INSTALL_DIR" ]]; then
+    USE_SUDO=false
+    return
+  fi
+
+  if sudo_available; then
+    print_message info "${MUTED}Installing to ${NC}$INSTALL_DIR${MUTED} requires administrator privileges.${NC}"
+    if sudo -v; then
+      sudo mkdir -p "$INSTALL_DIR"
+      USE_SUDO=true
+      return
+    fi
+  fi
+
+  if [[ "$INSTALL_DIR_WAS_EXPLICIT" == "true" ]]; then
+    echo -e "${RED}Error: Cannot write to OPENZEROCODE_INSTALL_DIR ($INSTALL_DIR).${NC}" >&2
+    exit 1
+  fi
+
+  print_message warning "${ORANGE}Could not install to $DEFAULT_INSTALL_DIR; falling back to $USER_INSTALL_DIR.${NC}"
+  INSTALL_DIR="$USER_INSTALL_DIR"
+  mkdir -p "$INSTALL_DIR"
+  USE_SUDO=false
+}
+
+install_file() {
+  local source=$1
+  local destination=$2
+
+  if [[ "$USE_SUDO" == "true" ]]; then
+    sudo cp "$source" "$destination"
+    sudo chmod 755 "$destination"
+  else
+    cp "$source" "$destination"
+    chmod 755 "$destination"
+  fi
+}
+
+ensure_install_dir
+
+if [[ -n "$binary_path" ]]; then
+  if [[ ! -f "$binary_path" ]]; then
+    echo -e "${RED}Error: Binary not found at ${binary_path}${NC}" >&2
+    exit 1
+  fi
+  specific_version="local"
+else
+  raw_os=$(uname -s)
+  os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
+  raw_arch=$(uname -m)
+  arch=$(echo "$raw_arch" | tr '[:upper:]' '[:lower:]')
+
+  case "$os/$arch" in
+    linux/x86_64|linux/amd64)
+      target="linux-x64"
+      ;;
+    linux/aarch64|linux/arm64)
+      target="linux-arm64"
+      ;;
+    darwin/aarch64|darwin/arm64)
+      target="darwin-arm64"
+      ;;
+    mingw*/x86_64|mingw*/amd64|msys*/x86_64|msys*/amd64|cygwin*/x86_64|cygwin*/amd64)
+      target="win32-x64"
+      ;;
+    *)
+      echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}" >&2
+      exit 1
+      ;;
+  esac
+
+  if ! command -v curl >/dev/null 2>&1; then
+    echo -e "${RED}Error: curl is required but not installed.${NC}" >&2
+    exit 1
+  fi
+
+  if [[ -z "$requested_version" ]]; then
+    specific_version=$(curl -fsSL "$GITHUB_API_BASE_URL/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -1)
+    if [[ -z "$specific_version" ]]; then
+      echo -e "${RED}Failed to fetch latest version information from GitHub Releases.${NC}" >&2
+      exit 1
+    fi
+  else
+    specific_version="${requested_version#v}"
+  fi
+
+  archive_ext="tar.gz"
+  if [[ "$target" == win32-* ]]; then
+    archive_ext="zip"
+  fi
+
+  package_name="${APP}-${target}-${specific_version}.${archive_ext}"
+  url="$GITHUB_BASE_URL/$REPO/releases/download/v${specific_version}/${package_name}"
+  if [[ "$GITHUB_BASE_URL" == file://* ]]; then
+    url="${GITHUB_BASE_URL}/${package_name}"
+  fi
+fi
+
+extract_archive() {
+  local archive_path=$1
+  local destination=$2
+
+  case "$archive_path" in
+    *.tar.gz)
+      if ! command -v tar >/dev/null 2>&1; then
+        echo -e "${RED}Error: tar is required to extract $package_name.${NC}" >&2
+        exit 1
+      fi
+      tar -xzf "$archive_path" -C "$destination"
+      ;;
+    *.zip)
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$archive_path" -d "$destination"
+      elif command -v bsdtar >/dev/null 2>&1; then
+        bsdtar -xf "$archive_path" -C "$destination"
+      else
+        echo -e "${RED}Error: unzip or bsdtar is required to extract $package_name.${NC}" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo -e "${RED}Error: Unsupported archive format: $archive_path${NC}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+check_version() {
+  if command -v "$APP" >/dev/null 2>&1; then
+    installed_version=$($APP --version 2>/dev/null | sed -n 's/^openzerocode v//p' || true)
+    if [[ "$installed_version" == "$specific_version" ]]; then
+      print_message info "${MUTED}Version ${NC}$specific_version${MUTED} already installed${NC}"
+      exit 0
+    fi
+    if [[ -n "$installed_version" ]]; then
+      print_message info "${MUTED}Installed version: ${NC}$installed_version"
+    fi
+  fi
+}
+
+install_from_binary() {
+  print_message info "\n${MUTED}Installing ${NC}$APP ${MUTED}from: ${NC}$binary_path"
+  local dest="$INSTALL_DIR/$APP"
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
+    dest="$INSTALL_DIR/$APP.exe"
+  fi
+  install_file "$binary_path" "$dest"
+}
+
+install_from_release() {
+  tmp_dir=$(mktemp -d)
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  print_message info "\n${MUTED}Downloading ${NC}$APP v$specific_version ${MUTED}for ${NC}$target"
+  if ! curl -fL --progress-bar -o "$tmp_dir/$package_name" "$url"; then
+    echo -e "${RED}Error: Failed to download $url${NC}" >&2
+    echo -e "${MUTED}Make sure GitHub Release v$specific_version exists and contains $package_name.${NC}" >&2
+    exit 1
+  fi
+
+  extract_archive "$tmp_dir/$package_name" "$tmp_dir"
+
+  binary_name="$APP"
+  if [[ "$target" == win32-* ]]; then
+    binary_name="$APP.exe"
+  fi
+
+  binary_path_in_package=$(find "$tmp_dir" -path "*/$binary_name" -type f -print -quit)
+  if [[ -z "$binary_path_in_package" ]]; then
+    echo -e "${RED}Error: Could not find $binary_name inside $package_name${NC}" >&2
+    exit 1
+  fi
+
+  install_file "$binary_path_in_package" "$INSTALL_DIR/$binary_name"
+}
+
+if [[ -n "$binary_path" ]]; then
+  install_from_binary
+else
+  check_version
+  install_from_release
+fi
+
+add_to_path() {
+  local config_file=$1
+  local command=$2
+
+  if grep -Fxq "$command" "$config_file"; then
+    print_message info "Command already exists in $config_file, skipping write."
+  elif [[ -w "$config_file" ]]; then
+    echo -e "\n# openzerocode" >> "$config_file"
+    echo "$command" >> "$config_file"
+    print_message info "${MUTED}Successfully added ${NC}$APP ${MUTED}to \$PATH in ${NC}$config_file"
+  else
+    print_message warning "Manually add the directory to $config_file (or similar):"
+    print_message info "  $command"
+  fi
+}
+
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+current_shell=$(basename "${SHELL:-sh}")
+case "$current_shell" in
+  fish) config_files="$HOME/.config/fish/config.fish" ;;
+  zsh) config_files="${ZDOTDIR:-$HOME}/.zshrc ${ZDOTDIR:-$HOME}/.zshenv $XDG_CONFIG_HOME/zsh/.zshrc $XDG_CONFIG_HOME/zsh/.zshenv" ;;
+  bash) config_files="$HOME/.bashrc $HOME/.bash_profile $HOME/.profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile" ;;
+  ash|sh) config_files="$HOME/.ashrc $HOME/.profile /etc/profile" ;;
+  *) config_files="$HOME/.bashrc $HOME/.bash_profile $XDG_CONFIG_HOME/bash/.bashrc $XDG_CONFIG_HOME/bash/.bash_profile" ;;
+esac
+
+if [[ "$no_modify_path" != "true" && ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+  config_file=""
+  for file in $config_files; do
+    if [[ -f "$file" ]]; then
+      config_file=$file
+      break
+    fi
+  done
+
+  if [[ -z "$config_file" ]]; then
+    print_message warning "No config file found for $current_shell. You may need to manually add to PATH:"
+    print_message info "  export PATH=$INSTALL_DIR:\$PATH"
+  else
+    case "$current_shell" in
+      fish) add_to_path "$config_file" "fish_add_path $INSTALL_DIR" ;;
+      *) add_to_path "$config_file" "export PATH=$INSTALL_DIR:\$PATH" ;;
+    esac
+  fi
+fi
+
+if [[ -n "${GITHUB_ACTIONS-}" && "${GITHUB_ACTIONS}" == "true" ]]; then
+  echo "$INSTALL_DIR" >> "$GITHUB_PATH"
+  print_message info "Added $INSTALL_DIR to \$GITHUB_PATH"
+fi
+
+echo -e ""
+echo -e "${MUTED}OpenZeroCode installed to:${NC} $INSTALL_DIR"
+echo -e ""
+echo -e "cd <project>  ${MUTED}# Open directory${NC}"
+echo -e "openzerocode  ${MUTED}# Run command${NC}"
+echo -e ""
+echo -e "${MUTED}For more information visit ${NC}https://github.com/arborlogic/openzerocode"

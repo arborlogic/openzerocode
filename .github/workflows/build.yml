@@ -75,6 +75,35 @@ jobs:
         shell: bash
         run: bash scripts/build-platform-package.sh ${{ matrix.target }}
 
+      - name: Create direct binary archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TARGET="${{ matrix.target }}"
+          BINARY_NAME="openzerocode"
+          if [[ "$TARGET" == win32-* ]]; then
+            BINARY_NAME="openzerocode.exe"
+          fi
+
+          STAGE_DIR="release/${APP_NAME:-openzerocode}-${TARGET}-${VERSION}"
+          mkdir -p "$STAGE_DIR/bin"
+          cp "npm/packages/$TARGET/bin/$BINARY_NAME" "$STAGE_DIR/bin/$BINARY_NAME"
+          chmod 755 "$STAGE_DIR/bin/$BINARY_NAME"
+
+          mkdir -p release-artifacts
+          if [[ "$TARGET" == win32-* ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path '$STAGE_DIR/*' -DestinationPath 'release-artifacts/openzerocode-$TARGET-$VERSION.zip' -Force"
+          else
+            tar -czf "release-artifacts/openzerocode-$TARGET-$VERSION.tar.gz" -C release "openzerocode-$TARGET-$VERSION"
+          fi
+
+      - name: Upload direct binary archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-archive-${{ matrix.target }}
+          path: release-artifacts/openzerocode-*
+
       - name: Pack platform package
         run: npm pack ./npm/packages/${{ matrix.target }}
 
@@ -85,7 +114,7 @@ jobs:
           path: openzerocode-*.tgz
 
   publish-npm:
-    if: github.ref_type == 'tag' || inputs.publish_to_npm
+    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_npm)
     needs: [build-root-package, build-platform-package]
     runs-on: ubuntu-latest
     permissions:
@@ -130,6 +159,29 @@ jobs:
         run: |
           set -euo pipefail
 
+          package_exists() {
+            local name="$1"
+            local version="$2"
+
+            npm view "$name@$version" version --silent >/dev/null 2>&1
+          }
+
+          publish_if_missing() {
+            local tarball="$1"
+            local name version
+
+            name="$(npm pkg get name --package "$tarball" | node -pe 'JSON.parse(fs.readFileSync(0, "utf8"))')"
+            version="$(npm pkg get version --package "$tarball" | node -pe 'JSON.parse(fs.readFileSync(0, "utf8"))')"
+
+            if package_exists "$name" "$version"; then
+              echo "Skipping $name@$version because it already exists on npm."
+              return 0
+            fi
+
+            echo "Publishing $name@$version from $tarball"
+            npm publish "$tarball" --access public
+          }
+
           root_package="$(find artifacts -path '*/npm-package-root/*.tgz' | head -n 1)"
           if [[ -z "$root_package" ]]; then
             echo "Root npm package tarball not found under artifacts/." >&2
@@ -144,12 +196,10 @@ jobs:
           fi
 
           for pkg in "${platform_packages[@]}"; do
-            echo "Publishing platform package $pkg"
-            npm publish "$pkg" --access public
+            publish_if_missing "$pkg"
           done
 
-          echo "Publishing root package $root_package"
-          npm publish "$root_package" --access public
+          publish_if_missing "$root_package"
 
   release:
     if: github.ref_type == 'tag' || inputs.create_github_release
@@ -193,4 +243,7 @@ jobs:
           tag_name: ${{ steps.release_tag.outputs.release_tag }}
           name: ${{ steps.release_tag.outputs.release_tag }}
           generate_release_notes: true
-          files: artifacts/**/*.tgz
+          files: |
+            artifacts/**/*.tgz
+            artifacts/binary-archive-*/*
+            install

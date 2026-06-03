@@ -47,12 +47,18 @@ describe("tool", () => {
   it("bash: timeout preserves partial output", async () => {
     const bash = await Effect.runPromise(BashTool)
     const result = await Effect.runPromise(
-      bash.execute({ command: "printf 'before timeout\\n'; sleep 2; printf 'after timeout\\n'", timeout: 100 }, testCtx()),
+      bash.execute({ command: "printf 'before timeout\\n'; sleep 2; printf 'after timeout\\n'", timeout: 1000 }, testCtx()),
     )
     assert.ok(result.title.startsWith("Bash error:"))
     assert.ok(result.output.includes("ETIMEDOUT"))
     assert.ok(result.output.includes("before timeout"))
     assert.ok(!result.output.includes("after timeout"))
+  })
+
+  it("bash: clamps tiny timeouts so fast commands are not killed before startup", async () => {
+    const bash = await Effect.runPromise(BashTool)
+    const result = await Effect.runPromise(bash.execute({ command: "echo hello", timeout: 1 }, testCtx()))
+    assert.equal(result.output.trim(), "hello")
   })
 
   it("grep: finds matches without leaking shell errors", async () => {
@@ -76,6 +82,28 @@ describe("tool", () => {
     assert.ok(result.output.includes("sample.ts:2:const needle = 2"))
   })
 
+  it("grep: supports multiple patterns with include filtering", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-grep-multi-"))
+    const srcDir = join(sessionDir, "src")
+    const scriptsDir = join(sessionDir, "scripts")
+    mkdirSync(srcDir, { recursive: true })
+    mkdirSync(scriptsDir, { recursive: true })
+    writeFileSync(join(srcDir, "alpha.ts"), "const alpha = 1\nconst beta = 2\n", { encoding: "utf-8", flag: "w" })
+    writeFileSync(join(srcDir, "gamma.ts"), "const gamma = 3\n", { encoding: "utf-8", flag: "w" })
+    writeFileSync(join(scriptsDir, "gamma.js"), "const gamma = 4\n", { encoding: "utf-8", flag: "w" })
+    writeFileSync(join(sessionDir, "README.md"), "alpha should not be matched here\n", { encoding: "utf-8", flag: "w" })
+
+    const grep = await Effect.runPromise(GrepTool)
+    const result = await Effect.runPromise(
+      grep.execute({ pattern: ["alpha", "gamma"], path: ".", include: "src/*.ts" }, testCtx(sessionDir)),
+    )
+
+    assert.ok(result.output.includes("alpha.ts:1:const alpha = 1"), result.output)
+    assert.ok(result.output.includes("gamma.ts:1:const gamma = 3"), result.output)
+    assert.ok(!result.output.includes("gamma.js"), result.output)
+    assert.ok(!result.output.includes("README.md"), result.output)
+  })
+
   it("glob: resolves relative path and matches nested patterns from ctx.cwd", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "ozc-glob-session-"))
     const nestedDir = join(sessionDir, "src", "nested")
@@ -85,6 +113,27 @@ describe("tool", () => {
     const glob = await Effect.runPromise(GlobTool)
     const result = await Effect.runPromise(glob.execute({ pattern: "src/**/*.ts", path: "." }, testCtx(sessionDir)))
     assert.ok(result.output.includes(nestedFile))
+  })
+
+  it("glob: supports multiple patterns and deduplicates overlapping matches", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-glob-multi-"))
+    const srcDir = join(sessionDir, "src")
+    const nestedDir = join(srcDir, "nested")
+    mkdirSync(nestedDir, { recursive: true })
+    const alphaFile = join(srcDir, "alpha.ts")
+    const betaFile = join(nestedDir, "beta.ts")
+    writeFileSync(alphaFile, "export const alpha = 1\n", { encoding: "utf-8", flag: "w" })
+    writeFileSync(betaFile, "export const beta = 2\n", { encoding: "utf-8", flag: "w" })
+
+    const glob = await Effect.runPromise(GlobTool)
+    const result = await Effect.runPromise(
+      glob.execute({ pattern: ["src/*.ts", "src/nested/*.ts"], path: "." }, testCtx(sessionDir)),
+    )
+
+    const lines = result.output.split("\n")
+    assert.ok(lines.includes(alphaFile))
+    assert.ok(lines.includes(betaFile))
+    assert.equal(lines.filter((line) => line === betaFile).length, 1)
   })
 
   it("write: creates file with content", async () => {

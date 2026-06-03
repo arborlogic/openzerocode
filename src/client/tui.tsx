@@ -15,7 +15,7 @@ import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
-import { runSession, type RunMode } from "./session-runner"
+import { runSession, streamSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
@@ -23,7 +23,7 @@ import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig } from "../provider/models"
-import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, estimateContextTokens, CONTEXT_WARNING_THRESHOLD } from "./session-compact"
+import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
@@ -34,7 +34,9 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
-import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
+import { testConnection, isConnected, isEnabled, setEnabled, readPage } from "../browser/geass-client"
+import { resolveSkillsDir, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
+import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -62,11 +64,16 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log("Options:")
   console.log("  -v, --version            Show version number")
   console.log("  -h, --help               Show this help message")
+  console.log("  -r, --run PROMPT         Run a single prompt headlessly (no TUI, auto-approve tools)")
   console.log()
   console.log("Commands:")
   console.log("  serve                    Start an HTTP server exposing the streaming session API")
   console.log("    --port PORT            Port to listen on (default: 4096)")
   console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
+  console.log()
+  console.log("Examples:")
+  console.log("  openzerocode                          Launch TUI")
+  console.log("  openzerocode --run 'reply a Threads post'  Headless agent run, stdout = result")
   console.log()
   console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
   console.log("Otherwise, the terminal UI is launched.")
@@ -92,6 +99,194 @@ if (args[0] === "serve") {
   // Bun.serve() keeps the event loop alive but returns immediately. Block here
   // so the rest of this module (which boots the TUI) never executes.
   await new Promise<never>(() => {})
+}
+
+// --run "prompt" — headless agent mode (no TUI, auto-approve all tools)
+{
+  const runFlagIdx = args.findIndex((a) => a === "--run" || a === "-r")
+  const headlessPrompt = runFlagIdx >= 0 && args[runFlagIdx + 1] ? args[runFlagIdx + 1] : undefined
+  if (headlessPrompt !== undefined) {
+    const provider = autoDetectProvider() ?? "opencode-zen"
+    const model = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider))
+    const layer = Layer.merge(buildLayer(provider, model), toolLayer)
+    const agentsInstruction = loadAgentsInstruction(process.cwd())
+    const contextInstruction = loadContextInstruction(process.cwd())
+
+    setEnabled(true)
+    await testConnection()
+
+    // ① LOAD — match current page URL to a skill, inject SKILL.md (+ LEARNINGS.md)
+    let activeSkill: LoadedSkill | undefined
+    if (isConnected()) {
+      const skillsDir = resolveSkillsDir(process.cwd())
+      if (skillsDir) {
+        try {
+          const page = await readPage()
+          if (page?.url) {
+            activeSkill = matchSkillByUrl(page.url, skillsDir)
+            if (activeSkill) {
+              process.stderr.write(`[skill: ${activeSkill.name}] matched by ${activeSkill.matchedBy}\n`)
+            }
+          }
+        } catch {
+          // page read failed — proceed without a skill
+        }
+      }
+    }
+    const skillSection = activeSkill ? buildSkillSection(activeSkill) : undefined
+
+    const runSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
+      Effect.runPromise(effect.pipe(Effect.provide(layer))) as Promise<A>
+
+    const runtime = {
+      runSync,
+      systemPrompt: (mode: RunMode) => {
+        const base = buildSystemPrompt(mode, agentsInstruction, contextInstruction)
+        return skillSection ? `${base}\n\n${skillSection}` : base
+      },
+      parseJson: (raw: string) => tryParseJSON(raw),
+      ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
+    }
+
+    const options: StreamOptions = {
+      abort: new AbortController().signal,
+      model,
+      mode: "build" as RunMode,
+      provider,
+      keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
+    }
+
+    let finalContent = ""
+    let runOutcome: RunOutcome = "success"
+    let runError: string | undefined
+    const runTools: RunToolEvent[] = []
+    const runToolIndex = new Map<string, RunToolEvent>()
+    const runStart = new Date()
+
+    const gen = streamSession(headlessPrompt, [], options, runtime)
+    for await (const chunk of gen) {
+      switch (chunk.type) {
+        case "text":
+          process.stdout.write(chunk.content)
+          finalContent += chunk.content
+          break
+        case "tool_start": {
+          process.stderr.write(`\n[tool: ${chunk.name}] ${chunk.input.slice(0, 120)}\n`)
+          const ev: RunToolEvent = { name: chunk.name, input: chunk.input }
+          runTools.push(ev)
+          runToolIndex.set(chunk.name + ":" + (runTools.length - 1), ev)
+          break
+        }
+        case "tool_result": {
+          process.stderr.write(`[done: ${chunk.name}] ${chunk.output.slice(0, 120)}\n`)
+          // Attach output to the most recent tool event with this name
+          for (let i = runTools.length - 1; i >= 0; i--) {
+            if (runTools[i].name === chunk.name && runTools[i].output === undefined) {
+              runTools[i].output = chunk.output
+              if (chunk.error) runTools[i].error = true
+              break
+            }
+          }
+          break
+        }
+        case "status":
+          process.stderr.write(`\r${chunk.text.padEnd(40)}\r`)
+          break
+        case "error":
+          process.stderr.write(`\nError: ${chunk.message}\n`)
+          runOutcome = "fail"
+          runError = chunk.message
+          break
+      }
+    }
+
+    // ③ CAPTURE — write run trajectory to skills/<skill>/runs/
+    let runRecordPath: string | undefined
+    if (activeSkill) {
+      runRecordPath = writeRunRecord({
+        skillName: activeSkill.name,
+        skillDir: activeSkill.dir,
+        prompt: headlessPrompt,
+        matchedBy: activeSkill.matchedBy,
+        pageUrl: (isConnected() ? await readPage().catch(() => undefined) : undefined)?.url,
+        model,
+        provider,
+        tools: runTools,
+        finalText: finalContent,
+        outcome: runOutcome,
+        errorMessage: runError,
+        startedAt: runStart,
+        endedAt: new Date(),
+      })
+      process.stderr.write(`\n[capture] ${runRecordPath}\n`)
+    }
+
+    // ④⑤ REFLECT — on failure, run a second headless pass to append learnings
+    const skipReflect = process.env.OPENZERO_NO_REFLECT === "1"
+    if (runOutcome === "fail" && activeSkill && runRecordPath && !skipReflect) {
+      process.stderr.write(`\n[reflect] starting reflection for skill: ${activeSkill.name}\n`)
+      const reflectModel = normalizeBigPickleModel(
+        process.env.OPENZERO_REFLECT_MODEL ?? process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider),
+      )
+      const reflectLayer = Layer.merge(buildLayer(provider, reflectModel), toolLayer)
+      const reflectRunSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
+        Effect.runPromise(effect.pipe(Effect.provide(reflectLayer))) as Promise<A>
+      const reflectRuntime = {
+        runSync: reflectRunSync,
+        systemPrompt: (mode: RunMode) => buildSystemPrompt(mode, agentsInstruction, contextInstruction),
+        parseJson: (raw: string) => tryParseJSON(raw),
+        ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
+      }
+      const reflectOptions: StreamOptions = {
+        abort: new AbortController().signal,
+        model: reflectModel,
+        mode: "build" as RunMode,
+        provider,
+        keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
+      }
+      const reflectPrompt = [
+        `You are reflecting on a failed agent run for the skill: ${activeSkill.name}.`,
+        ``,
+        `Files to read (use the read_file tool):`,
+        `1. SKILL.md (golden path): ${activeSkill.skillPath}`,
+        `2. Run record (trajectory): ${runRecordPath}`,
+        activeSkill.learnings ? `3. Existing LEARNINGS.md: ${activeSkill.dir}/LEARNINGS.md` : null,
+        ``,
+        `Your job:`,
+        `- Identify what failed: which step, which selector, which assumption was wrong.`,
+        `- If this is a KNOWLEDGE issue (wrong selector, wrong flow, wrong assumption):`,
+        `  Append a new learning entry to ${activeSkill.dir}/LEARNINGS.md using the format:`,
+        `  ## <date> <short description>`,
+        `  - Observed: <what happened>`,
+        `  - Fix/Alternative: <what to try instead>`,
+        `  - Confidence: low | medium | high`,
+        `  Create the file if it does not exist.`,
+        `- If this is a SCRIPT issue (bug in a .py or .js file):`,
+        `  Write a unified diff to ${activeSkill.dir}/runs/${new Date().toISOString().replace(/[:.]/g, "-")}-reflect.patch`,
+        `  Do NOT modify scripts directly.`,
+        `- Do NOT modify SKILL.md.`,
+        `- Do NOT make more than one file write.`,
+        `- Reply with a one-paragraph summary of what you found and what you wrote.`,
+      ]
+        .filter((l) => l !== null)
+        .join("\n")
+
+      const reflectGen = streamSession(reflectPrompt, [], reflectOptions, reflectRuntime)
+      for await (const chunk of reflectGen) {
+        if (chunk.type === "text") process.stderr.write(chunk.content)
+        else if (chunk.type === "tool_start")
+          process.stderr.write(`\n[reflect tool: ${chunk.name}] ${chunk.input.slice(0, 80)}\n`)
+        else if (chunk.type === "tool_result")
+          process.stderr.write(`[reflect done: ${chunk.name}]\n`)
+        else if (chunk.type === "error")
+          process.stderr.write(`\n[reflect error] ${chunk.message}\n`)
+      }
+      process.stderr.write("\n[reflect] done\n")
+    }
+
+    process.stdout.write("\n")
+    process.exit(runOutcome === "success" ? 0 : 1)
+  }
 }
 
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
@@ -170,13 +365,20 @@ type DisplayTurn = {
   userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
+function summaryPreview(summary: string, maxLen = 80): string {
+  const collapsed = summary.replace(/\s+/g, " ").trim()
+  if (collapsed.length <= maxLen) return collapsed
+  return collapsed.slice(0, maxLen).trimEnd() + "…"
+}
+
 function formatCompactionMarker(info: CompactionInfo): string {
   const count = info.sourceMessageCount === 1 ? "1 earlier message" : `${info.sourceMessageCount} earlier messages`
   const createdAt = new Date(info.createdAt)
   const when = Number.isNaN(createdAt.getTime())
     ? ""
     : ` · ${createdAt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
-  return `↯ Session compacted · ${count} summarized${when}`
+  const preview = info.summary ? ` · "${summaryPreview(info.summary)}"` : ""
+  return `↯ Session compacted · ${count} summarized${when}${preview}`
 }
 
 function refreshCurrentModelInfo() {
@@ -253,7 +455,27 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 }
 
 function tryParseJSON(raw: string): Record<string, unknown> {
-  try { return JSON.parse(raw) } catch { return {} }
+  try { return JSON.parse(raw) } catch { /* fall through */ }
+  // Handle concatenated JSON objects: {"a":1}{"b":2} (a common model mistake)
+  // Fix by wrapping as array, then merging — duplicate keys become arrays.
+  try {
+    const fixed = "[" + raw.trim().replace(/\}\s*\{/g, "},{") + "]"
+    const arr = JSON.parse(fixed)
+    if (!Array.isArray(arr)) return {}
+    const merged: Record<string, unknown> = {}
+    for (const obj of arr) {
+      if (!obj || typeof obj !== "object") continue
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        if (k in merged) {
+          if (!Array.isArray(merged[k])) merged[k] = [merged[k]]
+          ;(merged[k] as unknown[]).push(v)
+        } else {
+          merged[k] = v
+        }
+      }
+    }
+    return merged
+  } catch { return {} }
 }
 
 const execFileAsync = promisify(execFile)
@@ -807,7 +1029,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "geass" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -847,7 +1069,8 @@ function App() {
   }
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
-const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -890,6 +1113,7 @@ const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
+  createEffect(() => { saveUIPrefs({ autoCompressionEnabled: autoCompressionEnabled() }) })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -1356,6 +1580,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           void compactCurrentSession()
         },
       },
+      ...(compaction()?.summary
+        ? [{
+            label: "View compaction summary",
+            hint: "/compact view",
+            onSelect: () => {
+              viewCompactionSummary()
+            },
+          } satisfies PaletteItem]
+        : []),
       {
         label: "Export compact transcript",
         hint: "/export",
@@ -1386,10 +1619,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Experiment",
-        hint: "GEASS …",
+        hint: `auto compression ${autoCompressionEnabled() ? "ON" : "OFF"}, GEASS …`,
         onSelect: () => {
           setPalettePendingDelete(null)
-          setPaletteMode("geass")
+          setPaletteMode("experiments")
           setPaletteIndex(0)
         },
       },
@@ -1844,9 +2077,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   
-  const geassPaletteItems = createMemo<PaletteItem[]>(() => {
+  const experimentPaletteItems = createMemo<PaletteItem[]>(() => {
     geassRevision()
     return [
+      {
+        label: "EXPERIMENTS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Auto compression",
+        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        onSelect: () => {
+          const nextEnabled = !autoCompressionEnabled()
+          setAutoCompressionEnabled(nextEnabled)
+          saveUIPrefs({ autoCompressionEnabled: nextEnabled })
+          setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
+          setShowPalette(false)
+        },
+      },
       {
         label: "GEASS",
         kind: "section",
@@ -1944,8 +2193,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? timelinePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
-          : paletteMode() === "geass"
-            ? geassPaletteItems()
+          : paletteMode() === "experiments"
+            ? experimentPaletteItems()
           : paletteMode() === "userMessageActions"
             ? userMessageActionItems()
           : actionPaletteItems(),
@@ -2320,31 +2569,50 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return { ok: true, message: `Directory switched to ${displayPath(next)}` }
   }
 
-  const compactCurrentSession = async () => {
+  const viewCompactionSummary = () => {
+    const info = compaction()
+    if (!info || !info.summary) {
+      setStatus("no compaction summary yet")
+      showToast("info", "No compaction summary", "This session hasn't been compacted yet.")
+      return
+    }
+    const createdAt = new Date(info.createdAt)
+    const when = Number.isNaN(createdAt.getTime())
+      ? ""
+      : ` (${createdAt.toLocaleString()})`
+    const header = `↯ Compaction summary · ${info.sourceMessageCount} messages summarized${when}`
+    setNotices((prev) => [...prev, { kind: "system", text: `${header}\n\n${info.summary}` }])
+    setShowPalette(false)
+    queueMicrotask(scrollBottom)
+  }
+
+  const compactCurrentSession = async (opts: { automatic?: boolean } = {}) => {
     if (running()) {
       setStatus("response running — compaction skipped")
-      showToast("info", "Compaction skipped", "A response is already running.")
+      if (!opts.automatic) showToast("info", "Compaction skipped", "A response is already running.")
       return
     }
     if (compacting()) {
       setStatus("compaction already running")
-      showToast("info", "Compaction running", "Please wait for the current compaction to finish.")
+      if (!opts.automatic) showToast("info", "Compaction running", "Please wait for the current compaction to finish.")
       return
     }
 
     const currentMessages = messages()
     const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel, currentModelInfo).contextLimit)
     if (head.length === 0) {
-      setStatus("session too short to compact")
-      showToast("info", "Compaction skipped", "Session is still too short to compact.")
+      if (!opts.automatic) {
+        setStatus("session too short to compact")
+        showToast("info", "Compaction skipped", "Session is still too short to compact.")
+      }
       return
     }
 
     setPalettePendingDelete(null)
     setShowPalette(false)
     setCompacting(true)
-    setStatus(`compacting ${head.length} earlier messages...`)
-    showToast("info", "Compaction started", "Summarizing earlier session history…", 2000)
+    setStatus(opts.automatic ? `auto-compacting ${head.length} earlier messages...` : `compacting ${head.length} earlier messages...`)
+    showToast("info", opts.automatic ? "Auto compression started" : "Compaction started", "Summarizing earlier session history…", 2000)
     queueMicrotask(scrollBottom)
 
     const transcript = buildCompactionTranscript(head)
@@ -2390,12 +2658,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setCompaction(newCompaction)
       saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
       refreshSessions()
-      setStatus("session compacted")
-      showToast("success", "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
+      setStatus(opts.automatic ? "session auto-compressed" : "session compacted")
+      showToast("success", opts.automatic ? "Session auto-compressed" : "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
     } catch (error) {
       const errorText = formatProviderError(error)
-      setStatus("compaction failed")
-      showToast("error", "Compaction failed", errorText)
+      setStatus(opts.automatic ? "auto compression failed" : "compaction failed")
+      showToast("error", opts.automatic ? "Auto compression failed" : "Compaction failed", errorText)
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     } finally {
       setCompacting(false)
@@ -2421,10 +2689,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    // Suggest compaction when context is near limit, but let the user decide.
     {
       const cfg = getModelConfig(currentModel, currentModelInfo)
-      if (estimateContextTokens(messages(), input) > cfg.contextLimit * CONTEXT_WARNING_THRESHOLD) {
+      const nearContextLimit = shouldAutoCompactContext(messages(), input, cfg.contextLimit)
+      if (nearContextLimit && autoCompressionEnabled()) {
+        await compactCurrentSession({ automatic: true })
+      } else if (nearContextLimit) {
         setNotices((prev) => {
           const text = "Context is getting full — you can run /compact now if you want to reduce session history."
           const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
@@ -2433,6 +2703,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         })
       }
     }
+
+    if (abortSignal.aborted) return
 
     runAbort = new AbortController()
     abortSignal.addEventListener("abort", () => runAbort?.abort(), { once: true })
@@ -2660,6 +2932,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowUsageDashboard(true)
         },
         compactSession: compactCurrentSession,
+        viewCompactionSummary,
         exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,

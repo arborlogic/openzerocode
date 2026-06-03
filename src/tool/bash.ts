@@ -2,11 +2,25 @@ import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
 import { spawnSync } from "child_process"
 
+const DEFAULT_TIMEOUT_MS = 60_000
+const MIN_TIMEOUT_MS = 1_000
+
 const Parameters = Schema.Struct({
   command: Schema.String,
-  timeout: Schema.optional(Schema.Number),
+  timeout: Schema.optional(
+    Schema.Int.pipe(
+      Schema.annotate({
+        description: "Timeout in milliseconds. Values below 1000 are clamped to 1000 to avoid killing fast commands before they start.",
+      }),
+    ),
+  ),
 })
 type Args = { command: string; timeout?: number }
+
+function normalizeTimeout(timeout: number | undefined): number {
+  if (timeout === undefined || timeout <= 0) return DEFAULT_TIMEOUT_MS
+  return Math.max(timeout, MIN_TIMEOUT_MS)
+}
 
 export const BashTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
@@ -20,7 +34,7 @@ export const BashTool = Effect.gen(function* () {
         yield* ctx.ask({ permission: "bash", patterns: [args.command] })
         const result = spawnSync("sh", ["-c", args.command], {
           encoding: "utf-8",
-          timeout: args.timeout ?? 60000,
+          timeout: normalizeTimeout(args.timeout),
           maxBuffer: 10 * 1024 * 1024,
           cwd: ctx.cwd,
         })

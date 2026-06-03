@@ -12,7 +12,7 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 
 ## 灵感来源
 
-本项目**深受 OpenCode 启发**。OpenCode 是 [SST](https://sst.dev) 构建的终端原生 AI 编程代理。OpenZeroCode 最初延续了 OpenCode 的架构方向，之后逐步发展出自己的定位：
+本项目**深受 OpenCode 启发**。OpenCode 是终端原生 AI 编程代理。OpenZeroCode 最初延续了 OpenCode 的架构方向，之后逐步发展出自己的定位：
 
 - **相同基础**：SolidJS 终端 UI（`@opentui`）、Provider 抽象、工具系统、会话持久化
 - **不同重点**：本地优先、独立于 `zero` 生态、便于扩展自定义工作流
@@ -28,14 +28,16 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 
 - **基于 Solid 的终端 UI**：入口位于 `src/client/tui.tsx`，支持流式响应、推理展示和命令面板
 - **Build / Plan 模式切换**：在结构化执行和自由探索之间切换
-- **Provider 切换**：使用你自己的 API Key（OpenRouter、自定义端点等）
+- **Provider 切换**：OpenCode Zen、OpenAI、OpenAI Codex、OpenRouter、Zero-API、DeepSeek，以及可配置的 OpenAI-compatible 端点
 - **模型切换**：运行中切换模型
 - **多会话持久化**：会话保存于 `~/.openzerocode/sessions`
-- **会话管理**：重命名、删除、压缩会话
+- **会话管理**：重命名、删除、压缩会话，以及 timeline 操作（revert/copy/fork）
+- **Headless 与 server 模式**：用 `--run` 做一次性 CLI 运行，用 `serve` 启动 streaming HTTP API
 - **侧边栏上下文**：Token 用量、费用跟踪、Git diff 摘要
 - **工作区提示记忆**：将 `AGENTS.md` 指令和 `CONTEXT.md` 项目上下文注入系统提示词
 - **会话交接**：使用 `SESSION_SUMMARY.md` 保存简洁的本地续接笔记
-- **7 个内置工具**：
+- **GEASS browser 工具**：可选的浏览器导航、读取、交互、截图与视觉观察
+- **16 个内置工具**：
 
 | 工具 | 说明 |
 |------|------|
@@ -46,8 +48,17 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 | `bash` | 执行 shell 命令 |
 | `edit` | 定向字符串替换编辑 |
 | `web-fetch` | 从 URL 获取内容 |
+| `todo-write` | 在多步骤工作中维护结构化任务清单 |
+| `browser-navigate` | 将连接中的 GEASS browser 导航到 URL |
+| `browser-read` | 读取当前 GEASS browser 页面的结构化内容 |
+| `browser-click` | 点击 GEASS browser 页面元素 |
+| `browser-type` | 在 GEASS browser 输入字段中输入文字 |
+| `browser-select` | 选择 GEASS browser 下拉菜单选项 |
+| `browser-scroll` | 滚动当前 GEASS browser 页面 |
+| `browser-screenshot` | 捕获浏览器截图 |
+| `browser-observe-visual` | 以视觉方式检查当前浏览器画面 |
 
-![OpenZeroCode TUI 会话](./snapshot01.png)
+![OpenZeroCode TUI 会话](./docs/assets/openzerocode-demo.gif)
 
 ---
 
@@ -55,8 +66,7 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 
 ### 前置条件
 
-- **bun** >= 1.2
-- `PATH` 中可用的 **npm**（用于开发安装流程和 npm 分发）
+源码开发需要 **bun** >= 1.2，以及 `PATH` 中可用的 **npm**。
 
 ### 从 npm 安装
 
@@ -164,25 +174,34 @@ python3 scripts/dev-install.py
 
    发布前后请确认：
 
-   - 更新根目录 `package.json` / `package-lock.json` 版本，并创建匹配的 git tag，例如包版本 `0.3.2` 对应 tag `v0.3.2`
+   - 更新根目录 `package.json` / `package-lock.json` 版本，并创建匹配的 git tag，例如包版本 `0.3.9` 对应 tag `v0.3.9`
    - 如果发布包含面向用户的变更，确认 changelog 或 release notes 已准备好
    - 运行 `npm run typecheck`
    - 重新运行 `node scripts/create-platform-packages.mjs`，确认 `npm/` 和 `npm/packages/<target>/` 下的暂存文件是最新的
    - 合并到 `main`，然后推送 `v*` tag 触发 GitHub Actions 发布流程
-   - `.github/workflows/build.yml` 当前会在 tag push 时构建平台包、发布各 `@openzerocode/<target>`，并创建匹配的 GitHub Release
-   - 工作流目前还不会自动发布根包 `openzerocode`；若要让 `npm install -g openzerocode` 可用，仍需从 `npm/` 手动发布根包
-   - 发布后，在干净环境中验证 `npm install -g openzerocode` 和 `openzerocode --version`
+   - `.github/workflows/build.yml` 一律构建并上传 root/platform npm tarball，以及直接二进制 release archive（Linux/macOS 为 `.tar.gz`，Windows 为 `.zip`）
+   - Tag push 会用这些 artifacts 创建匹配的 GitHub Release，并自动发布 npm 包
+   - npm 发布会先发布平台包，再发布根包 `openzerocode`，已存在的版本会跳过
+   - 发布后，请从 GitHub Release artifacts 验证 `openzerocode --version`，并验证 `npm install -g openzerocode`
 
 这种结构让 `npm install -g openzerocode` 保持轻量，同时由 npm 解析平台专属可选包中的真实可执行文件。
 
-### 命令行参数
+### 命令行用法
 
-| 参数 | 作用 |
+```bash
+openzerocode                         # 启动 TUI
+openzerocode --version               # 显示版本
+openzerocode --help                  # 显示 CLI help
+openzerocode --run "fix the tests"    # Headless 运行一次 prompt，工具自动批准
+openzerocode serve --port 4096       # 启动 streaming HTTP API server
+```
+
+环境变量覆盖：
+
+| 变量 | 作用 |
 |------|------|
-| `--build` | 以 build 模式启动 |
-| `--plan` | 以 plan 模式启动 |
-| `--model <name>` | 覆盖默认模型 |
-| `--provider <name>` | 覆盖默认 Provider |
+| `OPENZERO_MODEL` | 覆盖 headless `--run` 模式使用的默认模型 |
+| `OPENZEROCODE_PROVIDER_CONFIG` | 覆盖 provider 配置文件路径（默认 `~/.openzerocode/providers.json`） |
 
 ### 备用入口
 
@@ -194,7 +213,7 @@ npm run start:tui
 
 ## Provider 配置
 
-Provider 凭证可以写入本地配置文件：
+Provider 凭证可以通过环境变量或本地配置文件提供：
 
 ```text
 ~/.openzerocode/providers.json
@@ -210,21 +229,31 @@ Provider 凭证可以写入本地配置文件：
       "keys": {
         "default": "sk-or-...",
         "backup": "sk-or-..."
-      }
+      },
+      "baseURL": "https://openrouter.ai/api/v1"
     }
   }
 }
 ```
 
+**支持的 Provider：**
+
+| Provider id | 名称 | 环境变量 |
+|-------------|------|----------|
+| `opencode-zen` | OpenCode Zen | `OPENCODE_API`、`OPENCODE_API_KEY`（可选；可匿名使用免费模型） |
+| `openai` | OpenAI | `OPENAI_API_KEY` |
+| `openai-codex` | OpenAI Codex | 通过 `/codex-login` 使用 ChatGPT OAuth |
+| `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
+| `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+
 **说明：**
 
 - 每个 Provider 可以有多个命名 key。
 - `activeKey` 决定运行时使用该 Provider 的哪个 key。
+- `baseURL` 可以覆盖 Provider 的默认端点，供 compatible API 使用。
 - 配置文件中的值优先级高于环境变量。
-- 可以在 TUI 中使用这些斜杠命令查看和切换 key：
-  - `/provider-key path`
-  - `/provider-key list <provider>`
-  - `/provider-key use <provider> <key-name>`
+- 可以在 TUI 中通过斜杠命令和 command palette 查看或切换 Provider、模型和 key。
 
 ---
 
@@ -259,21 +288,22 @@ npx tsx --test src/client/workspace-memory.test.ts
 │  - session management (create, rename, delete) │
 │  - build / plan mode toggle                    │
 │  - sidebar: token usage, cost, git summary     │
-│  - working memory injection                    │
+│  - workspace memory + skill injection          │
 └────────┬───────────────────────────────────────┘
          │
          ├── provider layer ─────────────────────┐
          │  src/provider/registry.ts             │
-         │  - OpenRouter (openrouter)            │
-         │  - Big Pickle (big-pickle)            │
+         │  - OpenCode Zen (opencode-zen)         │
+         │  - OpenAI / OpenAI Codex              │
+         │  - OpenRouter / Zero-API / DeepSeek   │
          │  - Extensible via registry            │
          └───────────────────────────────────────┘
          │
          └── tool layer ─────────────────────────┐
             src/tool/registry.ts                 │
-            - read / write / grep / glob         │
-            - bash / edit / web-fetch            │
-            - Permission system                  │
+            - file/search/shell/edit/web tools    │
+            - todo + GEASS browser tools         │
+            - Permission / auto-approve system   │
             └────────────────────────────────────┘
 ```
 
@@ -297,6 +327,7 @@ OpenZeroCode 将仓库记忆拆分为三个轻量文件：
 | `SESSION_SUMMARY.md` | 手动会话交接和续接笔记 |
 | `src/provider/registry.ts` | Provider 注册和解析 |
 | `src/tool/registry.ts` | 内置工具注册 |
+| `src/server/index.ts` | `openzerocode serve` 使用的 streaming HTTP API server |
 
 ---
 
@@ -306,8 +337,8 @@ OpenZeroCode 将仓库记忆拆分为三个轻量文件：
 |------|----------|--------------|
 | **运行时** | 需要 `zero` 云服务 | 自包含，本地优先 |
 | **TUI 框架** | `@opentui`（SolidJS） | `@opentui`（SolidJS），相同 |
-| **Provider 层** | OpenRouter 等 | OpenRouter、Big Pickle，可扩展 |
-| **工具系统** | 内置工具 | 同样的 7 个工具 + 权限系统 |
+| **Provider 层** | OpenRouter 等 | OpenCode Zen、OpenAI、OpenAI Codex、OpenRouter、Zero-API、DeepSeek，可扩展 |
+| **工具系统** | 内置工具 | 文件/搜索/shell/编辑/web 工具 + todo + GEASS browser 工具 + 权限系统 |
 | **会话存储** | 本地文件 | `~/.openzerocode/` 下的本地文件 |
 | **提示词记忆** | 形态不定 | `AGENTS.md` + `CONTEXT.md` 注入本地系统提示词 |
 | **云依赖** | 运行需要 `zero` | 无，完全离线可用 |
