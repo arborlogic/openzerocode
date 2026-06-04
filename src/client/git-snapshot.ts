@@ -34,7 +34,12 @@ export async function runGit(cwd: string, args: string[], timeout = 1000): Promi
       timeout,
       maxBuffer: 1024 * 1024,
     })
-    return stdout.trim()
+    // Only trim trailing line-ending chars. A leading trim would strip the
+    // significant first column of `git status --porcelain`: worktree-only
+    // changes start with a space (" M path"), and dropping it shifts the path
+    // by one character, breaking the slice-based parse below.
+    // Use [\r\n] so that CRLF output (Windows / core.autocrlf) is also handled.
+    return stdout.replace(/[\r\n]+$/, "")
   } catch {
     return ""
   }
@@ -46,7 +51,7 @@ export function parseGitDiffNumstat(out: string): Omit<GitFile, "status">[] {
     const parts = line.split("\t")
     const additions = Number.parseInt(parts[0] ?? "0", 10) || 0
     const deletions = Number.parseInt(parts[1] ?? "0", 10) || 0
-    const filePath = normalizePorcelainPath(parts.at(-1)?.trim() ?? "")
+    const filePath = normalizeNumstatPath(parts.at(-1)?.trim() ?? "")
     return { path: filePath, additions, deletions }
   }).filter((file) => file.path.length > 0)
 }
@@ -61,10 +66,71 @@ export function parseRecentCommits(out: string): GitCommit[] {
   })
 }
 
+// Git C-quotes paths with "unusual" bytes (when core.quotePath is on, the
+// default) by wrapping them in double quotes with backslash escapes. Crucially,
+// `git status --porcelain` quotes paths containing spaces while
+// `git diff --numstat` does NOT, so the same file yields two different raw
+// strings. Decoding both back to the real path keeps the merge keyed
+// consistently and avoids the file showing up twice. Octal escapes are emitted
+// per-byte for UTF-8, so we accumulate bytes before decoding.
+function unquoteGitPath(path: string): string {
+  if (path.length < 2 || path[0] !== '"' || path.at(-1) !== '"') return path
+  const inner = path.slice(1, -1)
+  const bytes: number[] = []
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]
+    if (ch !== "\\") {
+      for (const b of Buffer.from(ch, "utf-8")) bytes.push(b)
+      continue
+    }
+    const next = inner[++i]
+    if (next === undefined) break
+    if (next >= "0" && next <= "7") {
+      let oct = next
+      while (oct.length < 3 && inner[i + 1] >= "0" && inner[i + 1] <= "7") oct += inner[++i]
+      bytes.push(Number.parseInt(oct, 8))
+      continue
+    }
+    const simple: Record<string, number> = { a: 0x07, b: 0x08, t: 0x09, n: 0x0a, v: 0x0b, f: 0x0c, r: 0x0d, "\"": 0x22, "\\": 0x5c }
+    bytes.push(simple[next] ?? Buffer.from(next, "utf-8")[0])
+  }
+  return Buffer.from(bytes).toString("utf-8")
+}
+
+// Used for porcelain paths: may be C-quoted by git, so unquote after rename split.
+// Rename/copy records use `old -> new`, but either side may itself contain the
+// literal delimiter when quoted (for example `"old -> name" -> "new -> name"`).
+// Split only on delimiters that appear outside C-quoted path segments.
 function normalizePorcelainPath(path: string): string {
-  // Porcelain v1 renders renames/copies as `old -> new`; show the current path.
-  const renameIdx = path.lastIndexOf(" -> ")
-  return renameIdx >= 0 ? path.slice(renameIdx + 4).trim() : path
+  let inQuote = false
+  let escaped = false
+  let renameIdx = -1
+
+  for (let i = 0; i <= path.length - 4; i++) {
+    const ch = path[i]
+    if (escaped) {
+      escaped = false
+      continue
+    }
+    if (inQuote && ch === "\\") {
+      escaped = true
+      continue
+    }
+    if (ch === '"') {
+      inQuote = !inQuote
+      continue
+    }
+    if (!inQuote && path.slice(i, i + 4) === " -> ") renameIdx = i
+  }
+
+  const current = renameIdx >= 0 ? path.slice(renameIdx + 4).trim() : path
+  return unquoteGitPath(current)
+}
+
+// Used for numstat paths: git never C-quotes these, so skip unquoting.
+// Rename format in numstat is `{old => new}` or `old => new` (not `old -> new`).
+function normalizeNumstatPath(path: string): string {
+  return path
 }
 
 export function parseGitPorcelain(out: string): Pick<GitFile, "path" | "status">[] {
