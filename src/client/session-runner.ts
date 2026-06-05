@@ -30,6 +30,7 @@ type SessionUi = {
   keyName: string
   reasoning_effort?: "low" | "medium" | "high" | "max"
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
+  maxSteps?: number
 }
 
 type SessionRuntime = {
@@ -51,6 +52,8 @@ export type StreamOptions = {
   reasoning_effort?: "low" | "medium" | "high" | "max"
   /** Working directory passed to tools as cwd/root. Defaults to process.cwd(). */
   workdir?: string
+  /** Max model round-trips per run. Defaults to OPENZEROCODE_MAX_STEPS or 50. */
+  maxSteps?: number
 }
 
 /**
@@ -74,6 +77,7 @@ export async function* streamSession(
   // long tasks can raise it without a rebuild; default stays conservative to
   // avoid a runaway loop silently burning tokens.
   const maxSteps = (() => {
+    if (Number.isFinite(options.maxSteps) && (options.maxSteps ?? 0) > 0) return Math.floor(options.maxSteps!)
     const raw = Number.parseInt(process.env.OPENZEROCODE_MAX_STEPS ?? "", 10)
     return Number.isFinite(raw) && raw > 0 ? raw : 50
   })()
@@ -372,6 +376,7 @@ export async function runSession(
     provider: ui.provider,
     keyName: ui.keyName,
     reasoning_effort: ui.reasoning_effort,
+    maxSteps: ui.maxSteps,
   }, runtime)
   const resultHistory: Message[] = [...history]
 

@@ -8,6 +8,7 @@ type UIPrefs = {
   layoutMode: "horizontal" | "vertical"
   geassEnabled: boolean
   autoCompressionEnabled: boolean
+  maxSteps: number
 }
 
 const DEFAULTS: UIPrefs = {
@@ -16,6 +17,7 @@ const DEFAULTS: UIPrefs = {
   layoutMode: "horizontal",
   geassEnabled: false,
   autoCompressionEnabled: false,
+  maxSteps: 50,
 }
 
 function getPrefsPath() {

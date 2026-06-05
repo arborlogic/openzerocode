@@ -1024,7 +1024,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -1065,6 +1065,7 @@ function App() {
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
   const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
@@ -1484,6 +1485,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => {
           setPalettePendingDelete(null)
           setPaletteMode("display")
+          setPaletteIndex(0)
+        },
+      },
+      {
+        label: "Max steps",
+        hint: String(maxSteps()),
+        onSelect: () => {
+          setPaletteInput(String(maxSteps()))
+          setPaletteMode("maxSteps")
           setPaletteIndex(0)
         },
       },
@@ -2169,7 +2179,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const paletteItems = createMemo<PaletteItem[]>(() =>
-    paletteMode() === "editProviderBaseURL"
+    paletteMode() === "maxSteps"
+      ? [
+          { label: `Current max steps: ${maxSteps()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
+      : paletteMode() === "editProviderBaseURL"
       ? [
           { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
           { label: "Press Enter to save · Esc to cancel · leave blank for default", kind: "section" as const, onSelect: () => {} },
@@ -2199,7 +2214,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -2213,14 +2228,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -2746,6 +2761,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
         reasoning_effort: reasoningEffort(),
+        maxSteps: maxSteps(),
         onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),
@@ -3150,6 +3166,32 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           const sid = sessionId()
           updateSessionMeta(sid, { title: paletteInput() })
           refreshSessions()
+          setShowPalette(false)
+          setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "maxSteps") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = Number.parseInt(paletteInput().trim(), 10)
+          if (!Number.isFinite(value) || value <= 0) {
+            setStatus("max steps must be a positive integer")
+            event.preventDefault()
+            return
+          }
+          const next = Math.floor(value)
+          setMaxSteps(next)
+          saveUIPrefs({ maxSteps: next })
+          setStatus(`max steps set to ${next}`)
+          setPaletteInput("")
           setShowPalette(false)
           setPaletteMode("actions")
           event.preventDefault()
@@ -3871,7 +3913,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "help"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
             : 2
@@ -3919,7 +3961,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -3933,7 +3975,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3988,6 +4030,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
+                : paletteMode() === "maxSteps"
+                  ? "Enter save  •  Esc cancel"
                   : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
                   ? "Enter confirm  •  Esc back"
                   : paletteMode() === "sessions"
