@@ -2736,8 +2736,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (msg.role === "tool") streamState.reset()
           setMessages((prev) => [...prev, msg])
         },
-        notify: (text, kind) => {
+        notify: (text, kind, code) => {
           setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
+          // Surface step-limit notices as toasts so they can't be missed.
+          if (code === "step_limit_reached") {
+            showToast("warning", "Step limit reached", text, 8000)
+          }
         },
         setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
         scrollBottom,

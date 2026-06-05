@@ -93,6 +93,52 @@ test("runSession persists an assistant error message when provider stream readin
   assert.equal(statuses.at(-1), "error")
 })
 
+test("streamSession emits structured step-limit notice without misleading final thinking status", async () => {
+  const previousMaxSteps = process.env.OPENZEROCODE_MAX_STEPS
+  process.env.OPENZEROCODE_MAX_STEPS = "1"
+  try {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: "call_1",
+            function: { name: "missing_tool", arguments: "{}" },
+          }],
+        })
+        controller.close()
+      },
+    })
+
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model: "test-model",
+      provider: "test-provider",
+      keyName: "test-key",
+      mode: "build",
+    }, runtime(stream))
+
+    const chunks: any[] = []
+    while (true) {
+      const next = await gen.next()
+      if (next.done) break
+      chunks.push(next.value)
+    }
+
+    const stepLimitNotice = chunks.find((chunk) => chunk.type === "notice" && chunk.code === "step_limit_reached")
+    assert.equal(stepLimitNotice?.kind, "error")
+    assert.match(stepLimitNotice?.text, /Stopped after 1 steps/)
+    assert.deepEqual(
+      chunks.filter((chunk) => chunk.type === "status").map((chunk) => chunk.text),
+      ["thinking (step 1/1)...", "preparing tool: missing_tool"],
+    )
+  } finally {
+    if (previousMaxSteps === undefined) delete process.env.OPENZEROCODE_MAX_STEPS
+    else process.env.OPENZEROCODE_MAX_STEPS = previousMaxSteps
+  }
+})
+
 test("streamSession treats abort-time stream cancellation as interruption", async () => {
   const abort = new AbortController()
   const stream = new ReadableStream({

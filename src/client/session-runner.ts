@@ -21,7 +21,7 @@ type SessionUi = {
   streamToolCallChunk: (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => void
   setStreamingToolResult: (input: { id?: string; tool?: string; output: string; error?: boolean }) => void
   addMessage: (msg: Message) => void
-  notify: (text: string, kind: string) => void
+  notify: (text: string, kind: string, code?: string) => void
   setStatus: (text: string) => void
   scrollBottom: () => void
   model: string
@@ -129,7 +129,7 @@ export async function* streamSession(
   const currentTurnStart = allMessages.length
 
   for (let step = 0; step < maxSteps; step++) {
-    yield { type: "status", text: "thinking..." }
+    yield { type: "status", text: `thinking (step ${step + 1}/${maxSteps})...` }
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
 
@@ -337,15 +337,18 @@ export async function* streamSession(
       yield { type: "message", message: toolMsg }
     }
 
-    yield { type: "status", text: "thinking..." }
+    if (step + 1 < maxSteps) {
+      yield { type: "status", text: `thinking (step ${step + 2}/${maxSteps})...` }
+    }
   }
 
   // Reached the step cap without the model finishing. Surface it so the run
   // isn't mistaken for a clean completion — and tell the user how to allow more.
   yield {
     type: "notice",
-    kind: "system",
-    text: `Stopped after reaching the step limit (${maxSteps}). The task may be unfinished — send "continue" to keep going, or raise OPENZEROCODE_MAX_STEPS for longer tasks.`,
+    kind: "error",
+    code: "step_limit_reached",
+    text: `⚠ Stopped after ${maxSteps} steps — the task may be unfinished. Type "continue" to resume, or set OPENZEROCODE_MAX_STEPS higher.`,
   }
   yield { type: "done" }
   return resultHistory
@@ -406,7 +409,7 @@ export async function runSession(
           ui.setStatus(chunk.text)
           break
         case "notice":
-          ui.notify(chunk.text, chunk.kind)
+          ui.notify(chunk.text, chunk.kind, chunk.code)
           break
         case "usage":
           ui.onUsage?.(chunk.inputTokens, chunk.outputTokens, chunk.cachedInputTokens)

@@ -16,7 +16,7 @@ export type StreamChunk =
   | { type: "tool_result"; id: string; name: string; output: string; error: boolean }
   | { type: "message"; message: Message }
   | { type: "status"; text: string }
-  | { type: "notice"; kind: string; text: string }
+  | { type: "notice"; kind: string; text: string; code?: string }
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens: number }
   | { type: "error"; message: string }
   | { type: "done" }
