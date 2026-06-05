@@ -1,6 +1,6 @@
 import assert from "node:assert"
 import { describe, it } from "bun:test"
-import { parseDiffBlocks } from "./markdown-with-diff"
+import { parseDiffBlocks } from "./markdown-diff-parser"
 
 describe("parseDiffBlocks", () => {
   it("returns a single markdown segment when there are no diff blocks", () => {
@@ -121,5 +121,32 @@ describe("parseDiffBlocks", () => {
     // file property is only present on diff segments
     const diffSeg = result[0] as { type: "diff"; content: string; file?: string }
     assert.equal(diffSeg.file, "src/hello.ts")
+  })
+
+  it("treats an unclosed trailing diff fence as diff while streaming", () => {
+    const md = [
+      "Before:",
+      "```diff src/hello.ts",
+      "--- a/src/hello.ts",
+      "+++ b/src/hello.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ].join("\n")
+
+    const result = parseDiffBlocks(md, true)
+    assert.equal(result.length, 2)
+    assert.equal(result[0]!.type, "markdown")
+    assert.equal(result[1]!.type, "diff")
+    const diffSeg = result[1] as { type: "diff"; content: string; file?: string }
+    assert.equal(diffSeg.file, "src/hello.ts")
+    assert.ok(diffSeg.content.includes("+new"))
+  })
+
+  it("keeps an unclosed trailing diff fence as markdown when not streaming", () => {
+    const md = "```diff\n-old\n+new"
+    const result = parseDiffBlocks(md)
+    assert.equal(result.length, 1)
+    assert.equal(result[0]!.type, "markdown")
   })
 })

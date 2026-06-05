@@ -816,18 +816,13 @@ function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   if (props.entry.kind === "assistant") {
     return (
       <box marginTop={props.isFirst ? 0 : 1}>
-        <Show
-          when={!props.entry.streaming}
-          fallback={<text style={{ fg: THEME.text }}>{props.entry.text}</text>}
-        >
-          <MarkdownWithDiff
-            content={props.entry.text}
-            syntaxStyle={MARKDOWN_SYNTAX}
-            fg={THEME.text}
-            bg={THEME.background}
-            streaming={false}
-          />
-        </Show>
+        <MarkdownWithDiff
+          content={props.entry.text}
+          syntaxStyle={MARKDOWN_SYNTAX}
+          fg={THEME.text}
+          bg={THEME.background}
+          streaming={props.entry.streaming ?? false}
+        />
       </box>
     )
   }
