@@ -2,12 +2,14 @@
 
 import { $ } from "bun"
 import { existsSync } from "node:fs"
-import { readFile, writeFile } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { basename } from "node:path"
 
 const HELP = `Usage: bun run scripts/release.ts <patch|minor|major|VERSION> [options]
 
 Prepare a local OpenZeroCode release commit and tag.
+
+Before running this script, add a real CHANGELOG.md entry for the target version.
 
 Arguments:
   patch|minor|major|VERSION  Version bump type or explicit semver version.
@@ -16,7 +18,7 @@ Options:
   --push                     Push the release commit and tag to origin.
   --remote <name>            Git remote to push to (default: origin).
   --no-verify                Skip npm run typecheck.
-  --dry-run                  Print planned actions without changing files.
+  --dry-run                  Print planned actions without changing files; still validates the changelog entry.
   --help                     Show this help.
 
 Examples:
@@ -151,45 +153,57 @@ async function updatePackageLock(version: string, dryRun: boolean): Promise<bool
   return true
 }
 
-async function updateChangelog(version: string, dryRun: boolean): Promise<boolean> {
-  const filePath = "CHANGELOG.md"
-  const today = new Date().toISOString().slice(0, 10)
-  const entry = `## ${version} - ${today}\n\n- Release ${version}.\n\n`
+function changelogHeadingPattern(version: string): RegExp {
+  const escapedVersion = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`^## \\[(?:v)?${escapedVersion}\\]|^## (?:v)?${escapedVersion}(?:\\s|$)`, "m")
+}
 
+function changelogTemplate(version: string): string {
+  const today = new Date().toISOString().slice(0, 10)
+  return `## ${version} - ${today}\n\n- Summarize the release changes here.\n`
+}
+
+async function ensureChangelogEntry(version: string): Promise<void> {
+  const filePath = "CHANGELOG.md"
   if (!existsSync(filePath)) {
-    const content = `# Changelog\n\n${entry}`
-    if (!dryRun) await writeFile(filePath, content)
-    return true
+    throw new Error(
+      `missing CHANGELOG.md. Create it and add this entry before releasing:\n\n${changelogTemplate(version)}`,
+    )
   }
 
   const current = await readFile(filePath, "utf8")
-  if (current.includes(`## ${version} -`) || current.includes(`## [${version}]`)) {
-    return true
+  if (!changelogHeadingPattern(version).test(current)) {
+    throw new Error(
+      `CHANGELOG.md is missing an entry for ${version}. Add a real entry before releasing, for example:\n\n${changelogTemplate(version)}`,
+    )
   }
-
-  const headingMatch = /^# .*\n+/m.exec(current)
-  const content = headingMatch
-    ? `${current.slice(0, headingMatch.index + headingMatch[0].length)}${entry}${current.slice(headingMatch.index + headingMatch[0].length)}`
-    : `# Changelog\n\n${entry}${current}`
-
-  if (!dryRun) await writeFile(filePath, content)
-  return true
 }
 
 async function gitOutput(args: string[]): Promise<string> {
   return (await $`git ${args}`.quiet().text()).trim()
 }
 
-async function ensureCleanWorktree(options?: { dryRun?: boolean }): Promise<void> {
+function parsePorcelainPath(line: string): string {
+  const path = line.slice(3)
+  const renameSeparator = " -> "
+  return path.includes(renameSeparator) ? path.slice(path.indexOf(renameSeparator) + renameSeparator.length) : path
+}
+
+async function ensureReleasableWorktree(options?: { dryRun?: boolean }): Promise<void> {
   const status = await gitOutput(["status", "--porcelain"])
   if (!status) return
 
+  const changedPaths = status.split("\n").map(parsePorcelainPath)
+  const unexpectedPaths = changedPaths.filter((filePath) => filePath !== "CHANGELOG.md")
+  if (unexpectedPaths.length === 0) return
+
+  const message = `working tree has changes outside CHANGELOG.md: ${unexpectedPaths.join(", ")}. Commit or stash them before releasing`
   if (options?.dryRun) {
-    console.log("[dry-run] working tree is not clean; a real release would stop here")
+    console.log(`[dry-run] ${message}`)
     return
   }
 
-  throw new Error("working tree is not clean; commit or stash current changes before releasing")
+  throw new Error(message)
 }
 
 async function tagExists(tag: string): Promise<boolean> {
@@ -216,9 +230,11 @@ async function main() {
 
   if (options.dryRun) {
     console.log(`[dry-run] would prepare release ${tag}`)
+    console.log(`[dry-run] expecting CHANGELOG.md to already contain a ${version} entry`)
   }
 
-  await ensureCleanWorktree({ dryRun: options.dryRun })
+  await ensureReleasableWorktree({ dryRun: options.dryRun })
+  await ensureChangelogEntry(version)
 
   if (await tagExists(tag)) {
     throw new Error(`tag already exists: ${tag}`)
@@ -227,7 +243,7 @@ async function main() {
   const changedFiles: string[] = []
   if (await updatePackageJson("package.json", version, options.dryRun)) changedFiles.push("package.json")
   if (await updatePackageLock(version, options.dryRun)) changedFiles.push("package-lock.json")
-  if (await updateChangelog(version, options.dryRun)) changedFiles.push("CHANGELOG.md")
+  changedFiles.push("CHANGELOG.md")
 
   console.log(`Prepared ${tag}`)
   console.log(`Updated: ${changedFiles.map((file) => basename(file)).join(", ")}`)

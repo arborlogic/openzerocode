@@ -181,7 +181,7 @@ Typical workflow:
 
 5. **Release checklist**
 
-   Use the release script to prepare the version bump, changelog entry, release commit, and matching git tag:
+   First add a real `CHANGELOG.md` entry for the target version. Then use the release script to prepare the version bump, release commit, and matching git tag:
 
    ```bash
    npm run release -- patch       # or: minor, major, explicit version such as 0.4.3
@@ -189,11 +189,11 @@ Typical workflow:
    npm run release -- patch --push
    ```
 
-   The script requires a clean working tree, updates `package.json`, `package-lock.json` if present, and `CHANGELOG.md`, runs `npm run typecheck` by default, commits `chore: release v<version>`, and creates the `v<version>` tag. Use `--no-verify` only when you intentionally want to skip typecheck.
+   The script requires no unrelated working-tree changes, validates that `CHANGELOG.md` already contains the target version entry, updates `package.json` and `package-lock.json` if present, stages the changelog entry, runs `npm run typecheck` by default, commits `chore: release v<version>`, and creates the `v<version>` tag. Use `--no-verify` only when you intentionally want to skip typecheck.
 
    Before and after a release, verify:
 
-   - Confirm changelog or release notes are ready if the release includes user-facing changes
+   - Confirm the target version changelog entry is complete before running the release script
    - If you did not pass `--push`, push both the release commit and tag: `git push origin HEAD && git push origin v<version>`
    - `.github/workflows/build.yml` always builds and uploads root/platform npm tarballs plus direct binary release archives (`.tar.gz` for Linux/macOS, `.zip` for Windows)
    - Tag pushes create a matching GitHub Release with those artifacts and automatically publish npm packages

@@ -25,7 +25,7 @@ Release automation has two parts:
 
 ### Prepare a release locally
 
-Run the release script from a clean working tree. It accepts a bump type (`patch`, `minor`, `major`) or an explicit stable semver version.
+First add a real `CHANGELOG.md` entry for the target version. Then run the release script with no unrelated working-tree changes. It accepts a bump type (`patch`, `minor`, `major`) or an explicit stable semver version.
 
 ```bash
 npm run release -- patch       # next patch version
@@ -41,19 +41,21 @@ npm run release:major
 
 By default, the script:
 
-1. checks the working tree is clean;
+1. checks the working tree has no unrelated changes outside `CHANGELOG.md`;
 2. calculates and validates the next version;
 3. rejects versions that are not greater than the current package version;
 4. rejects an existing git tag for the target version;
-5. updates `package.json`, `package-lock.json` if present, and `CHANGELOG.md`;
-6. runs `npm run typecheck`;
-7. creates a release commit named `chore: release v<version>`;
-8. creates the local `v<version>` git tag.
+5. validates that `CHANGELOG.md` already contains an entry for the target version;
+6. updates `package.json` and `package-lock.json` if present;
+7. stages the existing `CHANGELOG.md` entry with the version bump;
+8. runs `npm run typecheck`;
+9. creates a release commit named `chore: release v<version>`;
+10. creates the local `v<version>` git tag.
 
 Useful options:
 
 ```bash
-npm run release -- patch --dry-run     # show planned actions without changing files
+npm run release -- patch --dry-run     # show planned actions without changing files; still validates the changelog entry
 npm run release -- patch --no-verify   # skip npm run typecheck
 npm run release -- patch --push        # also push the commit and tag to origin
 npm run release -- patch --remote fork # use a different git remote with --push

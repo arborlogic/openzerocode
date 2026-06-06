@@ -182,7 +182,7 @@ python3 scripts/dev-install.py
 
 5. **發布檢查清單**
 
-   使用 release script 準備版本更新、changelog entry、release commit，以及符合的 git tag：
+   先在 `CHANGELOG.md` 加好目標版本的真實 entry。接著使用 release script 準備版本更新、release commit，以及符合的 git tag：
 
    ```bash
    npm run release -- patch       # 或：minor、major、明確版本例如 0.4.3
@@ -190,11 +190,11 @@ python3 scripts/dev-install.py
    npm run release -- patch --push
    ```
 
-   Script 需要乾淨的 working tree，會更新 `package.json`、存在時更新 `package-lock.json`、更新 `CHANGELOG.md`，預設執行 `npm run typecheck`，提交 `chore: release v<version>`，並建立 `v<version>` tag。只有在明確想略過 typecheck 時才使用 `--no-verify`。
+   Script 不允許無關的 working-tree changes，會驗證 `CHANGELOG.md` 已包含目標版本 entry，更新 `package.json` 與存在時更新 `package-lock.json`，一併 stage changelog entry，預設執行 `npm run typecheck`，提交 `chore: release v<version>`，並建立 `v<version>` tag。只有在明確想略過 typecheck 時才使用 `--no-verify`。
 
    發布前後請確認：
 
-   - 如果發布包含面向使用者的變更，確認 changelog 或 release notes 已準備好
+   - 執行 release script 前，確認目標版本 changelog entry 已完整
    - 如果沒有傳入 `--push`，請同時推送 release commit 和 tag：`git push origin HEAD && git push origin v<version>`
    - `.github/workflows/build.yml` 一律建置並上傳 root/platform npm tarball，以及直接二進位 release archive（Linux/macOS 為 `.tar.gz`，Windows 為 `.zip`）
    - Tag push 會用這些 artifacts 建立符合的 GitHub Release，並自動發布 npm 套件
