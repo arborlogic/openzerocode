@@ -24,7 +24,7 @@ import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getKnownModelConfig, getModelConfig } from "../provider/models"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
-import { formatProviderError } from "./errors"
+import { formatProviderError, isRateLimitError, delay } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
@@ -41,6 +41,7 @@ import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
+import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
 import { writeCompactTranscriptExport } from "./session-export"
 import pkg from "../../package.json" with { type: "json" }
 
@@ -1067,6 +1068,9 @@ function App() {
   const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
+  const [autoLoopWindowMs, setAutoLoopWindowMs] = createSignal<number | undefined>(undefined)
+  const [autoLoopEndsAt, setAutoLoopEndsAt] = createSignal<number | undefined>(undefined)
+  const [autoLoopConfirm, setAutoLoopConfirm] = createSignal(false)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -1162,6 +1166,9 @@ function App() {
   let autocompleteApi: AutocompleteApi | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
+  let autoLoopAbort: AbortController | undefined
+  let autoLoopTimer: ReturnType<typeof setTimeout> | undefined
+  let autoLoopPendingTimer: ReturnType<typeof setTimeout> | undefined
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
@@ -1174,10 +1181,199 @@ function App() {
         setQueuedInputs(depth)
       },
       onDrainEnd: () => {
-        setStatus("waiting for input")
+        scheduleAutoLoop()
+        setStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input")
       },
     },
   )
+
+  function clearAutoLoopTimer(options?: { clearWindow?: boolean }) {
+    if (autoLoopTimer) clearTimeout(autoLoopTimer)
+    autoLoopTimer = undefined
+    // Always cancel a pending-wait timer so it never fires after a reschedule
+    if (autoLoopPendingTimer) clearTimeout(autoLoopPendingTimer)
+    autoLoopPendingTimer = undefined
+    if (options?.clearWindow) {
+      autoLoopAbort?.abort()
+      autoLoopAbort = undefined
+      setAutoLoopWindowMs(undefined)
+      setAutoLoopEndsAt(undefined)
+    }
+  }
+
+  function disableAutoLoop(reason?: string) {
+    clearAutoLoopTimer({ clearWindow: true })
+    setStatus("autoloop stopped — waiting for human")
+    const noticeText = reason ? `⟳ Autoloop stopped: ${reason}` : "⟳ Autoloop stopped — waiting for human input."
+    setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
+    queueMicrotask(scrollBottom)
+  }
+
+  function stopAutoLoopWindow() {
+    clearAutoLoopTimer({ clearWindow: true })
+    setStatus("waiting for input")
+    setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autoloop ended — delegated time window expired." }])
+    queueMicrotask(scrollBottom)
+  }
+
+  async function runAutoLoopSupervisor(remainingMs: number): Promise<SupervisorDecision> {
+    autoLoopAbort?.abort()
+    autoLoopAbort = new AbortController()
+    // Capture signal locally — autoLoopAbort may be reassigned by a concurrent call
+    const signal = autoLoopAbort.signal
+    const supervisorPrompt = buildAutoLoopSupervisorPrompt(formatAutoLoopDuration(remainingMs))
+    const msgHistory = sanitizeMessages(messages())
+    const result = await runSync(Effect.gen(function* () {
+      const provider = yield* Provider
+      return yield* provider.complete({
+        model: currentModel,
+        stream: false,
+        max_tokens: 300,
+        signal,
+        messages: [
+          // Inject supervisor instructions as system role so conversation history
+          // cannot override the safety rules via a strong assistant-tail directive
+          { role: "system", content: supervisorPrompt },
+          ...msgHistory,
+          { role: "user", content: "Decide and output the JSON." },
+        ],
+      })
+    }))
+    return parseAutoLoopSupervisorDecision(result.message.content ?? "")
+  }
+
+  async function queueAutoLoopContinuation() {
+    const endsAt = autoLoopEndsAt()
+    if (!endsAt || Date.now() >= endsAt) {
+      stopAutoLoopWindow()
+      return
+    }
+    const remainingMs = Math.max(1_000, endsAt - Date.now())
+    setStatus(`autoloop: deciding next step...`)
+
+    let decision: SupervisorDecision | undefined
+    let supervisorError: unknown
+    let retried = false
+    while (true) {
+      if (!autoLoopEndsAt()) return
+      try {
+        decision = await runAutoLoopSupervisor(Math.max(1_000, autoLoopEndsAt()! - Date.now()))
+        supervisorError = undefined
+        break
+      } catch (err) {
+        supervisorError = err
+        // Detect abort via the error type, not by re-reading autoLoopAbort
+        // (which may have been reassigned by a concurrent call)
+        if (err instanceof Error && (err.name === "AbortError" || err.message === "aborted")) return
+        if (!isRateLimitError(err) || retried) break
+        retried = true
+        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: rate limited — waiting 3 minutes before retry` }])
+        setStatus("autoloop: rate limited, waiting 3m...")
+        // Make the delay interruptible: resolve early if the abort signal fires
+        const rateSignal = autoLoopAbort?.signal
+        await Promise.race([
+          delay(3 * 60_000),
+          new Promise<void>(resolve => rateSignal?.addEventListener("abort", () => resolve(), { once: true })),
+        ])
+        if (rateSignal?.aborted || !autoLoopEndsAt()) return
+      }
+    }
+    if (supervisorError !== undefined || decision === undefined) {
+      const msg = isRateLimitError(supervisorError) ? "rate limit persists — stopping autoloop" : "supervisor error"
+      disableAutoLoop(msg)
+      return
+    }
+
+    if (decision.confidence === "low") {
+      disableAutoLoop(decision.reason || "low confidence")
+      return
+    }
+
+    // Re-check after async gap — window may have expired or been cancelled
+    if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
+      stopAutoLoopWindow()
+      return
+    }
+
+    if (decision.confidence === "pending") {
+      // AI gave multiple options with a recommendation — wait 3min for human, then proceed
+      const PENDING_WAIT_MS = 3 * 60_000
+      // Count only user-role messages so that tool-result messages appended by an
+      // in-flight worker do not falsely register as "human responded"
+      const userCountAtDecision = messages().filter(m => m.role === "user").length
+      const noticeText = `⟳ Autoloop: AI gave a recommendation — proceeding in 3 minutes unless you respond.\n  → ${decision.instruction}`
+      setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
+      setStatus(`autoloop: waiting 3m for your response...`)
+      queueMicrotask(scrollBottom)
+      autoLoopPendingTimer = setTimeout(() => {
+        autoLoopPendingTimer = undefined
+        // If human sent a new message, let the normal flow take over
+        if (messages().filter(m => m.role === "user").length > userCountAtDecision) return
+        // If window expired or autoloop was cancelled, stop
+        if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
+          stopAutoLoopWindow()
+          return
+        }
+        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: no response received — proceeding with recommendation.` }])
+        if (autoLoopConfirm()) {
+          setComposerText(decision.instruction)
+          setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
+          showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
+        } else {
+          inputQueue?.enqueue(decision.instruction)
+          setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
+        }
+        queueMicrotask(scrollBottom)
+      }, PENDING_WAIT_MS)
+      return
+    }
+
+    if (autoLoopConfirm()) {
+      setComposerText(decision.instruction)
+      setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+      showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
+      queueMicrotask(scrollBottom)
+    } else {
+      showToast("info", "Autoloop delegated", decision.instruction, 4000)
+      inputQueue?.enqueue(decision.instruction)
+      setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+      queueMicrotask(scrollBottom)
+    }
+  }
+
+  function scheduleAutoLoop() {
+    clearAutoLoopTimer()
+    const endsAt = autoLoopEndsAt()
+    if (!endsAt) return
+    const remainingMs = endsAt - Date.now()
+    if (remainingMs <= 0) {
+      stopAutoLoopWindow()
+      return
+    }
+    setStatus(`autoloop active — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+    if (running() || compacting() || pendingApproval() || (inputQueue?.depth() ?? 0) > 0 || (inputQueue?.isDraining() ?? false)) return
+    autoLoopTimer = setTimeout(() => {
+      autoLoopTimer = undefined
+      void queueAutoLoopContinuation()
+    }, 0)
+  }
+
+  function configureAutoLoop(windowMs: number | undefined, confirm?: boolean) {
+    clearAutoLoopTimer({ clearWindow: true })
+    // autoLoopWindowMs is now cleared by clearAutoLoopTimer; set new value after
+    setAutoLoopWindowMs(windowMs)
+    setAutoLoopConfirm(confirm ?? false)
+    if (windowMs) {
+      const endsAt = Date.now() + windowMs
+      setAutoLoopEndsAt(endsAt)
+      // Route through scheduleAutoLoop so the idle guard (running/compacting/pendingApproval)
+      // is respected and the supervisor call is deferred until the queue is clear
+      scheduleAutoLoop()
+    } else {
+      setStatus("autoloop disabled")
+    }
+  }
+
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
@@ -2815,7 +3011,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
       setMessages(next)
       saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
-      setStatus(formatQueueStatus("waiting for input", queuedInputs()))
+      setStatus(formatQueueStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
@@ -2951,6 +3147,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,
+        getAutoLoopInterval: autoLoopWindowMs,
+        getAutoLoopConfirm: autoLoopConfirm,
+        setAutoLoop: configureAutoLoop,
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -2977,6 +3176,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
+      }
+      if (slashCmd === "autoloop") {
+        setComposerText("")
       }
       if (slashCmd === "commit") {
         setComposerText("Please help generate a commit message and commit the changes")
@@ -3766,6 +3968,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
               </Show>
+              <Show when={autoLoopWindowMs()}>
+                <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+                <text style={{ fg: "#d29922" }}>{`AUTO ${formatAutoLoopDuration(autoLoopWindowMs()!)}`}</text>
+              </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
@@ -3782,7 +3988,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
               <Show when={running() || compacting()} fallback={
-                <text style={{ fg: THEME.muted }}>{`  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
+                <text style={{ fg: THEME.muted }}>{`  •  ${status()}  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
