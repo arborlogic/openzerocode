@@ -34,6 +34,10 @@
     "test:unit": "find src -name '*.test.ts' -not -path '*core/core.test.ts' -not -path '*provider/provider.test.ts' -not -path '*client/commands.test.ts' -not -path '*client/markdown-with-diff.test.ts' -print0 | xargs -0 tsx --test",
     "test:bun": "bun test --preload @opentui/solid/preload src/client/commands.test.ts src/client/markdown-with-diff.test.ts",
     "build": "bash scripts/build.sh",
+    "release": "bun run scripts/release.ts",
+    "release:patch": "bun run scripts/release.ts patch",
+    "release:minor": "bun run scripts/release.ts minor",
+    "release:major": "bun run scripts/release.ts major",
     "postinstall": "bash scripts/postinstall.sh"
   },
   "files": [

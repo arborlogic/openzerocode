@@ -1,9 +1,10 @@
 import type { Setter } from "solid-js"
 import { HELP_CONTENT } from "./help-content"
-import type { DisplayBlock } from "./tui"
+import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
 import { getModelConfig } from "../provider/models"
+import { formatAutoLoopDuration, parseAutoLoopDuration } from "./autoloop"
 
 export type SlashCommandDef = {
   name: string
@@ -42,6 +43,9 @@ export type CommandContext = {
   exportCompactSession: () => void
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
+  getAutoLoopInterval: () => number | undefined
+  getAutoLoopConfirm: () => boolean
+  setAutoLoop: (windowMs: number | undefined, confirm?: boolean) => void
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
@@ -58,6 +62,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
+  { name: "autoloop", description: "Delegate the next time window to AI: /autoloop 5m|1h|off" },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
   { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)" },
@@ -155,6 +160,34 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "usage") {
     ctx.openUsageDashboard()
+    return true
+  }
+
+  if (cmd === "autoloop") {
+    const rawArg = arg.trim()
+    const normalized = rawArg.toLowerCase()
+    if (!normalized || normalized === "status") {
+      const windowMs = ctx.getAutoLoopInterval()
+      const confirmMode = ctx.getAutoLoopConfirm()
+      notifyCommand(ctx, "info", "Autoloop", windowMs ? `ON — ${formatAutoLoopDuration(windowMs)}${confirmMode ? " (confirm)" : ""}` : "OFF")
+      return true
+    }
+    if (normalized === "off" || normalized === "stop" || normalized === "disable") {
+      ctx.setAutoLoop(undefined)
+      notifyCommand(ctx, "success", "Autoloop disabled", "AI will wait for human input.")
+      return true
+    }
+    const tokens = rawArg.split(/\s+/)
+    const durationToken = tokens.find((t) => parseAutoLoopDuration(t))
+    const confirm = tokens.some((t) => t.toLowerCase() === "confirm")
+    const duration = durationToken ? parseAutoLoopDuration(durationToken) : undefined
+    if (!duration) {
+      notifyCommand(ctx, "error", "Invalid autoloop duration", "Usage: /autoloop 5m|1h|30s [confirm] | off")
+      return true
+    }
+    ctx.setAutoLoop(duration.ms, confirm)
+    const hint = confirm ? "Supervisor will fill the composer for your review before sending." : "AI will take over and keep making safe progress until time is up or confidence is low."
+    notifyCommand(ctx, "success", `Autoloop enabled${confirm ? " (confirm mode)" : ""}`, hint)
     return true
   }
 

@@ -1,5 +1,5 @@
 export { Provider } from "./types"
-export { layer as bigPickleLayer, def as bigPickleDef, normalizeBigPickleModel } from "./big-pickle"
+export { layer as bigPickleLayer, def as bigPickleDef, normalizeBigPickleModel, filterBigPickleModels, isAnonymousBigPickleModel } from "./big-pickle"
 export { def as openaiDef } from "./openai"
 export { def as openaiCodexDef } from "./openai-codex"
 export { def as deepseekDef } from "./deepseek"

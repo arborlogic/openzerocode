@@ -179,19 +179,26 @@ Typical workflow:
    - Publish platform packages `@openzerocode/<target>` first
    - Publish the root package `openzerocode` second
 
-5. **CI / release checklist**
+5. **Release checklist**
+
+   Use the release script to prepare the version bump, changelog entry, release commit, and matching git tag:
+
+   ```bash
+   npm run release -- patch       # or: minor, major, explicit version such as 0.4.3
+   npm run release -- patch --dry-run
+   npm run release -- patch --push
+   ```
+
+   The script requires a clean working tree, updates `package.json`, `package-lock.json` if present, and `CHANGELOG.md`, runs `npm run typecheck` by default, commits `chore: release v<version>`, and creates the `v<version>` tag. Use `--no-verify` only when you intentionally want to skip typecheck.
 
    Before and after a release, verify:
 
-   - Update the root `package.json` / `package-lock.json` version, then create the matching git tag (for example package version `0.3.9` maps to tag `v0.3.9`)
    - Confirm changelog or release notes are ready if the release includes user-facing changes
-   - Run `npm run typecheck`
-   - Re-run `node scripts/create-platform-packages.mjs` and confirm the staged files under `npm/` and `npm/packages/<target>/` are current
-   - Merge to `main`, then push the `v*` tag to trigger the GitHub Actions release workflow
+   - If you did not pass `--push`, push both the release commit and tag: `git push origin HEAD && git push origin v<version>`
    - `.github/workflows/build.yml` always builds and uploads root/platform npm tarballs plus direct binary release archives (`.tar.gz` for Linux/macOS, `.zip` for Windows)
    - Tag pushes create a matching GitHub Release with those artifacts and automatically publish npm packages
    - npm publishing publishes platform packages first and then the root `openzerocode` package, skipping versions that already exist
-   - If a workflow failed and only needs a rerun, use `workflow_dispatch` from the Actions page; no version bump is needed in that case. Enable `publish_to_npm` to rerun npm publishing, or provide the existing tag and enable the release option to recreate/update the GitHub Release
+   - If a workflow failed and only needs a rerun, use `workflow_dispatch` from the Actions page; no version bump or rerun of the release script is needed in that case. Enable `publish_to_npm` to rerun npm publishing, or provide the existing tag and enable the release option to recreate/update the GitHub Release
    - After publishing, verify `openzerocode --version` from the GitHub Release artifacts and verify `npm install -g openzerocode`
 
 This structure keeps `npm install -g openzerocode` lightweight while npm resolves the real executable from the platform-specific optional package.

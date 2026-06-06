@@ -18,47 +18,76 @@ Avoid using `npm test` as a default smoke test because some provider-facing test
 
 ## Release SOP
 
-Current release automation lives in `.github/workflows/build.yml`.
+Release automation has two parts:
 
-1. Bump the root package version first:
+- `scripts/release.ts` prepares the local release commit and git tag.
+- `.github/workflows/build.yml` builds release artifacts, creates/updates the GitHub Release, and publishes npm packages when a `v*` tag is pushed.
 
-   - `package.json`
-   - `package-lock.json`
+### Prepare a release locally
 
-   Example: set package version to `0.3.9` before creating tag `v0.3.9`.
+Run the release script from a clean working tree. It accepts a bump type (`patch`, `minor`, `major`) or an explicit stable semver version.
 
-2. Run verification:
+```bash
+npm run release -- patch       # next patch version
+npm run release -- minor       # next minor version
+npm run release -- major       # next major version
+npm run release -- 0.4.3       # explicit version
 
-   ```bash
-   npm run typecheck
-   node scripts/create-platform-packages.mjs
-   ```
+# Convenience aliases:
+npm run release:patch
+npm run release:minor
+npm run release:major
+```
 
-3. Merge the release commit to `main`.
+By default, the script:
 
-4. Create and push the release tag:
+1. checks the working tree is clean;
+2. calculates and validates the next version;
+3. rejects versions that are not greater than the current package version;
+4. rejects an existing git tag for the target version;
+5. updates `package.json`, `package-lock.json` if present, and `CHANGELOG.md`;
+6. runs `npm run typecheck`;
+7. creates a release commit named `chore: release v<version>`;
+8. creates the local `v<version>` git tag.
 
-   ```bash
-   git tag v0.3.9
-   git push origin v0.3.9
-   ```
+Useful options:
 
-5. Tag pushes matching `v*` trigger GitHub Actions automatically.
+```bash
+npm run release -- patch --dry-run     # show planned actions without changing files
+npm run release -- patch --no-verify   # skip npm run typecheck
+npm run release -- patch --push        # also push the commit and tag to origin
+npm run release -- patch --remote fork # use a different git remote with --push
+```
 
-6. Current workflow behavior on a tag push:
+After a release script run without `--push`, publish by pushing both the release commit and tag:
 
-   - builds root and platform npm package tarballs for supported targets
-   - builds direct binary archives for GitHub Releases
-   - creates a GitHub Release for the tag
-   - publishes npm packages automatically
+```bash
+git push origin HEAD
+git push origin v0.4.3
+```
 
-7. npm publishing publishes platform packages first and then the root `openzerocode` package, skipping versions that already exist. To rerun npm publishing manually from Actions, run `.github/workflows/build.yml` with `publish_to_npm=true`.
+You can also let the script push both in one run:
 
-## Manual workflow reruns
+```bash
+npm run release -- patch --push
+```
 
-If the release workflow fails and you only need to rerun it, you can use the GitHub Actions `workflow_dispatch` trigger.
+### CI release behavior
 
-- This does **not** require another version bump.
-- If you want the manual run to rerun npm publishing, enable the publish input.
-- If you want it to create a GitHub Release, provide the existing release tag (for example `v0.3.9`) and enable the release input.
+Tag pushes matching `v*` trigger GitHub Actions automatically. Current workflow behavior on a tag push:
+
+- builds root and platform npm package tarballs for supported targets;
+- builds direct binary archives for GitHub Releases;
+- creates a GitHub Release for the tag;
+- publishes npm packages automatically.
+
+npm publishing publishes platform packages first and then the root `openzerocode` package, skipping versions that already exist.
+
+### Manual workflow reruns
+
+If the release workflow fails and you only need to rerun it, use the GitHub Actions `workflow_dispatch` trigger.
+
+- This does **not** require another version bump or another release script run.
+- If you want the manual run to rerun npm publishing, enable the publish input (`publish_to_npm=true`).
+- If you want it to create or update a GitHub Release, provide the existing release tag (for example `v0.4.3`) and enable the release input.
 - Leave the tag blank if you only want to rebuild artifacts without creating a release.

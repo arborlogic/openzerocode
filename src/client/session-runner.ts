@@ -21,7 +21,7 @@ type SessionUi = {
   streamToolCallChunk: (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => void
   setStreamingToolResult: (input: { id?: string; tool?: string; output: string; error?: boolean }) => void
   addMessage: (msg: Message) => void
-  notify: (text: string, kind: string) => void
+  notify: (text: string, kind: string, code?: string) => void
   setStatus: (text: string) => void
   scrollBottom: () => void
   model: string
@@ -30,6 +30,7 @@ type SessionUi = {
   keyName: string
   reasoning_effort?: "low" | "medium" | "high" | "max"
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
+  maxSteps?: number
 }
 
 type SessionRuntime = {
@@ -51,6 +52,8 @@ export type StreamOptions = {
   reasoning_effort?: "low" | "medium" | "high" | "max"
   /** Working directory passed to tools as cwd/root. Defaults to process.cwd(). */
   workdir?: string
+  /** Max model round-trips per run. Defaults to OPENZEROCODE_MAX_STEPS or 50. */
+  maxSteps?: number
 }
 
 /**
@@ -74,6 +77,7 @@ export async function* streamSession(
   // long tasks can raise it without a rebuild; default stays conservative to
   // avoid a runaway loop silently burning tokens.
   const maxSteps = (() => {
+    if (Number.isFinite(options.maxSteps) && (options.maxSteps ?? 0) > 0) return Math.floor(options.maxSteps!)
     const raw = Number.parseInt(process.env.OPENZEROCODE_MAX_STEPS ?? "", 10)
     return Number.isFinite(raw) && raw > 0 ? raw : 50
   })()
@@ -129,7 +133,7 @@ export async function* streamSession(
   const currentTurnStart = allMessages.length
 
   for (let step = 0; step < maxSteps; step++) {
-    yield { type: "status", text: "thinking..." }
+    yield { type: "status", text: `thinking (step ${step + 1}/${maxSteps})...` }
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
 
@@ -337,15 +341,18 @@ export async function* streamSession(
       yield { type: "message", message: toolMsg }
     }
 
-    yield { type: "status", text: "thinking..." }
+    if (step + 1 < maxSteps) {
+      yield { type: "status", text: `thinking (step ${step + 2}/${maxSteps})...` }
+    }
   }
 
   // Reached the step cap without the model finishing. Surface it so the run
   // isn't mistaken for a clean completion — and tell the user how to allow more.
   yield {
     type: "notice",
-    kind: "system",
-    text: `Stopped after reaching the step limit (${maxSteps}). The task may be unfinished — send "continue" to keep going, or raise OPENZEROCODE_MAX_STEPS for longer tasks.`,
+    kind: "error",
+    code: "step_limit_reached",
+    text: `⚠ Stopped after ${maxSteps} steps — the task may be unfinished. Type "continue" to resume, or set OPENZEROCODE_MAX_STEPS higher.`,
   }
   yield { type: "done" }
   return resultHistory
@@ -369,6 +376,7 @@ export async function runSession(
     provider: ui.provider,
     keyName: ui.keyName,
     reasoning_effort: ui.reasoning_effort,
+    maxSteps: ui.maxSteps,
   }, runtime)
   const resultHistory: Message[] = [...history]
 
@@ -406,7 +414,7 @@ export async function runSession(
           ui.setStatus(chunk.text)
           break
         case "notice":
-          ui.notify(chunk.text, chunk.kind)
+          ui.notify(chunk.text, chunk.kind, chunk.code)
           break
         case "usage":
           ui.onUsage?.(chunk.inputTokens, chunk.outputTokens, chunk.cachedInputTokens)

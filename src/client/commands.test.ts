@@ -1,7 +1,7 @@
 import { describe, it, mock } from "bun:test"
 import assert from "node:assert"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
-import type { DisplayBlock } from "./tui"
+import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 
 function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
@@ -41,6 +41,9 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     exportCompactSession: mock(() => {}),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
+    getAutoLoopInterval: mock(() => undefined),
+    getAutoLoopConfirm: mock(() => false),
+    setAutoLoop: mock(() => {}),
     ...overrides,
   }
 }
@@ -59,6 +62,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
+    assert.ok(names.includes("autoloop"))
     assert.ok(names.includes("commit"))
     assert.ok(names.includes("compact"))
     assert.ok(names.includes("export"))
@@ -233,6 +237,64 @@ describe("executeCommand", () => {
       const result = await executeCommand("/s", ctx)
       assert.ok(result)
       assert.ok((ctx.openSessionList as any).mock.calls.length > 0)
+    })
+  })
+
+  describe("/autoloop", () => {
+    it("enables autoloop with duration", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/autoloop 5m", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setAutoLoop as any).mock.calls[0][0], 5 * 60_000)
+      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+      assert.equal(args[0], "success")
+      assert.equal(args[1], "Autoloop enabled")
+    })
+
+    it("disables autoloop", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/autoloop off", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setAutoLoop as any).mock.calls[0][0], undefined)
+    })
+
+    it("enables autoloop in confirm mode", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/autoloop 5m confirm", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setAutoLoop as any).mock.calls[0][0], 5 * 60_000)
+      assert.equal((ctx.setAutoLoop as any).mock.calls[0][1], true)
+      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+      assert.equal(args[0], "success")
+      assert.ok((args[1] as string).includes("confirm"))
+    })
+
+    it("shows status", async () => {
+      const ctx = stubCtx({ getAutoLoopInterval: mock(() => 60 * 60_000) })
+      const result = await executeCommand("/autoloop", ctx)
+      assert.ok(result)
+      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+      assert.equal(args[0], "info")
+      assert.equal(args[1], "Autoloop")
+      assert.equal(args[2], "ON — 1h")
+    })
+
+    it("shows confirm flag in status", async () => {
+      const ctx = stubCtx({ getAutoLoopInterval: mock(() => 60 * 60_000), getAutoLoopConfirm: mock(() => true) })
+      const result = await executeCommand("/autoloop", ctx)
+      assert.ok(result)
+      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+      assert.ok((args[2] as string).includes("confirm"))
+    })
+
+    it("rejects invalid duration", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/autoloop soon", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setAutoLoop as any).mock.calls.length, 0)
+      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+      assert.equal(args[0], "error")
+      assert.equal(args[1], "Invalid autoloop duration")
     })
   })
 

@@ -180,18 +180,26 @@ python3 scripts/dev-install.py
    - 先發布平台套件 `@openzerocode/<target>`
    - 再發布根套件 `openzerocode`
 
-5. **CI / 發布檢查清單**
+5. **發布檢查清單**
+
+   使用 release script 準備版本更新、changelog entry、release commit，以及符合的 git tag：
+
+   ```bash
+   npm run release -- patch       # 或：minor、major、明確版本例如 0.4.3
+   npm run release -- patch --dry-run
+   npm run release -- patch --push
+   ```
+
+   Script 需要乾淨的 working tree，會更新 `package.json`、存在時更新 `package-lock.json`、更新 `CHANGELOG.md`，預設執行 `npm run typecheck`，提交 `chore: release v<version>`，並建立 `v<version>` tag。只有在明確想略過 typecheck 時才使用 `--no-verify`。
 
    發布前後請確認：
 
-   - 更新根目錄 `package.json` / `package-lock.json` 版本，並建立符合的 git tag，例如套件版本 `0.3.9` 對應 tag `v0.3.9`
    - 如果發布包含面向使用者的變更，確認 changelog 或 release notes 已準備好
-   - 執行 `npm run typecheck`
-   - 重新執行 `node scripts/create-platform-packages.mjs`，確認 `npm/` 和 `npm/packages/<target>/` 下的暫存檔案是最新的
-   - 合併到 `main`，接著推送 `v*` tag 觸發 GitHub Actions 發布流程
+   - 如果沒有傳入 `--push`，請同時推送 release commit 和 tag：`git push origin HEAD && git push origin v<version>`
    - `.github/workflows/build.yml` 一律建置並上傳 root/platform npm tarball，以及直接二進位 release archive（Linux/macOS 為 `.tar.gz`，Windows 為 `.zip`）
    - Tag push 會用這些 artifacts 建立符合的 GitHub Release，並自動發布 npm 套件
    - npm 發布會先發布平台套件，再發布根套件 `openzerocode`，已存在的版本會略過
+   - 如果 workflow 失敗且只需要重新執行，請從 Actions 頁面使用 `workflow_dispatch`；這種情況不需要再次 bump 版本或重新執行 release script。啟用 `publish_to_npm` 可重新執行 npm 發布，或提供既有 tag 並啟用 release option 來重新建立/更新 GitHub Release
    - 發布後，請從 GitHub Release artifacts 驗證 `openzerocode --version`，並驗證 `npm install -g openzerocode`
 
 這種結構讓 `npm install -g openzerocode` 保持輕量，同時由 npm 解析平台專屬可選套件中的真實可執行檔。

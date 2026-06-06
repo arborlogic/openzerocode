@@ -1,11 +1,8 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
-import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn, execFile } from "node:child_process"
-import { existsSync, readdirSync, statSync } from "node:fs"
-import { basename, dirname, resolve } from "node:path"
 import { platform } from "os"
 import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
@@ -22,13 +19,22 @@ import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToas
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { getKnownModelConfig, getModelConfig } from "../provider/models"
+import { getModelConfig } from "../provider/models"
+import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey } from "./format-utils"
+import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
-import { formatProviderError } from "./errors"
+import { formatProviderError, isRateLimitError, delay } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
+import { THEME, MARKDOWN_SYNTAX } from "./theme"
+import { ToastViewport } from "./toast-viewport"
+import type { ToastItem } from "./toast-viewport"
+import { ResponseEntry } from "./response-entry"
+import type { DisplayBlock } from "./response-entry"
+import { TurnEntry } from "./turn-entry"
+import type { DisplayTurn } from "./turn-entry"
 import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
@@ -41,6 +47,7 @@ import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
+import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
 import { writeCompactTranscriptExport } from "./session-export"
 import pkg from "../../package.json" with { type: "json" }
 
@@ -296,44 +303,9 @@ let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLa
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
 
-const THEME = {
-  background: "#0d1117",
-  surface: "#161b22",
-  panel: "#0d1117",
-  border: "#30363d",
-  text: "#e6edf3",
-  muted: "#8b949e",
-  accent: "#58a6ff",
-  accentDim: "#1f6feb",
-  user: "#7ee787",
-  tool: "#d2a8ff",
-  error: "#f85149",
-  warning: "#d29922",
-  headerBg: "#161b22",
-  headerBorder: "#21262d",
-}
-const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
-  { scope: ["default"], style: { foreground: THEME.text } },
-  { scope: ["comment"], style: { foreground: THEME.muted, italic: true } },
-  { scope: ["string"], style: { foreground: "#a5d6ff" } },
-  { scope: ["keyword"], style: { foreground: THEME.accent, bold: true } },
-  { scope: ["number"], style: { foreground: "#79c0ff" } },
-  { scope: ["function"], style: { foreground: "#d2a8ff" } },
-  { scope: ["type"], style: { foreground: "#ffa657" } },
-])
-// Register a paste-marker style for extmarks (orange badge like opencode)
-MARKDOWN_SYNTAX.registerStyle("paste", {
-  fg: THEME.background,
-  bg: THEME.warning,
-  bold: true,
-})
-
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
 
-function formatQueueStatus(status: string, depth: number) {
-  return depth > 0 ? `${status} • ${depth} queued` : status
-}
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -341,45 +313,6 @@ const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", meta: true, action: "newline" },
   { name: "j", ctrl: true, action: "newline" },
 ]
-
-export type DisplayBlock = {
-  kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
-  text: string
-  title?: string
-  streaming?: boolean
-}
-
-type ToastKind = CommandToastKind
-
-type ToastItem = {
-  id: number
-  kind: ToastKind
-  title: string
-  text?: string
-}
-
-type DisplayTurn = {
-  user?: DisplayBlock
-  entries: DisplayBlock[]
-  footer?: string
-  userMsgIndex?: number  // index into messages() so we can edit/truncate
-}
-
-function summaryPreview(summary: string, maxLen = 80): string {
-  const collapsed = summary.replace(/\s+/g, " ").trim()
-  if (collapsed.length <= maxLen) return collapsed
-  return collapsed.slice(0, maxLen).trimEnd() + "…"
-}
-
-function formatCompactionMarker(info: CompactionInfo): string {
-  const count = info.sourceMessageCount === 1 ? "1 earlier message" : `${info.sourceMessageCount} earlier messages`
-  const createdAt = new Date(info.createdAt)
-  const when = Number.isNaN(createdAt.getTime())
-    ? ""
-    : ` · ${createdAt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
-  const preview = info.summary ? ` · "${summaryPreview(info.summary)}"` : ""
-  return `↯ Session compacted · ${count} summarized${when}${preview}`
-}
 
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
@@ -395,87 +328,8 @@ function defaultModelForCurrentProvider(providerId: string) {
   return providerId === "opencode-zen" ? normalizeBigPickleModel(configured) : configured
 }
 
-function homeDir() {
-  return process.env.HOME ?? ""
-}
-
-function expandHome(path: string) {
-  if (path === "~") return homeDir()
-  if (path.startsWith("~/")) return resolve(homeDir(), path.slice(2))
-  return path
-}
-
-function displayPath(path: string) {
-  const home = homeDir()
-  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
-}
-
-function resolveDirectoryPath(input: string, cwd = process.cwd()) {
-  const expanded = expandHome(input.trim())
-  return resolve(cwd, expanded || ".")
-}
-
-function isDirectory(path: string) {
-  try {
-    return existsSync(path) && statSync(path).isDirectory()
-  } catch {
-    return false
-  }
-}
-
-function directoryCandidates(input: string, cwd = process.cwd()) {
-  const raw = input.trim()
-  const expanded = expandHome(raw)
-  const target = expanded ? resolve(cwd, expanded) : cwd
-  const inputEndsWithSeparator = raw.endsWith("/") || raw.endsWith("\\")
-  const base = raw && !inputEndsWithSeparator ? dirname(target) : target
-  const filter = raw && !inputEndsWithSeparator ? basename(target).toLowerCase() : ""
-  const entries: { name: string; path: string }[] = []
-
-  if (!raw) entries.push({ name: "../", path: resolve(cwd, "..") })
-
-  try {
-    for (const dirent of readdirSync(base, { withFileTypes: true })) {
-      if (!dirent.isDirectory()) continue
-      if (dirent.name.startsWith(".") && !filter.startsWith(".")) continue
-      if (filter && !dirent.name.toLowerCase().startsWith(filter)) continue
-      entries.push({ name: `${dirent.name}/`, path: resolve(base, dirent.name) })
-    }
-  } catch {
-    return entries
-  }
-
-  return entries
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .slice(0, 20)
-}
-
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(currentLayer)))
-}
-
-function tryParseJSON(raw: string): Record<string, unknown> {
-  try { return JSON.parse(raw) } catch { /* fall through */ }
-  // Handle concatenated JSON objects: {"a":1}{"b":2} (a common model mistake)
-  // Fix by wrapping as array, then merging — duplicate keys become arrays.
-  try {
-    const fixed = "[" + raw.trim().replace(/\}\s*\{/g, "},{") + "]"
-    const arr = JSON.parse(fixed)
-    if (!Array.isArray(arr)) return {}
-    const merged: Record<string, unknown> = {}
-    for (const obj of arr) {
-      if (!obj || typeof obj !== "object") continue
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        if (k in merged) {
-          if (!Array.isArray(merged[k])) merged[k] = [merged[k]]
-          ;(merged[k] as unknown[]).push(v)
-        } else {
-          merged[k] = v
-        }
-      }
-    }
-    return merged
-  } catch { return {} }
 }
 
 const execFileAsync = promisify(execFile)
@@ -494,62 +348,6 @@ async function runGit(args: string[], timeout = 1000): Promise<string> {
   }
 }
 
-/**
- * Recompute every hunk header's `oldLines` / `newLines` count from the
- * actual hunk body. Defensive against trailing-newline trimming, blank
- * context lines, or any other quirk that would make `@opentui/core`'s
- * diff parser throw "Added/Removed line count did not match".
- */
-function normalizeDiffHunkCounts(diff: string): string {
-  if (!diff) return diff
-  const lines = diff.split("\n")
-  const hunkRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
-  const out: string[] = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]!
-    const m = hunkRe.exec(line)
-    if (!m) {
-      out.push(line)
-      i++
-      continue
-    }
-    const oldStart = m[1]
-    const newStart = m[3]
-    const trailing = m[5] ?? ""
-    let oldCount = 0
-    let newCount = 0
-    const body: string[] = []
-    let j = i + 1
-    while (j < lines.length) {
-      const l = lines[j]!
-      if (hunkRe.test(l)) break
-      if (l.startsWith("diff --git ") || l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("Index: ")) break
-      const op = l[0]
-      if (op === "-") oldCount++
-      else if (op === "+") newCount++
-      else if (op === " ") { oldCount++; newCount++ }
-      else if (op === "\\") { /* "\ No newline at end of file" — skip count */ }
-      else if (l.length === 0) {
-        // Trailing empty element from `split("\n")` when git output ends with
-        // a newline — don't include it. Otherwise treat as blank context line.
-        if (j === lines.length - 1) break
-        oldCount++
-        newCount++
-      } else {
-        // Unknown line — stop consuming so we don't swallow non-hunk content.
-        break
-      }
-      body.push(l)
-      j++
-    }
-    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${trailing}`)
-    for (const b of body) out.push(b)
-    i = j
-  }
-  return out.join("\n")
-}
-
 /** Check for modified/new/deleted files in the working tree vs HEAD. */
 async function getGitFileChanges(): Promise<{ modified: string[]; added: string[]; deleted: string[] }> {
   const out = await runGit(["diff", "--name-status", "HEAD"], 2000)
@@ -566,85 +364,6 @@ async function getGitFileChanges(): Promise<{ modified: string[]; added: string[
     else if (status === "D") deleted.push(path)
   }
   return { modified, added, deleted }
-}
-
-/** Format a tool-call input for compact one-line display */
-function formatToolCallInput(tool: string, input: string): string {
-  const parsed = tryParseJSON(input)
-  if (tool === "bash" && typeof parsed.command === "string") {
-    return `$ ${parsed.command}`
-  }
-  if (tool === "read_file" && typeof parsed.filePath === "string") {
-    return parsed.filePath
-  }
-  if (tool === "write" && typeof parsed.filePath === "string") {
-    const contentLen = typeof parsed.content === "string" ? parsed.content.length : 0
-    return `${parsed.filePath}  (${contentLen} chars)`
-  }
-  if (tool === "glob" && typeof parsed.pattern === "string") {
-    return parsed.pattern
-  }
-  if (tool === "web_fetch" && typeof parsed.url === "string") {
-    return parsed.url
-  }
-  // Fallback: first line of input, truncated
-  const firstLine = input.split("\n")[0] ?? ""
-  return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine
-}
-
-/** Format a tool result for compact one-line preview */
-function formatToolResultPreview(text: string): string {
-  const lines = text.split("\n")
-  if (lines.length === 0) return ""
-  if (lines.length === 1 && lines[0]!.length <= 120) return lines[0]!
-  const firstLine = lines[0]!
-  const preview = firstLine.length > 100 ? firstLine.slice(0, 97) + "…" : firstLine
-  return `${preview}  (${lines.length} lines)`
-}
-
-function stripAnsi(str: string) {
-  return str.replace(/\x1b\[[0-9;]*m/g, "")
-}
-
-
-function truncateText(text: string, max: number) {
-  if (max <= 0) return ""
-  if (text.length <= max) return text
-  if (max <= 1) return "…"
-  return text.slice(0, max - 1) + "…"
-}
-
-function fmtContextLimit(limit: number) {
-  if (limit >= 1_000_000) {
-    const millions = limit / 1_000_000
-    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}m`
-  }
-  return `${Math.round(limit / 1000)}k`
-}
-
-function fmtPrice(value: number) {
-  if (value === 0) return "free"
-  if (value >= 1) return `$${value}`
-  return `$${value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`
-}
-
-function modelHint(model: string, fallback?: ModelInfo) {
-  const cfg = getKnownModelConfig(model) ?? (fallback?.contextLimit ? getModelConfig(model, fallback) : undefined)
-  if (!cfg) return ""
-  if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
-  if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
-  return `${fmtContextLimit(cfg.contextLimit)} • ${fmtPrice(cfg.pricing.input)}/${fmtPrice(cfg.pricing.output)}`
-}
-
-function isTransientPasteMarker(input: string) {
-  return /^\[Pasted ~\d+ lines(?: #\d+)?\]/.test(input.trim())
-}
-
-function maskKey(value: string): string {
-  if (value.length <= 8) return value.slice(0, 1) + "***" + value.slice(-1)
-  const prefix = value.slice(0, 5)
-  const suffix = value.slice(-3)
-  return `${prefix}***${suffix}`
 }
 
 async function copyToClipboard(text: string) {
@@ -742,236 +461,6 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
 
 const SIDEBAR_WIDTH = 34
 
-function ToastViewport(props: { items: ToastItem[] }) {
-  const tone = (kind: ToastKind) => {
-    if (kind === "success") return { border: "#3fb950", title: "#7ee787", body: THEME.text, icon: "✓" }
-    if (kind === "warning") return { border: "#d29922", title: "#f2cc60", body: THEME.text, icon: "!" }
-    if (kind === "error") return { border: "#f85149", title: "#ff7b72", body: THEME.text, icon: "✗" }
-    return { border: THEME.accent, title: "#79c0ff", body: THEME.text, icon: "i" }
-  }
-
-  return (
-    <box
-      position="absolute"
-      top={1}
-      right={2}
-      width={44}
-      zIndex={120}
-      flexDirection="column"
-      gap={1}
-    >
-      <For each={props.items}>
-        {(item) => {
-          const colors = tone(item.kind)
-          return (
-            <box
-              flexDirection="column"
-              border={["top", "left", "right", "bottom"]}
-              borderColor={colors.border}
-              backgroundColor={THEME.surface}
-              paddingLeft={1}
-              paddingRight={1}
-              paddingTop={0}
-              paddingBottom={0}
-            >
-              <box flexDirection="row" gap={1}>
-                <text style={{ fg: colors.title }}>{colors.icon}</text>
-                <text style={{ fg: colors.title }}>{item.title}</text>
-              </box>
-              <Show when={item.text}>
-                <text style={{ fg: colors.body }}>{item.text}</text>
-              </Show>
-            </box>
-          )
-        }}
-      </For>
-    </box>
-  )
-}
-
-function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
-  const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
-  const [collapsed, setCollapsed] = createSignal(
-    collapsible() && !(props.entry.streaming ?? false)
-  )
-
-  const labelColor = () => props.entry.kind === "user" ? THEME.user
-    : props.entry.kind === "reasoning" ? THEME.accent
-    : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
-    : props.entry.kind === "error" ? THEME.error
-    : THEME.muted
-
-  const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
-
-  const collapsedPreview = () => {
-    if (props.entry.kind === "tool-call" && props.entry.title) {
-      return formatToolCallInput(props.entry.title, props.entry.text)
-    }
-    if (props.entry.kind === "tool") {
-      return formatToolResultPreview(props.entry.text)
-    }
-    return ""
-  }
-
-  if (props.entry.kind === "assistant") {
-    return (
-      <box marginTop={props.isFirst ? 0 : 1}>
-        <Show
-          when={!props.entry.streaming}
-          fallback={<text style={{ fg: THEME.text }}>{props.entry.text}</text>}
-        >
-          <MarkdownWithDiff
-            content={props.entry.text}
-            syntaxStyle={MARKDOWN_SYNTAX}
-            fg={THEME.text}
-            bg={THEME.background}
-            streaming={false}
-          />
-        </Show>
-      </box>
-    )
-  }
-
-  if (props.entry.kind === "system") {
-    return (
-      <box marginTop={props.isFirst ? 0 : 1}>
-        <text style={{ fg: textColor() }}>{props.entry.text}</text>
-      </box>
-    )
-  }
-
-  if (props.entry.kind === "reasoning") {
-    return (
-      <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
-        {/* Thinking header — always shown, click to toggle */}
-        <box
-          flexDirection="row"
-          gap={1}
-          onMouseDown={() => setCollapsed(c => !c)}
-        >
-          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
-          <text style={{ fg: labelColor() }}>Thinking</text>
-          <Show when={props.entry.streaming}>
-            <text style={{ fg: THEME.muted }}> …</text>
-          </Show>
-          <Show when={collapsed() && !props.entry.streaming}>
-            <text style={{ fg: THEME.muted }}>· {props.entry.text.split("\n")[0]}</text>
-          </Show>
-        </box>
-        {/* Body — hidden when collapsed */}
-        <Show when={!collapsed()}>
-          <text style={{ fg: THEME.muted }}>{props.entry.text}</text>
-        </Show>
-      </box>
-    )
-  }
-
-  /* tool-call and tool entries */
-  const isBashCall = props.entry.kind === "tool-call" && props.entry.title === "bash"
-  const toolIcon = props.entry.kind === "tool" ? "✓" : props.entry.kind === "error" ? "✗" : "■"
-  const toolLabel = props.entry.title ?? (props.entry.kind === "tool" ? "result" : "tool")
-
-  return (
-    <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
-      {/* Header row */}
-      <box
-        flexDirection="row"
-        gap={1}
-        onMouseDown={() => collapsible() && setCollapsed(c => !c)}
-      >
-        <Show when={collapsible()}>
-          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
-        </Show>
-        <text style={{ fg: labelColor() }}>{toolIcon}</text>
-        <text style={{ fg: labelColor() }}>{toolLabel}</text>
-        <Show when={props.entry.streaming}>
-          <text style={{ fg: THEME.muted }}> …</text>
-        </Show>
-        <Show when={collapsed() && collapsedPreview()}>
-          <text style={{ fg: THEME.muted }}>· {collapsedPreview()}</text>
-        </Show>
-      </box>
-
-      {/* Expanded body */}
-      <Show when={!collapsed()}>
-        <box paddingLeft={2}>
-          <Show when={isBashCall && !props.entry.streaming}>
-            <text style={{ fg: textColor() }}>
-              {(() => {
-                const parsed = tryParseJSON(props.entry.text)
-                return typeof parsed.command === "string"
-                  ? `$ ${parsed.command}`
-                  : props.entry.text
-              })()}
-            </text>
-          </Show>
-          <Show when={props.entry.kind === "tool" && !props.entry.streaming}>
-            <text style={{ fg: THEME.muted }}>
-              {(() => {
-                const lines = props.entry.text.split("\n")
-                const preview = lines.slice(0, 20).join("\n")
-                return lines.length > 20 ? `${preview}\n… (${lines.length - 20} more lines)` : preview
-              })()}
-            </text>
-          </Show>
-          <Show when={(props.entry.kind !== "tool" && !isBashCall) || !!props.entry.streaming}>
-            <text style={{ fg: textColor() }}>{props.entry.text}</text>
-          </Show>
-        </box>
-      </Show>
-    </box>
-  )
-}
-
-function TurnEntry(props: {
-  turn: DisplayTurn
-  isFirst: boolean
-  onUserClick?: (msgIndex: number, text: string) => void
-  isRunning?: boolean
-}) {
-  const canClick = () => !props.isRunning && props.turn.userMsgIndex !== undefined && !!props.onUserClick
-
-  return (
-    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1}>
-      <Show when={props.turn.user}>
-        <box
-          paddingLeft={2}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-          border={["left"]}
-          borderColor={THEME.user}
-          onMouseDown={() => {
-            if (canClick()) {
-              props.onUserClick!(props.turn.userMsgIndex!, props.turn.user?.text ?? "")
-            }
-          }}
-        >
-          <box flexDirection="row" gap={1}>
-            <text style={{ fg: THEME.text, flexGrow: 1 }}>{props.turn.user?.text ?? ""}</text>
-            <Show when={canClick()}>
-              <text style={{ fg: THEME.muted }}>⋯</text>
-            </Show>
-          </box>
-        </box>
-      </Show>
-
-      <Show when={props.turn.entries.length > 0}>
-        <box flexDirection="column">
-          <For each={props.turn.entries}>
-            {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
-          </For>
-          <Show when={props.turn.footer}>
-            <box marginTop={1}>
-              <text style={{ fg: THEME.muted }}>{props.turn.footer}</text>
-            </box>
-          </Show>
-        </box>
-      </Show>
-    </box>
-  )
-}
-
 function App() {
   const dimensions = useTerminalDimensions()
   const sessionStart = new Date()
@@ -1029,7 +518,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -1053,7 +542,7 @@ function App() {
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [toasts, setToasts] = createSignal<ToastItem[]>([])
   let nextToastId = 1
-  const showToast = (kind: ToastKind, title: string, text?: string, duration = 3000) => {
+  const showToast = (kind: CommandToastKind, title: string, text?: string, duration = 3000) => {
     const id = nextToastId++
     setToasts((prev) => [...prev, { id, kind, title, text }].slice(-3))
     setTimeout(() => {
@@ -1070,7 +559,11 @@ function App() {
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
   const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
+  const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
+  const [autoLoopWindowMs, setAutoLoopWindowMs] = createSignal<number | undefined>(undefined)
+  const [autoLoopEndsAt, setAutoLoopEndsAt] = createSignal<number | undefined>(undefined)
+  const [autoLoopConfirm, setAutoLoopConfirm] = createSignal(false)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -1166,6 +659,9 @@ function App() {
   let autocompleteApi: AutocompleteApi | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
+  let autoLoopAbort: AbortController | undefined
+  let autoLoopTimer: ReturnType<typeof setTimeout> | undefined
+  let autoLoopPendingTimer: ReturnType<typeof setTimeout> | undefined
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
@@ -1178,10 +674,199 @@ function App() {
         setQueuedInputs(depth)
       },
       onDrainEnd: () => {
-        setStatus("waiting for input")
+        scheduleAutoLoop()
+        setStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input")
       },
     },
   )
+
+  function clearAutoLoopTimer(options?: { clearWindow?: boolean }) {
+    if (autoLoopTimer) clearTimeout(autoLoopTimer)
+    autoLoopTimer = undefined
+    // Always cancel a pending-wait timer so it never fires after a reschedule
+    if (autoLoopPendingTimer) clearTimeout(autoLoopPendingTimer)
+    autoLoopPendingTimer = undefined
+    if (options?.clearWindow) {
+      autoLoopAbort?.abort()
+      autoLoopAbort = undefined
+      setAutoLoopWindowMs(undefined)
+      setAutoLoopEndsAt(undefined)
+    }
+  }
+
+  function disableAutoLoop(reason?: string) {
+    clearAutoLoopTimer({ clearWindow: true })
+    setStatus("autoloop stopped — waiting for human")
+    const noticeText = reason ? `⟳ Autoloop stopped: ${reason}` : "⟳ Autoloop stopped — waiting for human input."
+    setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
+    queueMicrotask(scrollBottom)
+  }
+
+  function stopAutoLoopWindow() {
+    clearAutoLoopTimer({ clearWindow: true })
+    setStatus("waiting for input")
+    setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autoloop ended — delegated time window expired." }])
+    queueMicrotask(scrollBottom)
+  }
+
+  async function runAutoLoopSupervisor(remainingMs: number): Promise<SupervisorDecision> {
+    autoLoopAbort?.abort()
+    autoLoopAbort = new AbortController()
+    // Capture signal locally — autoLoopAbort may be reassigned by a concurrent call
+    const signal = autoLoopAbort.signal
+    const supervisorPrompt = buildAutoLoopSupervisorPrompt(formatAutoLoopDuration(remainingMs))
+    const msgHistory = sanitizeMessages(messages())
+    const result = await runSync(Effect.gen(function* () {
+      const provider = yield* Provider
+      return yield* provider.complete({
+        model: currentModel,
+        stream: false,
+        max_tokens: 300,
+        signal,
+        messages: [
+          // Inject supervisor instructions as system role so conversation history
+          // cannot override the safety rules via a strong assistant-tail directive
+          { role: "system", content: supervisorPrompt },
+          ...msgHistory,
+          { role: "user", content: "Decide and output the JSON." },
+        ],
+      })
+    }))
+    return parseAutoLoopSupervisorDecision(result.message.content ?? "")
+  }
+
+  async function queueAutoLoopContinuation() {
+    const endsAt = autoLoopEndsAt()
+    if (!endsAt || Date.now() >= endsAt) {
+      stopAutoLoopWindow()
+      return
+    }
+    const remainingMs = Math.max(1_000, endsAt - Date.now())
+    setStatus(`autoloop: deciding next step...`)
+
+    let decision: SupervisorDecision | undefined
+    let supervisorError: unknown
+    let retried = false
+    while (true) {
+      if (!autoLoopEndsAt()) return
+      try {
+        decision = await runAutoLoopSupervisor(Math.max(1_000, autoLoopEndsAt()! - Date.now()))
+        supervisorError = undefined
+        break
+      } catch (err) {
+        supervisorError = err
+        // Detect abort via the error type, not by re-reading autoLoopAbort
+        // (which may have been reassigned by a concurrent call)
+        if (err instanceof Error && (err.name === "AbortError" || err.message === "aborted")) return
+        if (!isRateLimitError(err) || retried) break
+        retried = true
+        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: rate limited — waiting 3 minutes before retry` }])
+        setStatus("autoloop: rate limited, waiting 3m...")
+        // Make the delay interruptible: resolve early if the abort signal fires
+        const rateSignal = autoLoopAbort?.signal
+        await Promise.race([
+          delay(3 * 60_000),
+          new Promise<void>(resolve => rateSignal?.addEventListener("abort", () => resolve(), { once: true })),
+        ])
+        if (rateSignal?.aborted || !autoLoopEndsAt()) return
+      }
+    }
+    if (supervisorError !== undefined || decision === undefined) {
+      const msg = isRateLimitError(supervisorError) ? "rate limit persists — stopping autoloop" : "supervisor error"
+      disableAutoLoop(msg)
+      return
+    }
+
+    if (decision.confidence === "low") {
+      disableAutoLoop(decision.reason || "low confidence")
+      return
+    }
+
+    // Re-check after async gap — window may have expired or been cancelled
+    if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
+      stopAutoLoopWindow()
+      return
+    }
+
+    if (decision.confidence === "pending") {
+      // AI gave multiple options with a recommendation — wait 3min for human, then proceed
+      const PENDING_WAIT_MS = 3 * 60_000
+      // Count only user-role messages so that tool-result messages appended by an
+      // in-flight worker do not falsely register as "human responded"
+      const userCountAtDecision = messages().filter(m => m.role === "user").length
+      const noticeText = `⟳ Autoloop: AI gave a recommendation — proceeding in 3 minutes unless you respond.\n  → ${decision.instruction}`
+      setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
+      setStatus(`autoloop: waiting 3m for your response...`)
+      queueMicrotask(scrollBottom)
+      autoLoopPendingTimer = setTimeout(() => {
+        autoLoopPendingTimer = undefined
+        // If human sent a new message, let the normal flow take over
+        if (messages().filter(m => m.role === "user").length > userCountAtDecision) return
+        // If window expired or autoloop was cancelled, stop
+        if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
+          stopAutoLoopWindow()
+          return
+        }
+        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: no response received — proceeding with recommendation.` }])
+        if (autoLoopConfirm()) {
+          setComposerText(decision.instruction)
+          setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
+          showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
+        } else {
+          inputQueue?.enqueue(decision.instruction)
+          setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
+        }
+        queueMicrotask(scrollBottom)
+      }, PENDING_WAIT_MS)
+      return
+    }
+
+    if (autoLoopConfirm()) {
+      setComposerText(decision.instruction)
+      setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+      showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
+      queueMicrotask(scrollBottom)
+    } else {
+      showToast("info", "Autoloop delegated", decision.instruction, 4000)
+      inputQueue?.enqueue(decision.instruction)
+      setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+      queueMicrotask(scrollBottom)
+    }
+  }
+
+  function scheduleAutoLoop() {
+    clearAutoLoopTimer()
+    const endsAt = autoLoopEndsAt()
+    if (!endsAt) return
+    const remainingMs = endsAt - Date.now()
+    if (remainingMs <= 0) {
+      stopAutoLoopWindow()
+      return
+    }
+    setStatus(`autoloop active — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+    if (running() || compacting() || pendingApproval() || (inputQueue?.depth() ?? 0) > 0 || (inputQueue?.isDraining() ?? false)) return
+    autoLoopTimer = setTimeout(() => {
+      autoLoopTimer = undefined
+      void queueAutoLoopContinuation()
+    }, 0)
+  }
+
+  function configureAutoLoop(windowMs: number | undefined, confirm?: boolean) {
+    clearAutoLoopTimer({ clearWindow: true })
+    // autoLoopWindowMs is now cleared by clearAutoLoopTimer; set new value after
+    setAutoLoopWindowMs(windowMs)
+    setAutoLoopConfirm(confirm ?? false)
+    if (windowMs) {
+      const endsAt = Date.now() + windowMs
+      setAutoLoopEndsAt(endsAt)
+      // Route through scheduleAutoLoop so the idle guard (running/compacting/pendingApproval)
+      // is respected and the supervisor call is deferred until the queue is clear
+      scheduleAutoLoop()
+    } else {
+      setStatus("autoloop disabled")
+    }
+  }
+
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
@@ -1253,10 +938,10 @@ function App() {
     }
   }
 
-  const loadModelsForProvider = async (providerId: string) => {
-    if (providerModels()[providerId] || providerModelsLoading() === providerId) return
+  const loadModelsForProvider = async (providerId: string, options: { force?: boolean } = {}) => {
+    if ((!options.force && providerModels()[providerId]) || providerModelsLoading() === providerId) return
     const cached = getCachedModels(providerId)
-    if (cached.length > 0) {
+    if (cached.length > 0 && (!providerModels()[providerId] || options.force)) {
       setProviderModels((prev) => ({ ...prev, [providerId]: cached }))
       if (providerId === currentProvider) {
         currentModelInfo = cached.find((model) => model.id === currentModel) ?? currentModelInfo
@@ -1312,7 +997,7 @@ function App() {
     setPaletteInput("")
     setPaletteMode("models")
     setPaletteIndex(0)
-    void loadModelsForProvider(providerId)
+    void loadModelsForProvider(providerId, { force: true })
   }
 
   const openProviderKeyPalette = (providerId: string) => {
@@ -1489,6 +1174,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => {
           setPalettePendingDelete(null)
           setPaletteMode("display")
+          setPaletteIndex(0)
+        },
+      },
+      {
+        label: "Max steps",
+        hint: String(maxSteps()),
+        onSelect: () => {
+          setPaletteInput(String(maxSteps()))
+          setPaletteMode("maxSteps")
           setPaletteIndex(0)
         },
       },
@@ -1796,11 +1490,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       items.push({ label: "No models available", kind: "section", onSelect: () => {} })
     }
 
-    if (!loading && models.length > 0) {
+    if (models.length > 0) {
       items.push({
-        label: filter
-          ? `Showing ${visibleModels.length} / ${filteredModels.length} match(es)`
-          : `Showing ${visibleModels.length} / ${models.length} model(s)`,
+        label: loading
+          ? (filter
+            ? `Refreshing; showing ${visibleModels.length} / ${filteredModels.length} cached match(es)`
+            : `Refreshing; showing ${visibleModels.length} / ${models.length} cached model(s)`)
+          : filter
+            ? `Showing ${visibleModels.length} / ${filteredModels.length} match(es)`
+            : `Showing ${visibleModels.length} / ${models.length} model(s)`,
         kind: "section",
         onSelect: () => {},
       })
@@ -2174,7 +1872,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const paletteItems = createMemo<PaletteItem[]>(() =>
-    paletteMode() === "editProviderBaseURL"
+    paletteMode() === "maxSteps"
+      ? [
+          { label: `Current max steps: ${maxSteps()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
+      : paletteMode() === "editProviderBaseURL"
       ? [
           { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
           { label: "Press Enter to save · Esc to cancel · leave blank for default", kind: "section" as const, onSelect: () => {} },
@@ -2204,7 +1907,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -2218,14 +1921,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -2736,8 +2439,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (msg.role === "tool") streamState.reset()
           setMessages((prev) => [...prev, msg])
         },
-        notify: (text, kind) => {
+        notify: (text, kind, code) => {
           setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
+          // Surface step-limit notices as toasts so they can't be missed.
+          if (code === "step_limit_reached") {
+            showToast("warning", "Step limit reached", text, 8000)
+          }
         },
         setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
         scrollBottom,
@@ -2747,6 +2454,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
         reasoning_effort: reasoningEffort(),
+        maxSteps: maxSteps(),
         onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),
@@ -2800,7 +2508,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
       setMessages(next)
       saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
-      setStatus(formatQueueStatus("waiting for input", queuedInputs()))
+      setStatus(formatQueueStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
@@ -2936,6 +2644,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,
+        getAutoLoopInterval: autoLoopWindowMs,
+        getAutoLoopConfirm: autoLoopConfirm,
+        setAutoLoop: configureAutoLoop,
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -2962,6 +2673,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setComposerText("")
         queueMicrotask(scrollBottom)
         return
+      }
+      if (slashCmd === "autoloop") {
+        setComposerText("")
       }
       if (slashCmd === "commit") {
         setComposerText("Please help generate a commit message and commit the changes")
@@ -3151,6 +2865,32 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           const sid = sessionId()
           updateSessionMeta(sid, { title: paletteInput() })
           refreshSessions()
+          setShowPalette(false)
+          setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "maxSteps") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = Number.parseInt(paletteInput().trim(), 10)
+          if (!Number.isFinite(value) || value <= 0) {
+            setStatus("max steps must be a positive integer")
+            event.preventDefault()
+            return
+          }
+          const next = Math.floor(value)
+          setMaxSteps(next)
+          saveUIPrefs({ maxSteps: next })
+          setStatus(`max steps set to ${next}`)
+          setPaletteInput("")
           setShowPalette(false)
           setPaletteMode("actions")
           event.preventDefault()
@@ -3725,6 +3465,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
               </Show>
+              <Show when={autoLoopWindowMs()}>
+                <text style={{ fg: THEME.muted }}>{"  •  "}</text>
+                <text style={{ fg: "#d29922" }}>{`AUTO ${formatAutoLoopDuration(autoLoopWindowMs()!)}`}</text>
+              </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
@@ -3741,7 +3485,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
               <Show when={running() || compacting()} fallback={
-                <text style={{ fg: THEME.muted }}>{`  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
+                <text style={{ fg: THEME.muted }}>{`  •  ${status()}  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
@@ -3872,7 +3616,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "help"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
             : 2
@@ -3920,7 +3664,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
             <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                 <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                 </text>
                 <box
                   backgroundColor={THEME.background}
@@ -3934,7 +3678,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   <text style={{ fg: THEME.accent }}>▌</text>
                 </box>
               </box>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3989,6 +3733,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
+                : paletteMode() === "maxSteps"
+                  ? "Enter save  •  Esc cancel"
                   : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
                   ? "Enter confirm  •  Esc back"
                   : paletteMode() === "sessions"

@@ -4,13 +4,11 @@ import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 import { resolveConfiguredProviderApiKey } from "./config"
 
-const ANONYMOUS_MODELS = [
-  "big-pickle",
-  "deepseek-v4-flash-free",
-  "minimax-m2.5-free",
-  "ring-2.6-1t-free",
-  "nemotron-3-super-free",
-]
+const ANONYMOUS_DEFAULT_MODEL = "big-pickle"
+
+export function isAnonymousBigPickleModel(model: string) {
+  return model === ANONYMOUS_DEFAULT_MODEL || model.endsWith("-free")
+}
 
 export function hasBigPickleApiKey() {
   return Boolean(resolveConfiguredProviderApiKey("opencode-zen"))
@@ -18,12 +16,12 @@ export function hasBigPickleApiKey() {
 
 export function filterBigPickleModels(models: string[]) {
   if (hasBigPickleApiKey()) return models
-  return models.filter((model) => ANONYMOUS_MODELS.includes(model))
+  return models.filter((model) => isAnonymousBigPickleModel(model))
 }
 
 export function normalizeBigPickleModel(model: string) {
   if (hasBigPickleApiKey()) return model
-  return ANONYMOUS_MODELS.includes(model) ? model : "big-pickle"
+  return isAnonymousBigPickleModel(model) ? model : ANONYMOUS_DEFAULT_MODEL
 }
 
 // Standard SSE parser: accumulates data: lines until an empty line (event boundary),
@@ -95,7 +93,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
     Provider,
     Effect.gen(function* () {
       const baseURL = input.baseURL ?? DEFAULT_BASE
-      const defaultModel = input.model ?? "big-pickle"
+      const defaultModel = input.model ?? ANONYMOUS_DEFAULT_MODEL
 
       function headers() {
         return {
@@ -243,7 +241,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
 export const def: ProviderDef = {
   id: "opencode-zen",
   name: "OpenCode Zen",
-  defaultModel: "big-pickle",
+  defaultModel: ANONYMOUS_DEFAULT_MODEL,
   authOptional: true,
   envKeys: ["OPENCODE_API", "OPENCODE_API_KEY"],
   factory: (cfg) => layer({ apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model }),
