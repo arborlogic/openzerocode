@@ -938,10 +938,10 @@ function App() {
     }
   }
 
-  const loadModelsForProvider = async (providerId: string) => {
-    if (providerModels()[providerId] || providerModelsLoading() === providerId) return
+  const loadModelsForProvider = async (providerId: string, options: { force?: boolean } = {}) => {
+    if ((!options.force && providerModels()[providerId]) || providerModelsLoading() === providerId) return
     const cached = getCachedModels(providerId)
-    if (cached.length > 0) {
+    if (cached.length > 0 && (!providerModels()[providerId] || options.force)) {
       setProviderModels((prev) => ({ ...prev, [providerId]: cached }))
       if (providerId === currentProvider) {
         currentModelInfo = cached.find((model) => model.id === currentModel) ?? currentModelInfo
@@ -997,7 +997,7 @@ function App() {
     setPaletteInput("")
     setPaletteMode("models")
     setPaletteIndex(0)
-    void loadModelsForProvider(providerId)
+    void loadModelsForProvider(providerId, { force: true })
   }
 
   const openProviderKeyPalette = (providerId: string) => {
@@ -1490,11 +1490,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       items.push({ label: "No models available", kind: "section", onSelect: () => {} })
     }
 
-    if (!loading && models.length > 0) {
+    if (models.length > 0) {
       items.push({
-        label: filter
-          ? `Showing ${visibleModels.length} / ${filteredModels.length} match(es)`
-          : `Showing ${visibleModels.length} / ${models.length} model(s)`,
+        label: loading
+          ? (filter
+            ? `Refreshing; showing ${visibleModels.length} / ${filteredModels.length} cached match(es)`
+            : `Refreshing; showing ${visibleModels.length} / ${models.length} cached model(s)`)
+          : filter
+            ? `Showing ${visibleModels.length} / ${filteredModels.length} match(es)`
+            : `Showing ${visibleModels.length} / ${models.length} model(s)`,
         kind: "section",
         onSelect: () => {},
       })
