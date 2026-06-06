@@ -4,8 +4,6 @@ import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } 
 import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn, execFile } from "node:child_process"
-import { existsSync, readdirSync, statSync } from "node:fs"
-import { basename, dirname, resolve } from "node:path"
 import { platform } from "os"
 import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
@@ -22,7 +20,9 @@ import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToas
 import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { getKnownModelConfig, getModelConfig } from "../provider/models"
+import { getModelConfig } from "../provider/models"
+import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey } from "./format-utils"
+import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError, isRateLimitError, delay } from "./errors"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
@@ -332,9 +332,6 @@ MARKDOWN_SYNTAX.registerStyle("paste", {
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
 
-function formatQueueStatus(status: string, depth: number) {
-  return depth > 0 ? `${status} • ${depth} queued` : status
-}
 const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },
   { name: "return", shift: true, action: "newline" },
@@ -366,22 +363,6 @@ type DisplayTurn = {
   userMsgIndex?: number  // index into messages() so we can edit/truncate
 }
 
-function summaryPreview(summary: string, maxLen = 80): string {
-  const collapsed = summary.replace(/\s+/g, " ").trim()
-  if (collapsed.length <= maxLen) return collapsed
-  return collapsed.slice(0, maxLen).trimEnd() + "…"
-}
-
-function formatCompactionMarker(info: CompactionInfo): string {
-  const count = info.sourceMessageCount === 1 ? "1 earlier message" : `${info.sourceMessageCount} earlier messages`
-  const createdAt = new Date(info.createdAt)
-  const when = Number.isNaN(createdAt.getTime())
-    ? ""
-    : ` · ${createdAt.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
-  const preview = info.summary ? ` · "${summaryPreview(info.summary)}"` : ""
-  return `↯ Session compacted · ${count} summarized${when}${preview}`
-}
-
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
 }
@@ -396,87 +377,8 @@ function defaultModelForCurrentProvider(providerId: string) {
   return providerId === "opencode-zen" ? normalizeBigPickleModel(configured) : configured
 }
 
-function homeDir() {
-  return process.env.HOME ?? ""
-}
-
-function expandHome(path: string) {
-  if (path === "~") return homeDir()
-  if (path.startsWith("~/")) return resolve(homeDir(), path.slice(2))
-  return path
-}
-
-function displayPath(path: string) {
-  const home = homeDir()
-  return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
-}
-
-function resolveDirectoryPath(input: string, cwd = process.cwd()) {
-  const expanded = expandHome(input.trim())
-  return resolve(cwd, expanded || ".")
-}
-
-function isDirectory(path: string) {
-  try {
-    return existsSync(path) && statSync(path).isDirectory()
-  } catch {
-    return false
-  }
-}
-
-function directoryCandidates(input: string, cwd = process.cwd()) {
-  const raw = input.trim()
-  const expanded = expandHome(raw)
-  const target = expanded ? resolve(cwd, expanded) : cwd
-  const inputEndsWithSeparator = raw.endsWith("/") || raw.endsWith("\\")
-  const base = raw && !inputEndsWithSeparator ? dirname(target) : target
-  const filter = raw && !inputEndsWithSeparator ? basename(target).toLowerCase() : ""
-  const entries: { name: string; path: string }[] = []
-
-  if (!raw) entries.push({ name: "../", path: resolve(cwd, "..") })
-
-  try {
-    for (const dirent of readdirSync(base, { withFileTypes: true })) {
-      if (!dirent.isDirectory()) continue
-      if (dirent.name.startsWith(".") && !filter.startsWith(".")) continue
-      if (filter && !dirent.name.toLowerCase().startsWith(filter)) continue
-      entries.push({ name: `${dirent.name}/`, path: resolve(base, dirent.name) })
-    }
-  } catch {
-    return entries
-  }
-
-  return entries
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .slice(0, 20)
-}
-
 function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(currentLayer)))
-}
-
-function tryParseJSON(raw: string): Record<string, unknown> {
-  try { return JSON.parse(raw) } catch { /* fall through */ }
-  // Handle concatenated JSON objects: {"a":1}{"b":2} (a common model mistake)
-  // Fix by wrapping as array, then merging — duplicate keys become arrays.
-  try {
-    const fixed = "[" + raw.trim().replace(/\}\s*\{/g, "},{") + "]"
-    const arr = JSON.parse(fixed)
-    if (!Array.isArray(arr)) return {}
-    const merged: Record<string, unknown> = {}
-    for (const obj of arr) {
-      if (!obj || typeof obj !== "object") continue
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        if (k in merged) {
-          if (!Array.isArray(merged[k])) merged[k] = [merged[k]]
-          ;(merged[k] as unknown[]).push(v)
-        } else {
-          merged[k] = v
-        }
-      }
-    }
-    return merged
-  } catch { return {} }
 }
 
 const execFileAsync = promisify(execFile)
@@ -495,62 +397,6 @@ async function runGit(args: string[], timeout = 1000): Promise<string> {
   }
 }
 
-/**
- * Recompute every hunk header's `oldLines` / `newLines` count from the
- * actual hunk body. Defensive against trailing-newline trimming, blank
- * context lines, or any other quirk that would make `@opentui/core`'s
- * diff parser throw "Added/Removed line count did not match".
- */
-function normalizeDiffHunkCounts(diff: string): string {
-  if (!diff) return diff
-  const lines = diff.split("\n")
-  const hunkRe = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
-  const out: string[] = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]!
-    const m = hunkRe.exec(line)
-    if (!m) {
-      out.push(line)
-      i++
-      continue
-    }
-    const oldStart = m[1]
-    const newStart = m[3]
-    const trailing = m[5] ?? ""
-    let oldCount = 0
-    let newCount = 0
-    const body: string[] = []
-    let j = i + 1
-    while (j < lines.length) {
-      const l = lines[j]!
-      if (hunkRe.test(l)) break
-      if (l.startsWith("diff --git ") || l.startsWith("--- ") || l.startsWith("+++ ") || l.startsWith("Index: ")) break
-      const op = l[0]
-      if (op === "-") oldCount++
-      else if (op === "+") newCount++
-      else if (op === " ") { oldCount++; newCount++ }
-      else if (op === "\\") { /* "\ No newline at end of file" — skip count */ }
-      else if (l.length === 0) {
-        // Trailing empty element from `split("\n")` when git output ends with
-        // a newline — don't include it. Otherwise treat as blank context line.
-        if (j === lines.length - 1) break
-        oldCount++
-        newCount++
-      } else {
-        // Unknown line — stop consuming so we don't swallow non-hunk content.
-        break
-      }
-      body.push(l)
-      j++
-    }
-    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${trailing}`)
-    for (const b of body) out.push(b)
-    i = j
-  }
-  return out.join("\n")
-}
-
 /** Check for modified/new/deleted files in the working tree vs HEAD. */
 async function getGitFileChanges(): Promise<{ modified: string[]; added: string[]; deleted: string[] }> {
   const out = await runGit(["diff", "--name-status", "HEAD"], 2000)
@@ -567,85 +413,6 @@ async function getGitFileChanges(): Promise<{ modified: string[]; added: string[
     else if (status === "D") deleted.push(path)
   }
   return { modified, added, deleted }
-}
-
-/** Format a tool-call input for compact one-line display */
-function formatToolCallInput(tool: string, input: string): string {
-  const parsed = tryParseJSON(input)
-  if (tool === "bash" && typeof parsed.command === "string") {
-    return `$ ${parsed.command}`
-  }
-  if (tool === "read_file" && typeof parsed.filePath === "string") {
-    return parsed.filePath
-  }
-  if (tool === "write" && typeof parsed.filePath === "string") {
-    const contentLen = typeof parsed.content === "string" ? parsed.content.length : 0
-    return `${parsed.filePath}  (${contentLen} chars)`
-  }
-  if (tool === "glob" && typeof parsed.pattern === "string") {
-    return parsed.pattern
-  }
-  if (tool === "web_fetch" && typeof parsed.url === "string") {
-    return parsed.url
-  }
-  // Fallback: first line of input, truncated
-  const firstLine = input.split("\n")[0] ?? ""
-  return firstLine.length > 80 ? firstLine.slice(0, 77) + "…" : firstLine
-}
-
-/** Format a tool result for compact one-line preview */
-function formatToolResultPreview(text: string): string {
-  const lines = text.split("\n")
-  if (lines.length === 0) return ""
-  if (lines.length === 1 && lines[0]!.length <= 120) return lines[0]!
-  const firstLine = lines[0]!
-  const preview = firstLine.length > 100 ? firstLine.slice(0, 97) + "…" : firstLine
-  return `${preview}  (${lines.length} lines)`
-}
-
-function stripAnsi(str: string) {
-  return str.replace(/\x1b\[[0-9;]*m/g, "")
-}
-
-
-function truncateText(text: string, max: number) {
-  if (max <= 0) return ""
-  if (text.length <= max) return text
-  if (max <= 1) return "…"
-  return text.slice(0, max - 1) + "…"
-}
-
-function fmtContextLimit(limit: number) {
-  if (limit >= 1_000_000) {
-    const millions = limit / 1_000_000
-    return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}m`
-  }
-  return `${Math.round(limit / 1000)}k`
-}
-
-function fmtPrice(value: number) {
-  if (value === 0) return "free"
-  if (value >= 1) return `$${value}`
-  return `$${value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}`
-}
-
-function modelHint(model: string, fallback?: ModelInfo) {
-  const cfg = getKnownModelConfig(model) ?? (fallback?.contextLimit ? getModelConfig(model, fallback) : undefined)
-  if (!cfg) return ""
-  if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
-  if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
-  return `${fmtContextLimit(cfg.contextLimit)} • ${fmtPrice(cfg.pricing.input)}/${fmtPrice(cfg.pricing.output)}`
-}
-
-function isTransientPasteMarker(input: string) {
-  return /^\[Pasted ~\d+ lines(?: #\d+)?\]/.test(input.trim())
-}
-
-function maskKey(value: string): string {
-  if (value.length <= 8) return value.slice(0, 1) + "***" + value.slice(-1)
-  const prefix = value.slice(0, 5)
-  const suffix = value.slice(-3)
-  return `${prefix}***${suffix}`
 }
 
 async function copyToClipboard(text: string) {
