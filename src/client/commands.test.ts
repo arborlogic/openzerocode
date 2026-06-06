@@ -1,7 +1,7 @@
 import { describe, it, mock } from "bun:test"
 import assert from "node:assert"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
-import type { DisplayBlock } from "./tui"
+import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 
 function stubCtx(overrides?: Partial<CommandContext>): CommandContext {

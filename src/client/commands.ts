@@ -1,6 +1,6 @@
 import type { Setter } from "solid-js"
 import { HELP_CONTENT } from "./help-content"
-import type { DisplayBlock } from "./tui"
+import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
 import { getModelConfig } from "../provider/models"

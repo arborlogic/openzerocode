@@ -1,7 +1,6 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
-import { SyntaxStyle } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { spawn, execFile } from "node:child_process"
 import { platform } from "os"
@@ -29,6 +28,13 @@ import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memor
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
+import { THEME, MARKDOWN_SYNTAX } from "./theme"
+import { ToastViewport } from "./toast-viewport"
+import type { ToastItem } from "./toast-viewport"
+import { ResponseEntry } from "./response-entry"
+import type { DisplayBlock } from "./response-entry"
+import { TurnEntry } from "./turn-entry"
+import type { DisplayTurn } from "./turn-entry"
 import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
 import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
@@ -297,38 +303,6 @@ let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLa
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
 
-const THEME = {
-  background: "#0d1117",
-  surface: "#161b22",
-  panel: "#0d1117",
-  border: "#30363d",
-  text: "#e6edf3",
-  muted: "#8b949e",
-  accent: "#58a6ff",
-  accentDim: "#1f6feb",
-  user: "#7ee787",
-  tool: "#d2a8ff",
-  error: "#f85149",
-  warning: "#d29922",
-  headerBg: "#161b22",
-  headerBorder: "#21262d",
-}
-const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
-  { scope: ["default"], style: { foreground: THEME.text } },
-  { scope: ["comment"], style: { foreground: THEME.muted, italic: true } },
-  { scope: ["string"], style: { foreground: "#a5d6ff" } },
-  { scope: ["keyword"], style: { foreground: THEME.accent, bold: true } },
-  { scope: ["number"], style: { foreground: "#79c0ff" } },
-  { scope: ["function"], style: { foreground: "#d2a8ff" } },
-  { scope: ["type"], style: { foreground: "#ffa657" } },
-])
-// Register a paste-marker style for extmarks (orange badge like opencode)
-MARKDOWN_SYNTAX.registerStyle("paste", {
-  fg: THEME.background,
-  bg: THEME.warning,
-  bold: true,
-})
-
 const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
 
@@ -339,29 +313,6 @@ const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", meta: true, action: "newline" },
   { name: "j", ctrl: true, action: "newline" },
 ]
-
-export type DisplayBlock = {
-  kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
-  text: string
-  title?: string
-  streaming?: boolean
-}
-
-type ToastKind = CommandToastKind
-
-type ToastItem = {
-  id: number
-  kind: ToastKind
-  title: string
-  text?: string
-}
-
-type DisplayTurn = {
-  user?: DisplayBlock
-  entries: DisplayBlock[]
-  footer?: string
-  userMsgIndex?: number  // index into messages() so we can edit/truncate
-}
 
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
@@ -510,231 +461,6 @@ function messageToBlocks(msg: Message): DisplayBlock[] {
 
 const SIDEBAR_WIDTH = 34
 
-function ToastViewport(props: { items: ToastItem[] }) {
-  const tone = (kind: ToastKind) => {
-    if (kind === "success") return { border: "#3fb950", title: "#7ee787", body: THEME.text, icon: "✓" }
-    if (kind === "warning") return { border: "#d29922", title: "#f2cc60", body: THEME.text, icon: "!" }
-    if (kind === "error") return { border: "#f85149", title: "#ff7b72", body: THEME.text, icon: "✗" }
-    return { border: THEME.accent, title: "#79c0ff", body: THEME.text, icon: "i" }
-  }
-
-  return (
-    <box
-      position="absolute"
-      top={1}
-      right={2}
-      width={44}
-      zIndex={120}
-      flexDirection="column"
-      gap={1}
-    >
-      <For each={props.items}>
-        {(item) => {
-          const colors = tone(item.kind)
-          return (
-            <box
-              flexDirection="column"
-              border={["top", "left", "right", "bottom"]}
-              borderColor={colors.border}
-              backgroundColor={THEME.surface}
-              paddingLeft={1}
-              paddingRight={1}
-              paddingTop={0}
-              paddingBottom={0}
-            >
-              <box flexDirection="row" gap={1}>
-                <text style={{ fg: colors.title }}>{colors.icon}</text>
-                <text style={{ fg: colors.title }}>{item.title}</text>
-              </box>
-              <Show when={item.text}>
-                <text style={{ fg: colors.body }}>{item.text}</text>
-              </Show>
-            </box>
-          )
-        }}
-      </For>
-    </box>
-  )
-}
-
-function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
-  const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
-  const [collapsed, setCollapsed] = createSignal(
-    collapsible() && !(props.entry.streaming ?? false)
-  )
-
-  const labelColor = () => props.entry.kind === "user" ? THEME.user
-    : props.entry.kind === "reasoning" ? THEME.accent
-    : props.entry.kind === "tool" || props.entry.kind === "tool-call" ? THEME.tool
-    : props.entry.kind === "error" ? THEME.error
-    : THEME.muted
-
-  const textColor = () => props.entry.kind === "reasoning" || props.entry.kind === "system" ? THEME.muted : THEME.text
-
-  const collapsedPreview = () => {
-    if (props.entry.kind === "tool-call" && props.entry.title) {
-      return formatToolCallInput(props.entry.title, props.entry.text)
-    }
-    if (props.entry.kind === "tool") {
-      return formatToolResultPreview(props.entry.text)
-    }
-    return ""
-  }
-
-  if (props.entry.kind === "assistant") {
-    return (
-      <box marginTop={props.isFirst ? 0 : 1}>
-        <MarkdownWithDiff
-          content={props.entry.text}
-          syntaxStyle={MARKDOWN_SYNTAX}
-          fg={THEME.text}
-          bg={THEME.background}
-          streaming={props.entry.streaming ?? false}
-        />
-      </box>
-    )
-  }
-
-  if (props.entry.kind === "system") {
-    return (
-      <box marginTop={props.isFirst ? 0 : 1}>
-        <text style={{ fg: textColor() }}>{props.entry.text}</text>
-      </box>
-    )
-  }
-
-  if (props.entry.kind === "reasoning") {
-    return (
-      <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
-        {/* Thinking header — always shown, click to toggle */}
-        <box
-          flexDirection="row"
-          gap={1}
-          onMouseDown={() => setCollapsed(c => !c)}
-        >
-          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
-          <text style={{ fg: labelColor() }}>Thinking</text>
-          <Show when={props.entry.streaming}>
-            <text style={{ fg: THEME.muted }}> …</text>
-          </Show>
-          <Show when={collapsed() && !props.entry.streaming}>
-            <text style={{ fg: THEME.muted }}>· {props.entry.text.split("\n")[0]}</text>
-          </Show>
-        </box>
-        {/* Body — hidden when collapsed */}
-        <Show when={!collapsed()}>
-          <text style={{ fg: THEME.muted }}>{props.entry.text}</text>
-        </Show>
-      </box>
-    )
-  }
-
-  /* tool-call and tool entries */
-  const isBashCall = props.entry.kind === "tool-call" && props.entry.title === "bash"
-  const toolIcon = props.entry.kind === "tool" ? "✓" : props.entry.kind === "error" ? "✗" : "■"
-  const toolLabel = props.entry.title ?? (props.entry.kind === "tool" ? "result" : "tool")
-
-  return (
-    <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
-      {/* Header row */}
-      <box
-        flexDirection="row"
-        gap={1}
-        onMouseDown={() => collapsible() && setCollapsed(c => !c)}
-      >
-        <Show when={collapsible()}>
-          <text style={{ fg: labelColor() }}>{collapsed() ? "▸" : "▾"}</text>
-        </Show>
-        <text style={{ fg: labelColor() }}>{toolIcon}</text>
-        <text style={{ fg: labelColor() }}>{toolLabel}</text>
-        <Show when={props.entry.streaming}>
-          <text style={{ fg: THEME.muted }}> …</text>
-        </Show>
-        <Show when={collapsed() && collapsedPreview()}>
-          <text style={{ fg: THEME.muted }}>· {collapsedPreview()}</text>
-        </Show>
-      </box>
-
-      {/* Expanded body */}
-      <Show when={!collapsed()}>
-        <box paddingLeft={2}>
-          <Show when={isBashCall && !props.entry.streaming}>
-            <text style={{ fg: textColor() }}>
-              {(() => {
-                const parsed = tryParseJSON(props.entry.text)
-                return typeof parsed.command === "string"
-                  ? `$ ${parsed.command}`
-                  : props.entry.text
-              })()}
-            </text>
-          </Show>
-          <Show when={props.entry.kind === "tool" && !props.entry.streaming}>
-            <text style={{ fg: THEME.muted }}>
-              {(() => {
-                const lines = props.entry.text.split("\n")
-                const preview = lines.slice(0, 20).join("\n")
-                return lines.length > 20 ? `${preview}\n… (${lines.length - 20} more lines)` : preview
-              })()}
-            </text>
-          </Show>
-          <Show when={(props.entry.kind !== "tool" && !isBashCall) || !!props.entry.streaming}>
-            <text style={{ fg: textColor() }}>{props.entry.text}</text>
-          </Show>
-        </box>
-      </Show>
-    </box>
-  )
-}
-
-function TurnEntry(props: {
-  turn: DisplayTurn
-  isFirst: boolean
-  onUserClick?: (msgIndex: number, text: string) => void
-  isRunning?: boolean
-}) {
-  const canClick = () => !props.isRunning && props.turn.userMsgIndex !== undefined && !!props.onUserClick
-
-  return (
-    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1}>
-      <Show when={props.turn.user}>
-        <box
-          paddingLeft={2}
-          paddingRight={1}
-          paddingTop={1}
-          paddingBottom={1}
-          border={["left"]}
-          borderColor={THEME.user}
-          onMouseDown={() => {
-            if (canClick()) {
-              props.onUserClick!(props.turn.userMsgIndex!, props.turn.user?.text ?? "")
-            }
-          }}
-        >
-          <box flexDirection="row" gap={1}>
-            <text style={{ fg: THEME.text, flexGrow: 1 }}>{props.turn.user?.text ?? ""}</text>
-            <Show when={canClick()}>
-              <text style={{ fg: THEME.muted }}>⋯</text>
-            </Show>
-          </box>
-        </box>
-      </Show>
-
-      <Show when={props.turn.entries.length > 0}>
-        <box flexDirection="column">
-          <For each={props.turn.entries}>
-            {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
-          </For>
-          <Show when={props.turn.footer}>
-            <box marginTop={1}>
-              <text style={{ fg: THEME.muted }}>{props.turn.footer}</text>
-            </box>
-          </Show>
-        </box>
-      </Show>
-    </box>
-  )
-}
-
 function App() {
   const dimensions = useTerminalDimensions()
   const sessionStart = new Date()
@@ -816,7 +542,7 @@ function App() {
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [toasts, setToasts] = createSignal<ToastItem[]>([])
   let nextToastId = 1
-  const showToast = (kind: ToastKind, title: string, text?: string, duration = 3000) => {
+  const showToast = (kind: CommandToastKind, title: string, text?: string, duration = 3000) => {
     const id = nextToastId++
     setToasts((prev) => [...prev, { id, kind, title, text }].slice(-3))
     setTimeout(() => {
