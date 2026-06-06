@@ -144,7 +144,6 @@ export function Sidebar(props: {
       paddingLeft={1}
       paddingRight={1}
       paddingTop={1}
-      paddingBottom={1}
       scrollY={true}
       flexDirection="column"
     >
@@ -329,6 +328,7 @@ export function Sidebar(props: {
           </box>
         </Show>
       </box>
+      <box height={1} />
     </scrollbox>
   )
 }
