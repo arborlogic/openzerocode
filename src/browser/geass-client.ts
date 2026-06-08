@@ -41,9 +41,13 @@ export interface PageSnapshot {
 
 export interface ScreenshotResult {
   base64: string;
-  format?: 'png';
+  format?: 'png' | 'jpeg';
   width?: number;
   height?: number;
+  originalWidth?: number;
+  originalHeight?: number;
+  resized?: boolean;
+  quality?: number;
   viewport?: {
     x: number;
     y: number;
@@ -54,6 +58,18 @@ export interface ScreenshotResult {
   url?: string;
   title?: string;
   capturedAt?: number;
+}
+
+export interface ScreenshotOptions {
+  format?: 'png' | 'jpeg';
+  quality?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  maxLongEdge?: number;
+}
+
+export interface VisualObservationOptions {
+  screenshot?: ScreenshotOptions;
 }
 
 export interface VisualObservation {
@@ -151,12 +167,12 @@ export async function pressKey(args: { key?: string }): Promise<ActionResult> {
   return request('POST', 'press', args);
 }
 
-export async function screenshot(): Promise<ScreenshotResult> {
-  return request('POST', 'screenshot');
+export async function screenshot(options?: ScreenshotOptions): Promise<ScreenshotResult> {
+  return request('POST', 'screenshot', options ?? {});
 }
 
-export async function observeVisual(): Promise<VisualObservation> {
-  return request('POST', 'observe-visual');
+export async function observeVisual(options?: VisualObservationOptions): Promise<VisualObservation> {
+  return request('POST', 'observe-visual', options ?? {});
 }
 
 export async function getVlmSettings(): Promise<VlmSettings> {

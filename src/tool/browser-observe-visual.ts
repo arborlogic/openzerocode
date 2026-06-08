@@ -17,6 +17,16 @@ interface ParametersType {
   vlmModel?: string | null
 }
 
+function clampInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(max, Math.max(min, Math.round(parsed)))
+}
+
+const DEFAULT_VLM_IMAGE_FORMAT: 'jpeg' | 'png' = (process.env.OPENZEROCODE_VLM_IMAGE_FORMAT === 'png' ? 'png' : 'jpeg')
+const DEFAULT_VLM_IMAGE_QUALITY = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_QUALITY, 72, 1, 100)
+const DEFAULT_VLM_IMAGE_MAX_LONG_EDGE = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE, 1280, 320, 4096)
+
 const DEFAULT_VISUAL_PROMPT = [
   'Describe the current browser screenshot for an automation agent.',
   'Focus on visible dialogs, overlays, selected/disabled states, layout problems, icons, charts, images, and controls that may not be captured by the DOM text.',
@@ -92,13 +102,19 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
           return new Result({ title: "GEASS Offline", output: msg })
         }
 
-        const observation = yield* Effect.promise(() => Geass.observeVisual())
+        const observation = yield* Effect.promise(() => Geass.observeVisual(args.analyzeWithLocalVlm === true ? {
+          screenshot: {
+            format: DEFAULT_VLM_IMAGE_FORMAT,
+            quality: DEFAULT_VLM_IMAGE_FORMAT === 'jpeg' ? DEFAULT_VLM_IMAGE_QUALITY : undefined,
+            maxLongEdge: DEFAULT_VLM_IMAGE_MAX_LONG_EDGE,
+          },
+        } : undefined))
         const screenshot = observation.screenshot
         const pageSummary = formatPageSummary(observation.page)
         const metadataLines = [
           `URL: ${screenshot.url || observation.page.url}`,
           `Title: ${screenshot.title || observation.page.title}`,
-          `Image: ${screenshot.width ?? '?'}x${screenshot.height ?? '?'} ${screenshot.format ?? 'png'}`,
+          `Image: ${screenshot.width ?? '?'}x${screenshot.height ?? '?'} ${screenshot.format ?? 'png'}${screenshot.resized ? ` (resized from ${screenshot.originalWidth}x${screenshot.originalHeight})` : ''}${screenshot.quality ? ` q=${screenshot.quality}` : ''}`,
         ]
 
         if (screenshot.viewport) {
@@ -143,6 +159,7 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
               timeoutMs,
               prompt: buildVisualPrompt(args.prompt, pageSummary),
               imageBase64: screenshot.base64,
+              imageFormat: screenshot.format,
             }))
             outputParts.push(
               '',
@@ -161,14 +178,14 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
               '',
               'Falling back to screenshot data URL for a vision-capable model or human-visible transcript.',
               '',
-              `![screenshot](data:image/png;base64,${screenshot.base64})`,
+              `![screenshot](data:image/${screenshot.format === 'jpeg' ? 'jpeg' : 'png'};base64,${screenshot.base64})`,
             )
             metadata.localVlm = { endpoint: args.vlmEndpoint || getDefaultLocalVlmEndpoint(), model: args.vlmModel || getDefaultLocalVlmModel(), ok: false, error: message }
           }
         } else {
           outputParts.push(
             '',
-            `![screenshot](data:image/png;base64,${screenshot.base64})`,
+            `![screenshot](data:image/${screenshot.format === 'jpeg' ? 'jpeg' : 'png'};base64,${screenshot.base64})`,
           )
         }
 
