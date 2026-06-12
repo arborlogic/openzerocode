@@ -16,6 +16,7 @@ import { BrowserSelectTool } from "./browser-select"
 import { BrowserScrollTool } from "./browser-scroll"
 import { BrowserScreenshotTool } from "./browser-screenshot"
 import { BrowserObserveVisualTool } from "./browser-observe-visual"
+import { CallPeerTool } from "./call-peer"
 
 export interface Interface {
   readonly all: () => Effect.Effect<readonly Def[]>
@@ -45,6 +46,7 @@ export const layer = Layer.effect(
       yield* BrowserScrollTool,
       yield* BrowserScreenshotTool,
       yield* BrowserObserveVisualTool,
+      yield* CallPeerTool,
     ]
     const custom: Def[] = []
 

@@ -31,6 +31,7 @@ type SessionUi = {
   reasoning_effort?: "low" | "medium" | "high" | "max"
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
   maxSteps?: number
+  origin?: { peer: string }
 }
 
 type SessionRuntime = {
@@ -54,6 +55,8 @@ export type StreamOptions = {
   workdir?: string
   /** Max model round-trips per run. Defaults to OPENZEROCODE_MAX_STEPS or 50. */
   maxSteps?: number
+  /** When set, the user message is tagged with this peer origin for display. */
+  origin?: { peer: string }
 }
 
 /**
@@ -98,7 +101,9 @@ export async function* streamSession(
     return options.reasoning_effort
   })()
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(options.mode) }
-  const userMessage: Message = { role: "user", content: userInput }
+  const userMessage: Message = options.origin
+    ? { role: "user", content: userInput, origin: options.origin }
+    : { role: "user", content: userInput }
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
@@ -377,6 +382,7 @@ export async function runSession(
     keyName: ui.keyName,
     reasoning_effort: ui.reasoning_effort,
     maxSteps: ui.maxSteps,
+    origin: ui.origin,
   }, runtime)
   const resultHistory: Message[] = [...history]
 

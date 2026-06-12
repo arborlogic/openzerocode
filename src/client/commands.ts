@@ -5,6 +5,7 @@ import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
 import { getModelConfig } from "../provider/models"
 import { formatAutoLoopDuration, parseAutoLoopDuration } from "./autoloop"
+import type { PeerEntry } from "../peer/registry"
 
 export type SlashCommandDef = {
   name: string
@@ -46,6 +47,9 @@ export type CommandContext = {
   getAutoLoopInterval: () => number | undefined
   getAutoLoopConfirm: () => boolean
   setAutoLoop: (windowMs: number | undefined, confirm?: boolean) => void
+  peerName?: string
+  listPeers?: () => PeerEntry[]
+  callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
@@ -68,6 +72,8 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)" },
   { name: "export", description: "Export compact transcript: user asks, AI responses, and compact summary" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
+  { name: "peers", description: "List online named peer processes" },
+  { name: "call", description: "Send a prompt to a named peer: /call <name> <prompt>" },
 ]
 
 function notifyCommand(ctx: CommandContext, kind: CommandToastKind, title: string, text?: string) {
@@ -224,6 +230,46 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "exit" || cmd === "quit") {
     void ctx.exitApp(0)
+    return true
+  }
+
+  if (cmd === "peers") {
+    if (!ctx.listPeers) {
+      notifyCommand(ctx, "info", "Peers", "Start with --name to enable peer mode")
+      return true
+    }
+    const peers = ctx.listPeers()
+    if (peers.length === 0) {
+      notifyCommand(ctx, "info", "Peers", "No named peers online")
+    } else {
+      const lines = peers.map(p => `${p.name}  ${p.workdir}`).join("\n")
+      notifyCommand(ctx, "info", `Peers (${peers.length})`, lines)
+    }
+    return true
+  }
+
+  if (cmd === "call") {
+    if (!ctx.callPeer) {
+      notifyCommand(ctx, "error", "Peer mode not active", "Start with --name to enable /call")
+      return true
+    }
+    const spaceIdx = arg.indexOf(" ")
+    if (!arg || spaceIdx === -1) {
+      notifyCommand(ctx, "error", "Usage", "/call <peer-name> <prompt>")
+      return true
+    }
+    const peerName = arg.slice(0, spaceIdx)
+    const prompt = arg.slice(spaceIdx + 1).trim()
+    if (!prompt) {
+      notifyCommand(ctx, "error", "Usage", "/call <peer-name> <prompt>")
+      return true
+    }
+    notifyCommand(ctx, "info", `Calling ${peerName}…`, prompt)
+    ctx.callPeer(peerName, prompt).then((result) => {
+      if (!result.ok) {
+        notifyCommand(ctx, "error", `Call to ${peerName} failed`, result.error)
+      }
+    })
     return true
   }
 

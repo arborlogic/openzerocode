@@ -49,6 +49,9 @@ import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
 import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
 import { writeCompactTranscriptExport } from "./session-export"
+import { registerPeer, unregisterPeer, listLivePeers, findPeer } from "../peer/registry"
+import { startPeerServer } from "../peer/server"
+import { setPeerContext } from "../peer/context"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -78,8 +81,11 @@ if (args.includes("--help") || args.includes("-h")) {
   console.log("    --port PORT            Port to listen on (default: 4096)")
   console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
   console.log()
+  console.log("  --name NAME              Register this TUI as a named peer (enables /peers and /call)")
+  console.log()
   console.log("Examples:")
   console.log("  openzerocode                          Launch TUI")
+  console.log("  openzerocode --name myapp             Launch TUI as named peer 'myapp'")
   console.log("  openzerocode --run 'reply a Threads post'  Headless agent run, stdout = result")
   console.log()
   console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
@@ -294,6 +300,58 @@ if (args[0] === "serve") {
     process.stdout.write("\n")
     process.exit(runOutcome === "success" ? 0 : 1)
   }
+}
+
+// ─── Peer mode ──────────────────────────────────────────────────────────────
+// Module-level state shared between peer server (started before render) and
+// the SolidJS component (which wires up the enqueue callback after mount).
+let activePeerName: string | undefined
+let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number) => void) | undefined
+
+{
+  const nameIdx = args.indexOf("--name")
+  const nameArg = nameIdx >= 0 && args[nameIdx + 1] ? args[nameIdx + 1] : undefined
+  if (nameArg) {
+    // Generate token first so we can start the server before writing the registry.
+    // The port is only known after the server starts, so registration happens after.
+    const { generateToken } = await import("../peer/registry")
+    const token = generateToken()
+    const server = await startPeerServer(token, (text, from, hop) => {
+      _peerEnqueueFn?.(text, from, hop)
+    })
+    const result = registerPeer(nameArg, server.port, process.cwd(), token)
+    if (!result.ok) {
+      console.error(`openzerocode: ${result.error}`)
+      server.stop()
+      process.exit(1)
+    }
+    activePeerName = nameArg
+
+    process.on("exit", () => { unregisterPeer(nameArg) })
+    process.on("SIGINT", () => { unregisterPeer(nameArg); process.exit(0) })
+    process.on("SIGTERM", () => { unregisterPeer(nameArg); process.exit(0) })
+  }
+}
+
+// Sentinel prefix used to pass peer origin through the input queue text.
+// Uses ASCII SOH (\x01) which won't appear in normal user input.
+const PEER_PREFIX = "\x01peer:"
+const PEER_SEP = "\x01"
+
+function encodePeerInput(fromPeer: string, hop: number, text: string): string {
+  return `${PEER_PREFIX}${fromPeer}:${hop}${PEER_SEP}${text}`
+}
+
+function decodePeerInput(input: string): { text: string; peerOrigin?: string; peerHop?: number } {
+  if (!input.startsWith(PEER_PREFIX)) return { text: input }
+  const rest = input.slice(PEER_PREFIX.length)
+  const sep = rest.indexOf(PEER_SEP)
+  if (sep === -1) return { text: input }
+  const meta = rest.slice(0, sep)
+  const lastColon = meta.lastIndexOf(":")
+  const fromPeer = lastColon >= 0 ? meta.slice(0, lastColon) : meta
+  const hop = lastColon >= 0 ? parseInt(meta.slice(lastColon + 1), 10) || 0 : 0
+  return { text: rest.slice(sep + 1), peerOrigin: fromPeer, peerHop: hop }
 }
 
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
@@ -679,6 +737,13 @@ function App() {
       },
     },
   )
+
+  // Wire peer enqueue now that inputQueue is ready
+  if (activePeerName) {
+    _peerEnqueueFn = (text, fromPeer, hop) => {
+      inputQueue.enqueue(encodePeerInput(fromPeer, hop, text))
+    }
+  }
 
   function clearAutoLoopTimer(options?: { clearWindow?: boolean }) {
     if (autoLoopTimer) clearTimeout(autoLoopTimer)
@@ -2000,6 +2065,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           user: { kind: "user", text: msg.content },
           entries: [],
           userMsgIndex: msgIdx,
+          peerOrigin: msg.origin?.peer,
         })
         continue
       }
@@ -2373,7 +2439,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
   }
 
-  const runQueuedPrompt = async (input: string, abortSignal: AbortSignal) => {
+  const runQueuedPrompt = async (rawInput: string, abortSignal: AbortSignal) => {
+    const { text: input, peerOrigin, peerHop } = decodePeerInput(rawInput)
+    // Update peer context so call_peer tool knows our name and current hop depth
+    setPeerContext(activePeerName, peerHop ?? 0)
+
     history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
     historyIndex = -1
     historyDraft = ""
@@ -2430,6 +2500,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     try {
       const next = await runSession(input, sanitizeMessages(messages()), {
         abort: runAbort.signal,
+        origin: peerOrigin ? { peer: peerOrigin } : undefined,
         streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
         streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
         streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
@@ -2469,7 +2540,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       }, {
         runSync,
-        systemPrompt,
+        systemPrompt: peerOrigin
+          ? (mode: RunMode) =>
+              systemPrompt(mode) +
+              `\n\n[Peer Request]\nThis task was sent by peer process "${peerOrigin}". ` +
+              `After completing the task, use the call_peer tool to send a concise summary of what you did and any relevant results back to "${peerOrigin}". ` +
+              `If the task cannot be completed or requires clarification, call_peer back with that information instead.`
+          : systemPrompt,
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
@@ -2647,6 +2724,33 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         getAutoLoopInterval: autoLoopWindowMs,
         getAutoLoopConfirm: autoLoopConfirm,
         setAutoLoop: configureAutoLoop,
+        peerName: activePeerName,
+        listPeers: activePeerName ? listLivePeers : undefined,
+        callPeer: activePeerName
+          ? async (name: string, prompt: string) => {
+            const peer = findPeer(name)
+            if (!peer) return { ok: false, error: `No peer named "${name}" is online` }
+            const realWorkdir = process.cwd()
+            if (peer.workdir === realWorkdir) return { ok: false, error: "Cannot call a peer with the same working directory" }
+            try {
+              const res = await fetch(`http://127.0.0.1:${peer.port}/prompt`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-peer-token": peer.token,
+                },
+                body: JSON.stringify({ text: prompt, from: activePeerName }),
+              })
+              if (!res.ok) {
+                const body = await res.json().catch(() => ({})) as { error?: string }
+                return { ok: false, error: body.error ?? `HTTP ${res.status}` }
+              }
+              return { ok: true }
+            } catch (err) {
+              return { ok: false, error: err instanceof Error ? err.message : String(err) }
+            }
+          }
+          : undefined,
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
