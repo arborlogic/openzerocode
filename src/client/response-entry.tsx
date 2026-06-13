@@ -2,13 +2,9 @@ import { createSignal, Show } from "solid-js"
 import { THEME, MARKDOWN_SYNTAX } from "./theme"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { formatToolCallInput, formatToolResultPreview, tryParseJSON } from "./format-utils"
+import type { DisplayBlock } from "./display-block"
 
-export type DisplayBlock = {
-  kind: "user" | "assistant" | "reasoning" | "tool" | "tool-call" | "error" | "system"
-  text: string
-  title?: string
-  streaming?: boolean
-}
+export type { DisplayBlock } from "./display-block"
 
 export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"

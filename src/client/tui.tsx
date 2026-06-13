@@ -1,10 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
+import type { ScrollBoxRenderable, TextareaRenderable, PasteEvent } from "@opentui/core"
 import { Effect, Layer } from "effect"
-import { spawn, execFile } from "node:child_process"
-import { platform } from "os"
-import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
@@ -12,7 +9,7 @@ import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
-import { runSession, streamSession, type RunMode, type StreamOptions } from "./session-runner"
+import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
@@ -40,9 +37,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
-import { testConnection, isConnected, isEnabled, setEnabled, readPage } from "../browser/geass-client"
-import { resolveSkillsDir, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
-import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
+import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -52,6 +47,12 @@ import { writeCompactTranscriptExport } from "./session-export"
 import { registerPeer, unregisterPeer, listLivePeers, findPeer } from "../peer/registry"
 import { startPeerServer } from "../peer/server"
 import { setPeerContext } from "../peer/context"
+import { handleCli } from "./cli"
+import { encodePeerInput, decodePeerInput } from "./peer-input"
+import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, SIDEBAR_WIDTH } from "./tui-constants"
+import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
+import { messageToBlocks } from "./message-blocks"
+import { getFileDiff } from "./git-diff"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -59,248 +60,9 @@ const VERSION: string =
   (typeof process !== "undefined" && (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
   pkg.version
 
-// Handle CLI flags before anything else
+// Handle CLI flags before booting the TUI.
 const args = process.argv.slice(2)
-if (args.includes("--version") || args.includes("-v")) {
-  console.log(`openzerocode v${VERSION}`)
-  process.exit(0)
-}
-if (args.includes("--help") || args.includes("-h")) {
-  console.log(`openzerocode v${VERSION}`)
-  console.log()
-  console.log("Usage: openzerocode [options] [prompt...]")
-  console.log("       openzerocode serve [--port PORT] [--host HOST]")
-  console.log()
-  console.log("Options:")
-  console.log("  -v, --version            Show version number")
-  console.log("  -h, --help               Show this help message")
-  console.log("  -r, --run PROMPT         Run a single prompt headlessly (no TUI, auto-approve tools)")
-  console.log()
-  console.log("Commands:")
-  console.log("  serve                    Start an HTTP server exposing the streaming session API")
-  console.log("    --port PORT            Port to listen on (default: 4096)")
-  console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
-  console.log()
-  console.log("  --name NAME              Register this TUI as a named peer (enables /peers and /call)")
-  console.log()
-  console.log("Examples:")
-  console.log("  openzerocode                          Launch TUI")
-  console.log("  openzerocode --name myapp             Launch TUI as named peer 'myapp'")
-  console.log("  openzerocode --run 'reply a Threads post'  Headless agent run, stdout = result")
-  console.log()
-  console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
-  console.log("Otherwise, the terminal UI is launched.")
-  process.exit(0)
-}
-
-if (args[0] === "serve") {
-  const flagValue = (name: string, fallback: string): string => {
-    const eq = args.find((a) => a.startsWith(`${name}=`))
-    if (eq) return eq.slice(name.length + 1)
-    const idx = args.indexOf(name)
-    if (idx >= 0 && args[idx + 1]) return args[idx + 1]!
-    return fallback
-  }
-  const port = Number.parseInt(flagValue("--port", "4096"), 10)
-  const host = flagValue("--host", "127.0.0.1")
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
-    console.error(`Invalid port: ${flagValue("--port", "4096")}`)
-    process.exit(1)
-  }
-  const { startServer } = await import("../server/index")
-  await startServer({ port, host })
-  // Bun.serve() keeps the event loop alive but returns immediately. Block here
-  // so the rest of this module (which boots the TUI) never executes.
-  await new Promise<never>(() => {})
-}
-
-// --run "prompt" — headless agent mode (no TUI, auto-approve all tools)
-{
-  const runFlagIdx = args.findIndex((a) => a === "--run" || a === "-r")
-  const headlessPrompt = runFlagIdx >= 0 && args[runFlagIdx + 1] ? args[runFlagIdx + 1] : undefined
-  if (headlessPrompt !== undefined) {
-    const provider = autoDetectProvider() ?? "opencode-zen"
-    const model = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider))
-    const layer = Layer.merge(buildLayer(provider, model), toolLayer)
-    const agentsInstruction = loadAgentsInstruction(process.cwd())
-    const contextInstruction = loadContextInstruction(process.cwd())
-
-    setEnabled(true)
-    await testConnection()
-
-    // ① LOAD — match current page URL to a skill, inject SKILL.md (+ LEARNINGS.md)
-    let activeSkill: LoadedSkill | undefined
-    if (isConnected()) {
-      const skillsDir = resolveSkillsDir(process.cwd())
-      if (skillsDir) {
-        try {
-          const page = await readPage()
-          if (page?.url) {
-            activeSkill = matchSkillByUrl(page.url, skillsDir)
-            if (activeSkill) {
-              process.stderr.write(`[skill: ${activeSkill.name}] matched by ${activeSkill.matchedBy}\n`)
-            }
-          }
-        } catch {
-          // page read failed — proceed without a skill
-        }
-      }
-    }
-    const skillSection = activeSkill ? buildSkillSection(activeSkill) : undefined
-
-    const runSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
-      Effect.runPromise(effect.pipe(Effect.provide(layer))) as Promise<A>
-
-    const runtime = {
-      runSync,
-      systemPrompt: (mode: RunMode) => {
-        const base = buildSystemPrompt(mode, agentsInstruction, contextInstruction)
-        return skillSection ? `${base}\n\n${skillSection}` : base
-      },
-      parseJson: (raw: string) => tryParseJSON(raw),
-      ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
-    }
-
-    const options: StreamOptions = {
-      abort: new AbortController().signal,
-      model,
-      mode: "build" as RunMode,
-      provider,
-      keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
-    }
-
-    let finalContent = ""
-    let runOutcome: RunOutcome = "success"
-    let runError: string | undefined
-    const runTools: RunToolEvent[] = []
-    const runToolIndex = new Map<string, RunToolEvent>()
-    const runStart = new Date()
-
-    const gen = streamSession(headlessPrompt, [], options, runtime)
-    for await (const chunk of gen) {
-      switch (chunk.type) {
-        case "text":
-          process.stdout.write(chunk.content)
-          finalContent += chunk.content
-          break
-        case "tool_start": {
-          process.stderr.write(`\n[tool: ${chunk.name}] ${chunk.input.slice(0, 120)}\n`)
-          const ev: RunToolEvent = { name: chunk.name, input: chunk.input }
-          runTools.push(ev)
-          runToolIndex.set(chunk.name + ":" + (runTools.length - 1), ev)
-          break
-        }
-        case "tool_result": {
-          process.stderr.write(`[done: ${chunk.name}] ${chunk.output.slice(0, 120)}\n`)
-          // Attach output to the most recent tool event with this name
-          for (let i = runTools.length - 1; i >= 0; i--) {
-            if (runTools[i].name === chunk.name && runTools[i].output === undefined) {
-              runTools[i].output = chunk.output
-              if (chunk.error) runTools[i].error = true
-              break
-            }
-          }
-          break
-        }
-        case "status":
-          process.stderr.write(`\r${chunk.text.padEnd(40)}\r`)
-          break
-        case "error":
-          process.stderr.write(`\nError: ${chunk.message}\n`)
-          runOutcome = "fail"
-          runError = chunk.message
-          break
-      }
-    }
-
-    // ③ CAPTURE — write run trajectory to skills/<skill>/runs/
-    let runRecordPath: string | undefined
-    if (activeSkill) {
-      runRecordPath = writeRunRecord({
-        skillName: activeSkill.name,
-        skillDir: activeSkill.dir,
-        prompt: headlessPrompt,
-        matchedBy: activeSkill.matchedBy,
-        pageUrl: (isConnected() ? await readPage().catch(() => undefined) : undefined)?.url,
-        model,
-        provider,
-        tools: runTools,
-        finalText: finalContent,
-        outcome: runOutcome,
-        errorMessage: runError,
-        startedAt: runStart,
-        endedAt: new Date(),
-      })
-      process.stderr.write(`\n[capture] ${runRecordPath}\n`)
-    }
-
-    // ④⑤ REFLECT — on failure, run a second headless pass to append learnings
-    const skipReflect = process.env.OPENZERO_NO_REFLECT === "1"
-    if (runOutcome === "fail" && activeSkill && runRecordPath && !skipReflect) {
-      process.stderr.write(`\n[reflect] starting reflection for skill: ${activeSkill.name}\n`)
-      const reflectModel = normalizeBigPickleModel(
-        process.env.OPENZERO_REFLECT_MODEL ?? process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider),
-      )
-      const reflectLayer = Layer.merge(buildLayer(provider, reflectModel), toolLayer)
-      const reflectRunSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
-        Effect.runPromise(effect.pipe(Effect.provide(reflectLayer))) as Promise<A>
-      const reflectRuntime = {
-        runSync: reflectRunSync,
-        systemPrompt: (mode: RunMode) => buildSystemPrompt(mode, agentsInstruction, contextInstruction),
-        parseJson: (raw: string) => tryParseJSON(raw),
-        ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
-      }
-      const reflectOptions: StreamOptions = {
-        abort: new AbortController().signal,
-        model: reflectModel,
-        mode: "build" as RunMode,
-        provider,
-        keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
-      }
-      const reflectPrompt = [
-        `You are reflecting on a failed agent run for the skill: ${activeSkill.name}.`,
-        ``,
-        `Files to read (use the read_file tool):`,
-        `1. SKILL.md (golden path): ${activeSkill.skillPath}`,
-        `2. Run record (trajectory): ${runRecordPath}`,
-        activeSkill.learnings ? `3. Existing LEARNINGS.md: ${activeSkill.dir}/LEARNINGS.md` : null,
-        ``,
-        `Your job:`,
-        `- Identify what failed: which step, which selector, which assumption was wrong.`,
-        `- If this is a KNOWLEDGE issue (wrong selector, wrong flow, wrong assumption):`,
-        `  Append a new learning entry to ${activeSkill.dir}/LEARNINGS.md using the format:`,
-        `  ## <date> <short description>`,
-        `  - Observed: <what happened>`,
-        `  - Fix/Alternative: <what to try instead>`,
-        `  - Confidence: low | medium | high`,
-        `  Create the file if it does not exist.`,
-        `- If this is a SCRIPT issue (bug in a .py or .js file):`,
-        `  Write a unified diff to ${activeSkill.dir}/runs/${new Date().toISOString().replace(/[:.]/g, "-")}-reflect.patch`,
-        `  Do NOT modify scripts directly.`,
-        `- Do NOT modify SKILL.md.`,
-        `- Do NOT make more than one file write.`,
-        `- Reply with a one-paragraph summary of what you found and what you wrote.`,
-      ]
-        .filter((l) => l !== null)
-        .join("\n")
-
-      const reflectGen = streamSession(reflectPrompt, [], reflectOptions, reflectRuntime)
-      for await (const chunk of reflectGen) {
-        if (chunk.type === "text") process.stderr.write(chunk.content)
-        else if (chunk.type === "tool_start")
-          process.stderr.write(`\n[reflect tool: ${chunk.name}] ${chunk.input.slice(0, 80)}\n`)
-        else if (chunk.type === "tool_result")
-          process.stderr.write(`[reflect done: ${chunk.name}]\n`)
-        else if (chunk.type === "error")
-          process.stderr.write(`\n[reflect error] ${chunk.message}\n`)
-      }
-      process.stderr.write("\n[reflect] done\n")
-    }
-
-    process.stdout.write("\n")
-    process.exit(runOutcome === "success" ? 0 : 1)
-  }
-}
+await handleCli(args, VERSION)
 
 // ─── Peer mode ──────────────────────────────────────────────────────────────
 // Module-level state shared between peer server (started before render) and
@@ -333,44 +95,12 @@ let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number) => void) | un
   }
 }
 
-// Sentinel prefix used to pass peer origin through the input queue text.
-// Uses ASCII SOH (\x01) which won't appear in normal user input.
-const PEER_PREFIX = "\x01peer:"
-const PEER_SEP = "\x01"
-
-function encodePeerInput(fromPeer: string, hop: number, text: string): string {
-  return `${PEER_PREFIX}${fromPeer}:${hop}${PEER_SEP}${text}`
-}
-
-function decodePeerInput(input: string): { text: string; peerOrigin?: string; peerHop?: number } {
-  if (!input.startsWith(PEER_PREFIX)) return { text: input }
-  const rest = input.slice(PEER_PREFIX.length)
-  const sep = rest.indexOf(PEER_SEP)
-  if (sep === -1) return { text: input }
-  const meta = rest.slice(0, sep)
-  const lastColon = meta.lastIndexOf(":")
-  const fromPeer = lastColon >= 0 ? meta.slice(0, lastColon) : meta
-  const hop = lastColon >= 0 ? parseInt(meta.slice(lastColon + 1), 10) || 0 : 0
-  return { text: rest.slice(sep + 1), peerOrigin: fromPeer, peerHop: hop }
-}
-
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
 let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider, currentModel)
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
-
-const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
-const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
-
-const PROMPT_KEY_BINDINGS: KeyBinding[] = [
-  { name: "return", action: "submit" },
-  { name: "return", shift: true, action: "newline" },
-  { name: "return", ctrl: true, action: "newline" },
-  { name: "return", meta: true, action: "newline" },
-  { name: "j", ctrl: true, action: "newline" },
-]
 
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
@@ -390,89 +120,6 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
   return Effect.runPromise(effect.pipe(Effect.provide(currentLayer)))
 }
 
-const execFileAsync = promisify(execFile)
-
-/** Run git command and return trimmed stdout, or empty string on failure. */
-async function runGit(args: string[], timeout = 1000): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync("git", args, {
-      encoding: "utf-8",
-      timeout,
-      maxBuffer: 1024 * 1024,
-    })
-    return stdout.trim()
-  } catch {
-    return ""
-  }
-}
-
-/** Check for modified/new/deleted files in the working tree vs HEAD. */
-async function getGitFileChanges(): Promise<{ modified: string[]; added: string[]; deleted: string[] }> {
-  const out = await runGit(["diff", "--name-status", "HEAD"], 2000)
-  if (!out) return { modified: [], added: [], deleted: [] }
-  const modified: string[] = []
-  const added: string[] = []
-  const deleted: string[] = []
-  for (const line of out.split("\n")) {
-    const status = line[0]
-    const path = line.slice(1).trim()
-    if (!path) continue
-    if (status === "M") modified.push(path)
-    else if (status === "A") added.push(path)
-    else if (status === "D") deleted.push(path)
-  }
-  return { modified, added, deleted }
-}
-
-async function copyToClipboard(text: string) {
-  if (!text) return
-  if (process.stdout.isTTY) {
-    const base64 = Buffer.from(text).toString("base64")
-    process.stdout.write(`\x1b]52;c;${base64}\x07`)
-  }
-
-  const command = platform() === "darwin"
-    ? ["pbcopy"]
-    : platform() === "win32"
-      ? ["clip"]
-      : ["xclip", "-selection", "clipboard"]
-
-  await new Promise<void>((resolve) => {
-    const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "ignore", "ignore"] })
-    child.on("error", () => resolve())
-    child.on("close", () => resolve())
-    child.stdin?.write(text)
-    child.stdin?.end()
-  })
-}
-
-async function readClipboard(): Promise<string> {
-  const command = platform() === "darwin"
-    ? ["pbpaste"]
-    : platform() === "win32"
-      ? ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"]
-      : ["xclip", "-selection", "clipboard", "-o"]
-
-  return new Promise((resolve) => {
-    const child = spawn(command[0]!, command.slice(1), { stdio: ["ignore", "pipe", "ignore"] })
-    let output = ""
-    child.stdout?.on("data", (chunk) => { output += String(chunk) })
-    child.on("error", () => resolve(""))
-    child.on("close", () => resolve(output))
-  })
-}
-
-function openExternalUrl(url: string) {
-  const command = platform() === "darwin"
-    ? ["open", url]
-    : platform() === "win32"
-      ? ["cmd", "/c", "start", "", url]
-      : ["xdg-open", url]
-  const child = spawn(command[0]!, command.slice(1), { stdio: "ignore", detached: true })
-  child.on("error", () => {})
-  child.unref()
-}
-
 function systemPrompt(mode: RunMode) {
   return buildSystemPrompt(mode, agentsInstruction, contextInstruction)
 }
@@ -480,44 +127,6 @@ function systemPrompt(mode: RunMode) {
 function refreshAgentsInstruction() {
   agentsInstruction = loadAgentsInstruction(process.cwd())
 }
-
-function messageToBlocks(msg: Message): DisplayBlock[] {
-  if (msg.parts && msg.parts.length > 0) {
-    return msg.parts.map((part): DisplayBlock => {
-        switch (part.type) {
-          case "text":
-            return { kind: "assistant", text: part.text }
-          case "reasoning":
-            return { kind: "reasoning", text: part.text, title: "Thinking" }
-          case "tool-call":
-            return { kind: "tool-call", text: part.input, title: part.tool }
-          case "tool-result":
-            return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool }
-          default:
-            return { kind: "system", text: "" }
-        }
-      })
-  }
-
-  switch (msg.role) {
-    case "assistant": {
-      const result: DisplayBlock[] = []
-      if (msg.reasoning_content) result.push({ kind: "reasoning", text: msg.reasoning_content, title: "Thinking" })
-      if (msg.content) result.push({ kind: "assistant", text: msg.content })
-      return result
-    }
-    case "user":
-      return msg.content ? [{ kind: "user", text: msg.content }] : []
-    case "tool":
-      return msg.content ? [{ kind: "tool", text: msg.content, title: msg.tool_call_id }] : []
-    case "system":
-      return msg.content ? [{ kind: "system", text: msg.content }] : []
-    default:
-      return []
-  }
-}
-
-const SIDEBAR_WIDTH = 34
 
 function App() {
   const dimensions = useTerminalDimensions()
@@ -680,35 +289,7 @@ function App() {
     }
   })
   async function handleFileDiffRequest(file: GitFile) {
-    let raw = ""
-    try {
-      const { stdout } = await execFileAsync("git", ["diff", "HEAD", "--", file.path], {
-        encoding: "utf-8",
-        timeout: 5000,
-        maxBuffer: 8 * 1024 * 1024,
-      })
-      raw = stdout
-    } catch {
-      raw = ""
-    }
-    // Untracked / new file: `git diff HEAD` is empty. Fall back to
-    // `git diff --no-index /dev/null <file>` which produces a full-file
-    // addition diff. That command exits with code 1 when there are
-    // differences, so capture stdout from the error path as well.
-    if (!raw) {
-      try {
-        const { stdout } = await execFileAsync("git", ["diff", "--no-index", "--", "/dev/null", file.path], {
-          encoding: "utf-8",
-          timeout: 5000,
-          maxBuffer: 8 * 1024 * 1024,
-        })
-        raw = stdout
-      } catch (err) {
-        const stdout = (err as { stdout?: string })?.stdout
-        if (typeof stdout === "string") raw = stdout
-      }
-    }
-    const normalized = normalizeDiffHunkCounts(raw)
+    const normalized = await getFileDiff(file.path)
     setDiffOverlay({ file: file.path, content: normalized || "(no diff available)" })
   }
 
