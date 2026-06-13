@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs"
 import { realpathSync } from "fs"
-import { join } from "path"
+import { randomBytes } from "crypto"
+import { join, resolve } from "path"
 import { homedir } from "os"
 
 export type PeerEntry = {
@@ -43,8 +44,8 @@ function writePeers(peers: PeerEntry[]) {
   renameSync(tmp, target)
 }
 
-function realpath(p: string): string {
-  try { return realpathSync(p) } catch { return p }
+export function canonicalWorkdir(p: string): string {
+  try { return realpathSync(p) } catch { return resolve(p) }
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -61,18 +62,18 @@ export function listLivePeers(): PeerEntry[] {
 }
 
 export function generateToken(): string {
-  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
+  return randomBytes(32).toString("base64url")
 }
 
 export function registerPeer(name: string, port: number, workdir: string, token: string): RegisterResult {
-  const realWorkdir = realpath(workdir)
+  const realWorkdir = canonicalWorkdir(workdir)
   const alive = readPeers().filter(p => isProcessAlive(p.pid))
 
   if (alive.some(p => p.name === name)) {
     return { ok: false, error: `A peer named "${name}" is already running` }
   }
 
-  if (alive.some(p => realpath(p.workdir) === realWorkdir)) {
+  if (alive.some(p => canonicalWorkdir(p.workdir) === realWorkdir)) {
     return { ok: false, error: `A peer is already running for this directory` }
   }
 

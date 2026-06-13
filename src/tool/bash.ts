@@ -4,7 +4,8 @@ import { spawn } from "child_process"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MIN_TIMEOUT_MS = 1_000
-const MAX_BUFFER = 10 * 1024 * 1024
+const MAX_OUTPUT_BYTES = 1024 * 1024
+const TRUNCATED_MESSAGE = `\n\n[output truncated after ${MAX_OUTPUT_BYTES} bytes]`
 
 const Parameters = Schema.Struct({
   command: Schema.String,
@@ -21,6 +22,28 @@ type Args = { command: string; timeout?: number }
 function normalizeTimeout(timeout: number | undefined): number {
   if (timeout === undefined || timeout <= 0) return DEFAULT_TIMEOUT_MS
   return Math.max(timeout, MIN_TIMEOUT_MS)
+}
+
+type OutputBuffer = { text: string; bytes: number; truncated: boolean }
+
+function appendOutput(buffer: OutputBuffer, chunk: Buffer) {
+  if (buffer.bytes >= MAX_OUTPUT_BYTES) {
+    buffer.truncated = true
+    return
+  }
+  const remaining = MAX_OUTPUT_BYTES - buffer.bytes
+  if (chunk.byteLength <= remaining) {
+    buffer.text += chunk.toString()
+    buffer.bytes += chunk.byteLength
+    return
+  }
+  buffer.text += chunk.subarray(0, remaining).toString()
+  buffer.bytes = MAX_OUTPUT_BYTES
+  buffer.truncated = true
+}
+
+function bufferedText(buffer: OutputBuffer): string {
+  return buffer.text + (buffer.truncated ? TRUNCATED_MESSAGE : "")
 }
 
 function killProcessTree(proc: ReturnType<typeof spawn>) {
@@ -48,8 +71,8 @@ function runCommand(
     }
 
     const proc = spawn("sh", ["-c", command], { cwd, detached: process.platform !== "win32" })
-    let stdout = ""
-    let stderr = ""
+    const stdout: OutputBuffer = { text: "", bytes: 0, truncated: false }
+    const stderr: OutputBuffer = { text: "", bytes: 0, truncated: false }
     let settled = false
 
     const settle = (result: { stdout: string; stderr: string; code: number | null; error?: Error }) => {
@@ -61,25 +84,25 @@ function runCommand(
     }
 
     proc.stdout.on("data", (chunk: Buffer) => {
-      if (stdout.length < MAX_BUFFER) stdout += chunk.toString()
+      appendOutput(stdout, chunk)
     })
     proc.stderr.on("data", (chunk: Buffer) => {
-      if (stderr.length < MAX_BUFFER) stderr += chunk.toString()
+      appendOutput(stderr, chunk)
     })
 
     const timer = setTimeout(() => {
       killProcessTree(proc)
-      settle({ stdout: stdout.trim(), stderr: stderr.trim(), code: null, error: new Error(`Command timed out after ${timeoutMs}ms`) })
+      settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code: null, error: new Error(`Command timed out after ${timeoutMs}ms`) })
     }, timeoutMs)
 
     const onAbort = () => {
       killProcessTree(proc)
-      settle({ stdout: stdout.trim(), stderr: stderr.trim(), code: null, error: new Error("Command aborted") })
+      settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code: null, error: new Error("Command aborted") })
     }
     abort.addEventListener("abort", onAbort, { once: true })
 
-    proc.on("close", (code) => settle({ stdout: stdout.trim(), stderr: stderr.trim(), code }))
-    proc.on("error", (err) => settle({ stdout: stdout.trim(), stderr: stderr.trim(), code: null, error: err }))
+    proc.on("close", (code) => settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code }))
+    proc.on("error", (err) => settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code: null, error: err }))
   })
 }
 

@@ -44,7 +44,7 @@ import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue } from "./input-queue"
 import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
 import { writeCompactTranscriptExport } from "./session-export"
-import { registerPeer, unregisterPeer, listLivePeers, findPeer } from "../peer/registry"
+import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
 import { startPeerServer } from "../peer/server"
 import { setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
@@ -69,6 +69,7 @@ await handleCli(args, VERSION)
 // the SolidJS component (which wires up the enqueue callback after mount).
 let activePeerName: string | undefined
 let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number) => void) | undefined
+const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number }> = []
 
 {
   const nameIdx = args.indexOf("--name")
@@ -79,7 +80,8 @@ let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number) => void) | un
     const { generateToken } = await import("../peer/registry")
     const token = generateToken()
     const server = await startPeerServer(token, (text, from, hop) => {
-      _peerEnqueueFn?.(text, from, hop)
+      if (_peerEnqueueFn) _peerEnqueueFn(text, from, hop)
+      else pendingPeerInputs.push({ text, fromPeer: from, hop })
     })
     const result = registerPeer(nameArg, server.port, process.cwd(), token)
     if (!result.ok) {
@@ -319,10 +321,14 @@ function App() {
     },
   )
 
-  // Wire peer enqueue now that inputQueue is ready
+  // Wire peer enqueue now that inputQueue is ready, flushing any prompts
+  // received during startup before the Solid component mounted.
   if (activePeerName) {
     _peerEnqueueFn = (text, fromPeer, hop) => {
       inputQueue.enqueue(encodePeerInput(fromPeer, hop, text))
+    }
+    for (const pending of pendingPeerInputs.splice(0)) {
+      _peerEnqueueFn(pending.text, pending.fromPeer, pending.hop)
     }
   }
 
@@ -2311,8 +2317,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           ? async (name: string, prompt: string) => {
             const peer = findPeer(name)
             if (!peer) return { ok: false, error: `No peer named "${name}" is online` }
-            const realWorkdir = process.cwd()
-            if (peer.workdir === realWorkdir) return { ok: false, error: "Cannot call a peer with the same working directory" }
+            const realWorkdir = canonicalWorkdir(process.cwd())
+            if (canonicalWorkdir(peer.workdir) === realWorkdir) return { ok: false, error: "Cannot call a peer with the same working directory" }
             try {
               const res = await fetch(`http://127.0.0.1:${peer.port}/prompt`, {
                 method: "POST",
@@ -2320,7 +2326,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   "Content-Type": "application/json",
                   "x-peer-token": peer.token,
                 },
-                body: JSON.stringify({ text: prompt, from: activePeerName }),
+                body: JSON.stringify({ text: prompt, from: activePeerName, hop: 1 }),
               })
               if (!res.ok) {
                 const body = await res.json().catch(() => ({})) as { error?: string }

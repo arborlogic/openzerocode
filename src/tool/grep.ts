@@ -11,10 +11,42 @@ const Parameters = Schema.Struct({
 })
 type Args = { pattern: string | string[]; path?: string; include?: string | string[] }
 
+const MAX_OUTPUT_BYTES = 1024 * 1024
+const TRUNCATED_MESSAGE = `\n\n[output truncated after ${MAX_OUTPUT_BYTES} bytes]`
+
 type SearchMatch = {
   file: string
   line: number
   text: string
+}
+
+type OutputBuffer = { text: string; bytes: number; truncated: boolean }
+
+function appendOutput(buffer: OutputBuffer, chunk: Buffer | string) {
+  const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+  if (buffer.bytes >= MAX_OUTPUT_BYTES) {
+    buffer.truncated = true
+    return
+  }
+  const remaining = MAX_OUTPUT_BYTES - buffer.bytes
+  if (bytes.byteLength <= remaining) {
+    buffer.text += bytes.toString()
+    buffer.bytes += bytes.byteLength
+    return
+  }
+  buffer.text += bytes.subarray(0, remaining).toString()
+  buffer.bytes = MAX_OUTPUT_BYTES
+  buffer.truncated = true
+}
+
+function cappedText(buffer: OutputBuffer): string {
+  return buffer.text + (buffer.truncated ? TRUNCATED_MESSAGE : "")
+}
+
+function capOutput(text: string): string {
+  const buffer: OutputBuffer = { text: "", bytes: 0, truncated: false }
+  appendOutput(buffer, text)
+  return cappedText(buffer)
 }
 
 function globToRegExp(pattern: string) {
@@ -55,8 +87,8 @@ function spawnRg(args: string[], cwd: string, abort: AbortSignal): Promise<{ std
     }
 
     const proc = spawn("rg", args, { cwd })
-    let stdout = ""
-    let stderr = ""
+    const stdout: OutputBuffer = { text: "", bytes: 0, truncated: false }
+    const stderr: OutputBuffer = { text: "", bytes: 0, truncated: false }
     let settled = false
 
     const settle = (result: { stdout: string; stderr: string; status: number | null; error?: Error }) => {
@@ -68,14 +100,14 @@ function spawnRg(args: string[], cwd: string, abort: AbortSignal): Promise<{ std
 
     const onAbort = () => {
       proc.kill()
-      settle({ stdout, stderr, status: null, error: new Error("grep aborted") })
+      settle({ stdout: cappedText(stdout), stderr: cappedText(stderr), status: null, error: new Error("grep aborted") })
     }
     abort.addEventListener("abort", onAbort, { once: true })
 
-    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString() })
-    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
-    proc.on("close", (code) => settle({ stdout, stderr, status: code }))
-    proc.on("error", (err) => settle({ stdout, stderr, status: null, error: err }))
+    proc.stdout.on("data", (chunk: Buffer) => { appendOutput(stdout, chunk) })
+    proc.stderr.on("data", (chunk: Buffer) => { appendOutput(stderr, chunk) })
+    proc.on("close", (code) => settle({ stdout: cappedText(stdout), stderr: cappedText(stderr), status: code }))
+    proc.on("error", (err) => settle({ stdout: cappedText(stdout), stderr: cappedText(stderr), status: null, error: err }))
   })
 }
 
@@ -108,7 +140,7 @@ async function searchWithFallback(pattern: string, targetPath: string, include?:
   }
 
   return matches.length > 0
-    ? matches.map((match) => `${match.file}:${match.line}:${match.text}`).join("\n")
+    ? capOutput(matches.map((match) => `${match.file}:${match.line}:${match.text}`).join("\n"))
     : "(no matches)"
 }
 
@@ -145,7 +177,7 @@ export const GrepTool = Effect.gen(function* () {
             }
           }))
           const combined = outputs.filter(o => o !== "(no matches)").join("\n")
-          return combined || "(no matches)"
+          return combined ? capOutput(combined) : "(no matches)"
         })
         return new Result({
           title: `Grep: ${patterns.join(", ")}`,
