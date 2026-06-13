@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
-import { spawnSync } from "child_process"
+import { spawn } from "child_process"
 import { readdir, readFile } from "fs/promises"
 import path from "path"
 
@@ -45,6 +45,38 @@ async function walkFiles(root: string, include?: string): Promise<string[]> {
 
   await walk(root)
   return results
+}
+
+function spawnRg(args: string[], cwd: string, abort: AbortSignal): Promise<{ stdout: string; stderr: string; status: number | null; error?: Error }> {
+  return new Promise((resolve) => {
+    if (abort.aborted) {
+      resolve({ stdout: "", stderr: "", status: null, error: new Error("grep aborted") })
+      return
+    }
+
+    const proc = spawn("rg", args, { cwd })
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+
+    const settle = (result: { stdout: string; stderr: string; status: number | null; error?: Error }) => {
+      if (settled) return
+      settled = true
+      abort.removeEventListener("abort", onAbort)
+      resolve(result)
+    }
+
+    const onAbort = () => {
+      proc.kill()
+      settle({ stdout, stderr, status: null, error: new Error("grep aborted") })
+    }
+    abort.addEventListener("abort", onAbort, { once: true })
+
+    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString() })
+    proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString() })
+    proc.on("close", (code) => settle({ stdout, stderr, status: code }))
+    proc.on("error", (err) => settle({ stdout, stderr, status: null, error: err }))
+  })
 }
 
 async function searchWithFallback(pattern: string, targetPath: string, include?: string): Promise<string> {
@@ -95,24 +127,23 @@ export const GrepTool = Effect.gen(function* () {
         const searchPath = path.resolve(ctx.cwd, args.path ?? ".")
 
         const stdout = yield* Effect.promise(async () => {
-          const outputs: string[] = []
-          for (const pat of patterns) {
+          const outputs = await Promise.all(patterns.map(async (pat) => {
             const rgArgs = ["-n", pat]
             for (const inc of includes) rgArgs.push("--glob", inc)
             rgArgs.push(searchPath)
-            const result = spawnSync("rg", rgArgs, { encoding: "utf-8", cwd: searchPath })
-            if (result.error?.name === "Error" && "code" in result.error && result.error.code === "ENOENT") {
-              outputs.push(await searchWithFallback(pat, searchPath, includes[0]))
+            const result = await spawnRg(rgArgs, searchPath, ctx.abort)
+            if (result.error && "code" in result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") {
+              return searchWithFallback(pat, searchPath, includes[0])
             } else if (result.error) {
-              outputs.push(`rg failed: ${result.error.message}`)
+              return `rg failed: ${result.error.message}`
             } else if (result.status === 0) {
-              outputs.push(result.stdout || "(no matches)")
+              return result.stdout.trim() || "(no matches)"
             } else if (result.status === 1) {
-              outputs.push("(no matches)")
+              return "(no matches)"
             } else {
-              outputs.push(result.stderr?.trim() || result.stdout?.trim() || "(no matches)")
+              return result.stderr.trim() || result.stdout.trim() || "(no matches)"
             }
-          }
+          }))
           const combined = outputs.filter(o => o !== "(no matches)").join("\n")
           return combined || "(no matches)"
         })

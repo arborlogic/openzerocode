@@ -302,30 +302,33 @@ export async function* streamSession(
       return resultHistory
     }
 
-    for (const call of toolCalls) {
-      if (options.abort.aborted) {
-        return resultHistory
-      }
+    // Only parallelize tools that are read-only and independent. Mutating tools
+    // (write/edit/bash/todowrite/browser/call_peer/etc.) must preserve model order.
+    const parallelToolIds = new Set(["read", "grep", "glob", "web_fetch"])
+    const canRunInParallel = (call: ToolCall): boolean => parallelToolIds.has(call.function.name ?? "unknown")
+
+    // Serialize permission prompts so the UI only shows one at a time, while
+    // allowing approved read-only tool work in the current batch to run in parallel.
+    let askTail = Promise.resolve()
+    const serializedAsk = (req: Omit<PermissionRequest, "id">): Promise<void> => {
+      const next = askTail.then(() => runtime.ask(req))
+      askTail = next.catch(() => {})
+      return next
+    }
+
+    const runTool = (call: ToolCall) => {
       const name = call.function.name ?? "unknown"
       const def = tools.find((tool) => tool.id === name)
       if (!def) {
-        const errorMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: `Unknown tool: ${name}`, error: true })
-        allMessages.push(errorMsg)
-        resultHistory.push(errorMsg)
-        yield { type: "tool_result", id: call.id, name, output: `Unknown tool: ${name}`, error: true }
-        yield { type: "message", message: errorMsg }
-        continue
+        return Promise.resolve({ call, name, result: null as null })
       }
-
-      yield { type: "status", text: `running tool: ${name}` }
-      yield { type: "tool_start", id: call.id, name, input: call.function.arguments ?? "" }
-      const result = await Effect.runPromise(
+      return Effect.runPromise(
         def.execute(runtime.parseJson(call.function.arguments ?? "{}"), new Context({
           abort: options.abort,
           cwd: workdir,
           root: workdir,
           ask: (req) => Effect.tryPromise({
-            try: () => runtime.ask(req),
+            try: () => serializedAsk(req),
             catch: (e) => new Error(String(e)),
           }) as Effect.Effect<void>,
           metadata: () => Effect.void,
@@ -335,15 +338,56 @@ export async function* streamSession(
           Effect.timeout(300_000),
           Effect.catchCause((cause) => Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` }))),
         ),
-      )
+      ).then((result) => ({ call, name, result }))
+    }
 
-      const text = convertToolResult(result)
-      const isError = result.title === "Error"
-      yield { type: "tool_result", id: call.id, name, output: text, error: isError }
-      const toolMsg = createToolMessage({ tool_call_id: call.id, tool: name, output: text })
-      allMessages.push(toolMsg)
-      resultHistory.push(toolMsg)
-      yield { type: "message", message: toolMsg }
+    const emitToolStart = function* (call: ToolCall) {
+      const name = call.function.name ?? "unknown"
+      const def = tools.find((tool) => tool.id === name)
+      if (def) {
+        yield { type: "status" as const, text: `running tool: ${name}` }
+        yield { type: "tool_start" as const, id: call.id, name, input: call.function.arguments ?? "" }
+      }
+    }
+
+    for (let i = 0; i < toolCalls.length;) {
+      if (options.abort.aborted) return resultHistory
+      const call = toolCalls[i]!
+      const batch = canRunInParallel(call)
+        ? toolCalls.slice(i).findIndex((candidate) => !canRunInParallel(candidate))
+        : 1
+      const batchSize = batch === -1 ? toolCalls.length - i : batch
+      const currentCalls = toolCalls.slice(i, i + batchSize)
+
+      for (const currentCall of currentCalls) {
+        if (options.abort.aborted) return resultHistory
+        yield* emitToolStart(currentCall)
+      }
+
+      const execResults = canRunInParallel(call)
+        ? await Promise.all(currentCalls.map(runTool))
+        : [await runTool(call)]
+
+      for (const { call: finishedCall, name, result } of execResults) {
+        if (options.abort.aborted) return resultHistory
+        if (result === null) {
+          const errorMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: `Unknown tool: ${name}`, error: true })
+          allMessages.push(errorMsg)
+          resultHistory.push(errorMsg)
+          yield { type: "tool_result", id: finishedCall.id, name, output: `Unknown tool: ${name}`, error: true }
+          yield { type: "message", message: errorMsg }
+          continue
+        }
+        const text = convertToolResult(result)
+        const isError = result.title === "Error"
+        yield { type: "tool_result", id: finishedCall.id, name, output: text, error: isError }
+        const toolMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: text })
+        allMessages.push(toolMsg)
+        resultHistory.push(toolMsg)
+        yield { type: "message", message: toolMsg }
+      }
+
+      i += batchSize
     }
 
     if (step + 1 < maxSteps) {
