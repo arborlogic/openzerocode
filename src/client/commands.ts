@@ -35,6 +35,7 @@ export type CommandContext = {
   createNewSession: () => void
   currentSessionId: () => string | null
   openSessionList: () => void
+  openQueuedMessages: () => void
   openProviderList: () => void
   openModelList: () => void
   openHelp: () => void
@@ -63,6 +64,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "memory", description: "Show loaded workspace memory files and prompt-memory status" },
   { name: "model", description: "Switch model: /model <name> or /model list" },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
+  { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
@@ -225,6 +227,11 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "sessions" || cmd === "s") {
     ctx.openSessionList()
+    return true
+  }
+
+  if (cmd === "queue" || cmd === "queued") {
+    ctx.openQueuedMessages()
     return true
   }
 

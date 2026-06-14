@@ -41,7 +41,7 @@ import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/g
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
-import { createInputQueue } from "./input-queue"
+import { createInputQueue, type QueueItem } from "./input-queue"
 import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
 import { writeCompactTranscriptExport } from "./session-export"
 import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
@@ -174,6 +174,7 @@ function App() {
   const [running, setRunning] = createSignal(false)
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
+  const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
@@ -187,7 +188,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -313,6 +314,7 @@ function App() {
     {
       onDepthChange: (depth) => {
         setQueuedInputs(depth)
+        setQueuedInputItems(inputQueue.pendingItems())
       },
       onDrainEnd: () => {
         scheduleAutoLoop()
@@ -320,6 +322,15 @@ function App() {
       },
     },
   )
+
+  const openQueuedMessagesPalette = () => {
+    setShowPalette(true)
+    setPalettePendingDelete(null)
+    setPaletteInput("")
+    setQueuedInputItems(inputQueue.pendingItems())
+    setPaletteMode("queuedMessages")
+    setPaletteIndex(0)
+  }
 
   // Wire peer enqueue now that inputQueue is ready, flushing any prompts
   // received during startup before the Solid component mounted.
@@ -523,7 +534,12 @@ function App() {
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
-  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string; directoryPath?: string }
+  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string; directoryPath?: string; queueItemId?: number }
+  const paletteDeleteKey = (item: PaletteItem) => item.sessionId ?? null
+  const isPalettePendingDelete = (item: PaletteItem) => {
+    const key = paletteDeleteKey(item)
+    return key !== null && palettePendingDelete() === key
+  }
 
   const isSelectablePaletteItem = (item: PaletteItem | undefined) => item?.kind !== "section"
 
@@ -952,6 +968,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("timeline");
           setPaletteIndex(0);
         },
+      },
+      {
+        label: "Queued messages",
+        hint: queuedInputs() > 0 ? `${queuedInputs()} waiting` : "none",
+        onSelect: openQueuedMessagesPalette,
       },
       {
         label: "USAGE",
@@ -1523,6 +1544,45 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     ]
   })
 
+  const queuedMessagePaletteItems = createMemo<PaletteItem[]>(() => {
+    const items: PaletteItem[] = []
+    const queued = queuedInputItems()
+
+    if (queued.length === 0) {
+      items.push({ label: "No queued messages", kind: "section", onSelect: () => {} })
+    } else {
+      items.push({ label: `${queued.length} message${queued.length === 1 ? "" : "s"} waiting`, kind: "section", onSelect: () => {} })
+      for (const item of queued) {
+        const preview = truncateText(item.text.replace(/\s+/g, " ").trim(), PALETTE_LABEL_MAX())
+        items.push({
+          label: preview || "(empty message)",
+          hint: "Enter cancel",
+          queueItemId: item.id,
+          onSelect: () => {
+            const ok = inputQueue.cancel(item.id)
+            setStatus(ok ? `cancelled queued message (${inputQueue.depth()} queued)` : "queued message already started")
+            setQueuedInputItems(inputQueue.pendingItems())
+            if (inputQueue.depth() === 0) setShowPalette(false)
+          },
+        })
+      }
+      items.push({ label: "", kind: "section", onSelect: () => {} })
+      items.push({
+        label: "Cancel all queued messages",
+        hint: `Enter (${queued.length})`,
+        queueItemId: -1,
+        onSelect: () => {
+          const count = inputQueue.clear()
+          setStatus(count > 0 ? `cancelled ${count} queued message${count === 1 ? "" : "s"}` : "no queued messages")
+          setQueuedInputItems(inputQueue.pendingItems())
+          setShowPalette(false)
+        },
+      })
+    }
+
+    return items
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "maxSteps"
       ? [
@@ -1546,6 +1606,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? providerKeyPaletteItems()
           : paletteMode() === "timeline"
             ? timelinePaletteItems()
+          : paletteMode() === "queuedMessages"
+            ? queuedMessagePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
           : paletteMode() === "experiments"
@@ -1559,7 +1621,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    // queuedMessages is intentionally unfiltered; the queue is small and simpler without search input
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -2295,6 +2358,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteIndex(0)
           setSessionScope("cwd")
         },
+        openQueuedMessages: openQueuedMessagesPalette,
         openHelp: () => {
           setShowPalette(true)
           setPaletteMode("help")
@@ -2520,29 +2584,31 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
     if (showPalette()) {
-      // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
-      if ((event.ctrl || event.meta) && event.name === "v") {
-        void readClipboard().then((text) => {
-          if (!text) return
-          setPaletteInput((prev) => prev + text.trim())
-        })
-        event.preventDefault()
-        return
-      }
-      if (event.name === "backspace") {
-        setPaletteInput(prev => prev.slice(0, -1))
-        event.preventDefault()
-        return
-      }
-      if (event.name === "space") {
-        setPaletteInput(prev => prev + " ")
-        event.preventDefault()
-        return
-      }
-      if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
-        setPaletteInput(prev => prev + event.name)
-        event.preventDefault()
-        return
+      // Text input for palette modes that accept entry/filter text.
+      if (paletteMode() !== "queuedMessages") {
+        if ((event.ctrl || event.meta) && event.name === "v") {
+          void readClipboard().then((text) => {
+            if (!text) return
+            setPaletteInput((prev) => prev + text.trim())
+          })
+          event.preventDefault()
+          return
+        }
+        if (event.name === "backspace") {
+          setPaletteInput(prev => prev.slice(0, -1))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "space") {
+          setPaletteInput(prev => prev + " ")
+          event.preventDefault()
+          return
+        }
+        if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
+          setPaletteInput(prev => prev + event.name)
+          event.preventDefault()
+          return
+        }
       }
       if (paletteMode() === "rename") {
         if (event.name === "escape") {
@@ -2820,6 +2886,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "timeline") {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else if (paletteMode() === "queuedMessages") {
+          setPalettePendingDelete(null)
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "userMessageActions") {
@@ -3343,6 +3413,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Base URL · ${paletteProviderKeyTarget()}`
                         : paletteMode() === "timeline"
                           ? "Timeline"
+                        : paletteMode() === "queuedMessages"
+                          ? "Queued Messages"
                           : paletteMode() === "userMessageActions"
                             ? "Message Actions"
                       : "Command Palette"}
@@ -3353,22 +3425,24 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             >  Esc / ✕</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-                <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
-                </text>
-                <box
-                  backgroundColor={THEME.background}
-                  border={["left", "right"]}
-                  borderColor={THEME.border}
-                  paddingLeft={1}
-                  paddingRight={1}
-                  flexDirection="row"
-                >
-                  <text style={{ fg: THEME.text }}>{paletteInput()}</text>
-                  <text style={{ fg: THEME.accent }}>▌</text>
+            <Show when={paletteMode() !== "queuedMessages"}>
+              <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
+                  <text style={{ fg: THEME.muted }}>
+                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                  </text>
+                  <box
+                    backgroundColor={THEME.background}
+                    border={["left", "right"]}
+                    borderColor={THEME.border}
+                    paddingLeft={1}
+                    paddingRight={1}
+                    flexDirection="row"
+                  >
+                    <text style={{ fg: THEME.text }}>{paletteInput()}</text>
+                    <text style={{ fg: THEME.accent }}>▌</text>
+                  </box>
                 </box>
-              </box>
+            </Show>
             <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
@@ -3378,7 +3452,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     paddingTop={0}
                     paddingBottom={0}
                     backgroundColor={item.kind !== "section"
-                      ? item.sessionId && palettePendingDelete() === item.sessionId
+                      ? isPalettePendingDelete(item)
                         ? "#3d1717"
                         : index() === paletteIndex()
                           ? THEME.accentDim
@@ -3395,15 +3469,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     flexDirection="row"
                     gap={2}
                   >
-                    <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
+                    <text style={{ fg: item.kind === "section" ? THEME.accent : isPalettePendingDelete(item) ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
                       {truncateText(item.label, PALETTE_LABEL_MAX())}
                     </text>
                     <Show when={item.hint && item.kind !== "section"}>
                       <text
-                        style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
+                        style={{ fg: isPalettePendingDelete(item) ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
                         wrapMode="none"
                       >
-                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX())}
+                        {truncateText(isPalettePendingDelete(item) ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX())}
                       </text>
                     </Show>
                   </box>
@@ -3438,6 +3512,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                       ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providerKeys"
                       ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                    : paletteMode() === "queuedMessages"
+                      ? "↑↓ navigate  •  Enter cancel  •  Esc back"
                     : paletteMode() === "codexKeyname"
                       ? "Enter key name  •  Enter save  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}
