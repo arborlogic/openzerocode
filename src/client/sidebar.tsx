@@ -29,6 +29,49 @@ function pluralize(count: number, singular: string, plural = `${singular}s`): st
 
 export type { GitFile }
 
+type FileItem =
+  | { kind: "file"; file: GitFile }
+  | { kind: "folder"; name: string; files: GitFile[]; additions: number; deletions: number; status: GitFile["status"] }
+
+function buildFileItems(files: GitFile[]): FileItem[] {
+  const folderFiles = new Map<string, GitFile[]>()
+  const result: FileItem[] = []
+
+  for (const file of files) {
+    const slashIdx = file.path.indexOf("/")
+    if (slashIdx === -1) {
+      result.push({ kind: "file", file })
+    } else {
+      const folder = file.path.slice(0, slashIdx)
+      if (!folderFiles.has(folder)) {
+        const entry: FileItem & { kind: "folder" } = {
+          kind: "folder",
+          name: folder,
+          files: [],
+          additions: 0,
+          deletions: 0,
+          status: "modified",
+        }
+        folderFiles.set(folder, entry.files)
+        result.push(entry)
+      }
+      folderFiles.get(folder)!.push(file)
+    }
+  }
+
+  // Compute per-folder aggregates
+  for (const item of result) {
+    if (item.kind !== "folder") continue
+    item.additions = item.files.reduce((s, f) => s + f.additions, 0)
+    item.deletions = item.files.reduce((s, f) => s + f.deletions, 0)
+    item.status = item.files.some(f => f.status === "added") ? "added"
+      : item.files.some(f => f.status === "deleted") ? "deleted"
+      : "modified"
+  }
+
+  return result
+}
+
 export function Sidebar(props: {
   messages: () => Message[]
   todos?: () => TodoItem[]
@@ -57,6 +100,18 @@ export function Sidebar(props: {
   const [branch, setBranch] = createSignal<string | null>(null)
   const [commits, setCommits] = createSignal<GitCommit[]>([])
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
+  const [expandedFolders, setExpandedFolders] = createSignal<Set<string>>(new Set())
+
+  const toggleFolder = (name: string) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
+
+  const fileItems = createMemo(() => buildFileItems(gitFiles()))
   let gitRefreshSeq = 0
 
   // Poll session lock status every 3s while sidebar is visible
@@ -293,37 +348,92 @@ export function Sidebar(props: {
                 return truncatePath(parts.join(", "), Math.max(1, props.width - 4))
               })()}
             </text>
-            <For each={gitFiles()}>
-              {(file) => (
-                <box
-                  flexDirection="row"
-                  justifyContent="space-between"
-                  onMouseDown={() => props.onFileClick?.(file)}
-                >
-                  <box flexDirection="row" gap={1} flexShrink={1}>
-                    <Show when={file.status === "added"}>
-                      <text style={{ fg: "#7ee787" }}>+</text>
+            <For each={fileItems()}>
+              {(item) => {
+                if (item.kind === "file") {
+                  const file = item.file
+                  const color = file.status === "added" ? "#7ee787" : file.status === "deleted" ? "#f85149" : props.theme.muted
+                  return (
+                    <box flexDirection="row" justifyContent="space-between" onMouseDown={() => props.onFileClick?.(file)}>
+                      <box flexDirection="row" gap={1} flexShrink={1}>
+                        <Show when={file.status === "added"}>
+                          <text style={{ fg: "#7ee787" }}>+</text>
+                        </Show>
+                        <Show when={file.status === "deleted"}>
+                          <text style={{ fg: "#f85149" }}>-</text>
+                        </Show>
+                        <text style={{ fg: color }} wrapMode="none">
+                          {truncatePath(file.path, props.width - 8)}
+                        </text>
+                      </box>
+                      <box flexDirection="row" flexShrink={0} gap={1}>
+                        <Show when={file.additions > 0}>
+                          <text style={{ fg: "#7ee787" }}>+{file.additions}</text>
+                        </Show>
+                        <Show when={file.deletions > 0}>
+                          <text style={{ fg: "#f85149" }}>-{file.deletions}</text>
+                        </Show>
+                      </box>
+                    </box>
+                  )
+                }
+
+                // Folder item
+                const folderColor = item.status === "added" ? "#7ee787" : item.status === "deleted" ? "#f85149" : props.theme.muted
+                const isExpanded = () => expandedFolders().has(item.name)
+                return (
+                  <box flexDirection="column">
+                    <box flexDirection="row" justifyContent="space-between" onMouseDown={() => toggleFolder(item.name)}>
+                      <box flexDirection="row" gap={1} flexShrink={1}>
+                        <text style={{ fg: folderColor }}>{isExpanded() ? "▼" : "▶"}</text>
+                        <text style={{ fg: folderColor }} wrapMode="none">
+                          {truncatePath(item.name + "/", props.width - 8)}
+                        </text>
+                      </box>
+                      <box flexDirection="row" flexShrink={0} gap={1}>
+                        <Show when={item.additions > 0}>
+                          <text style={{ fg: "#7ee787" }}>+{item.additions}</text>
+                        </Show>
+                        <Show when={item.deletions > 0}>
+                          <text style={{ fg: "#f85149" }}>-{item.deletions}</text>
+                        </Show>
+                      </box>
+                    </box>
+                    <Show when={isExpanded()}>
+                      <For each={item.files}>
+                        {(file) => {
+                          const fileColor = file.status === "added" ? "#7ee787" : file.status === "deleted" ? "#f85149" : props.theme.muted
+                          const displayName = file.path.slice(item.name.length + 1)
+                          return (
+                            <box flexDirection="row" justifyContent="space-between" onMouseDown={() => props.onFileClick?.(file)}>
+                              <box flexDirection="row" gap={1} flexShrink={1}>
+                                <text style={{ fg: props.theme.muted }}>  </text>
+                                <Show when={file.status === "added"}>
+                                  <text style={{ fg: "#7ee787" }}>+</text>
+                                </Show>
+                                <Show when={file.status === "deleted"}>
+                                  <text style={{ fg: "#f85149" }}>-</text>
+                                </Show>
+                                <text style={{ fg: fileColor }} wrapMode="none">
+                                  {truncatePath(displayName, props.width - 10)}
+                                </text>
+                              </box>
+                              <box flexDirection="row" flexShrink={0} gap={1}>
+                                <Show when={file.additions > 0}>
+                                  <text style={{ fg: "#7ee787" }}>+{file.additions}</text>
+                                </Show>
+                                <Show when={file.deletions > 0}>
+                                  <text style={{ fg: "#f85149" }}>-{file.deletions}</text>
+                                </Show>
+                              </box>
+                            </box>
+                          )
+                        }}
+                      </For>
                     </Show>
-                    <Show when={file.status === "deleted"}>
-                      <text style={{ fg: "#f85149" }}>-</text>
-                    </Show>
-                    <text
-                      style={{ fg: file.status === "added" ? "#7ee787" : file.status === "deleted" ? "#f85149" : props.theme.muted }}
-                      wrapMode="none"
-                    >
-                      {truncatePath(file.path, props.width - 8)}
-                    </text>
                   </box>
-                  <box flexDirection="row" flexShrink={0} gap={1}>
-                    <Show when={file.additions > 0}>
-                      <text style={{ fg: "#7ee787" }}>+{file.additions}</text>
-                    </Show>
-                    <Show when={file.deletions > 0}>
-                      <text style={{ fg: "#f85149" }}>-{file.deletions}</text>
-                    </Show>
-                  </box>
-                </box>
-              )}
+                )
+              }}
             </For>
           </box>
         </Show>
