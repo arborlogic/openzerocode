@@ -3,6 +3,7 @@ export interface LocalVlmRequest {
   model?: string;
   prompt: string;
   imageBase64: string;
+  imageFormat?: 'png' | 'jpeg';
   timeoutMs?: number;
 }
 
@@ -123,7 +124,8 @@ export async function analyzeImageWithLocalVlm(request: LocalVlmRequest): Promis
   const endpoint = normalizeEndpoint(request.endpoint ?? getDefaultLocalVlmEndpoint());
   const model = request.model ?? getDefaultLocalVlmModel();
   const timeoutMs = request.timeoutMs ?? Number(env('OPENZEROCODE_VLM_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS);
-  const imageUrl = `data:image/png;base64,${request.imageBase64}`;
+  const mimeType = request.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
+  const imageUrl = `data:${mimeType};base64,${request.imageBase64}`;
 
   const openAiBody = {
     model,

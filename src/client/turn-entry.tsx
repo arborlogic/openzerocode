@@ -8,6 +8,7 @@ export type DisplayTurn = {
   entries: DisplayBlock[]
   footer?: string
   userMsgIndex?: number  // index into messages() so we can edit/truncate
+  peerOrigin?: string    // set when this turn was sent by a peer process
 }
 
 export function TurnEntry(props: {
@@ -27,13 +28,16 @@ export function TurnEntry(props: {
           paddingTop={1}
           paddingBottom={1}
           border={["left"]}
-          borderColor={THEME.user}
+          borderColor={props.turn.peerOrigin ? THEME.peer : THEME.user}
           onMouseDown={() => {
             if (canClick()) {
               props.onUserClick!(props.turn.userMsgIndex!, props.turn.user?.text ?? "")
             }
           }}
         >
+          <Show when={props.turn.peerOrigin}>
+            <text style={{ fg: THEME.peer }}>from: {props.turn.peerOrigin}</text>
+          </Show>
           <box flexDirection="row" gap={1}>
             <text style={{ fg: THEME.text, flexGrow: 1 }}>{props.turn.user?.text ?? ""}</text>
             <Show when={canClick()}>

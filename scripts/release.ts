@@ -184,7 +184,7 @@ async function gitOutput(args: string[]): Promise<string> {
 }
 
 function parsePorcelainPath(line: string): string {
-  const path = line.slice(3)
+  const path = /^.{1,2}\s+(.+)$/.exec(line)?.[1] ?? line.slice(3)
   const renameSeparator = " -> "
   return path.includes(renameSeparator) ? path.slice(path.indexOf(renameSeparator) + renameSeparator.length) : path
 }

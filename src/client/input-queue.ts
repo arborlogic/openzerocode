@@ -1,4 +1,5 @@
 export type QueueItem = {
+  id: number
   text: string
   timestamp: number
 }
@@ -19,6 +20,7 @@ export function createInputQueue(run: RunPromptFn, callbacks?: QueueCallbacks) {
   let draining = false
   let currentAbort: AbortController | undefined
   let drainPromise: Promise<void> | undefined
+  let nextId = 1
 
   // depth = number of items waiting (not including the currently running one)
   const depth = () => Math.max(0, queue.length - (running ? 1 : 0))
@@ -63,11 +65,13 @@ export function createInputQueue(run: RunPromptFn, callbacks?: QueueCallbacks) {
   }
 
   const enqueue = (text: string) => {
-    queue.push({ text, timestamp: Date.now() })
+    const item = { id: nextId++, text, timestamp: Date.now() }
+    queue.push(item)
     notifyDepth()
     if (!draining) {
       drainPromise = drainLoop()
     }
+    return item.id
   }
 
   const abort = () => {
@@ -96,10 +100,23 @@ export function createInputQueue(run: RunPromptFn, callbacks?: QueueCallbacks) {
     return count
   }
 
+  const pendingItems = () => queue.slice(running ? 1 : 0)
+
+  const cancel = (id: number) => {
+    const start = running ? 1 : 0
+    const index = queue.findIndex((item, itemIndex) => itemIndex >= start && item.id === id)
+    if (index < 0) return false
+    queue.splice(index, 1)
+    notifyDepth()
+    return true
+  }
+
   return {
     enqueue,
     abort,
     clear,
+    cancel,
+    pendingItems,
     depth,
     isRunning: () => running,
     isDraining: () => draining,

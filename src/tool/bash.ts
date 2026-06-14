@@ -1,9 +1,11 @@
 import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
-import { spawnSync } from "child_process"
+import { spawn } from "child_process"
 
 const DEFAULT_TIMEOUT_MS = 60_000
 const MIN_TIMEOUT_MS = 1_000
+const MAX_OUTPUT_BYTES = 1024 * 1024
+const TRUNCATED_MESSAGE = `\n\n[output truncated after ${MAX_OUTPUT_BYTES} bytes]`
 
 const Parameters = Schema.Struct({
   command: Schema.String,
@@ -22,6 +24,88 @@ function normalizeTimeout(timeout: number | undefined): number {
   return Math.max(timeout, MIN_TIMEOUT_MS)
 }
 
+type OutputBuffer = { text: string; bytes: number; truncated: boolean }
+
+function appendOutput(buffer: OutputBuffer, chunk: Buffer) {
+  if (buffer.bytes >= MAX_OUTPUT_BYTES) {
+    buffer.truncated = true
+    return
+  }
+  const remaining = MAX_OUTPUT_BYTES - buffer.bytes
+  if (chunk.byteLength <= remaining) {
+    buffer.text += chunk.toString()
+    buffer.bytes += chunk.byteLength
+    return
+  }
+  buffer.text += chunk.subarray(0, remaining).toString()
+  buffer.bytes = MAX_OUTPUT_BYTES
+  buffer.truncated = true
+}
+
+function bufferedText(buffer: OutputBuffer): string {
+  return buffer.text + (buffer.truncated ? TRUNCATED_MESSAGE : "")
+}
+
+function killProcessTree(proc: ReturnType<typeof spawn>) {
+  if (proc.pid && process.platform !== "win32") {
+    try {
+      process.kill(-proc.pid)
+      return
+    } catch {
+      // Fall back to killing the direct child below.
+    }
+  }
+  proc.kill()
+}
+
+function runCommand(
+  command: string,
+  timeoutMs: number,
+  cwd: string,
+  abort: AbortSignal,
+): Promise<{ stdout: string; stderr: string; code: number | null; error?: Error }> {
+  return new Promise((resolve) => {
+    if (abort.aborted) {
+      resolve({ stdout: "", stderr: "", code: null, error: new Error("Command aborted") })
+      return
+    }
+
+    const proc = spawn("sh", ["-c", command], { cwd, detached: process.platform !== "win32" })
+    const stdout: OutputBuffer = { text: "", bytes: 0, truncated: false }
+    const stderr: OutputBuffer = { text: "", bytes: 0, truncated: false }
+    let settled = false
+
+    const settle = (result: { stdout: string; stderr: string; code: number | null; error?: Error }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      abort.removeEventListener("abort", onAbort)
+      resolve(result)
+    }
+
+    proc.stdout.on("data", (chunk: Buffer) => {
+      appendOutput(stdout, chunk)
+    })
+    proc.stderr.on("data", (chunk: Buffer) => {
+      appendOutput(stderr, chunk)
+    })
+
+    const timer = setTimeout(() => {
+      killProcessTree(proc)
+      settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code: null, error: new Error(`Command timed out after ${timeoutMs}ms`) })
+    }, timeoutMs)
+
+    const onAbort = () => {
+      killProcessTree(proc)
+      settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code: null, error: new Error("Command aborted") })
+    }
+    abort.addEventListener("abort", onAbort, { once: true })
+
+    proc.on("close", (code) => settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code }))
+    proc.on("error", (err) => settle({ stdout: bufferedText(stdout).trim(), stderr: bufferedText(stderr).trim(), code: null, error: err }))
+  })
+}
+
 export const BashTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
@@ -32,26 +116,21 @@ export const BashTool = Effect.gen(function* () {
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
         yield* ctx.ask({ permission: "bash", patterns: [args.command] })
-        const result = spawnSync("sh", ["-c", args.command], {
-          encoding: "utf-8",
-          timeout: normalizeTimeout(args.timeout),
-          maxBuffer: 10 * 1024 * 1024,
-          cwd: ctx.cwd,
-        })
-        const stdout = result.stdout?.trim() ?? ""
-        const stderr = result.stderr?.trim() ?? ""
+        const { stdout, stderr, code, error } = yield* Effect.promise(() =>
+          runCommand(args.command, normalizeTimeout(args.timeout), ctx.cwd, ctx.abort),
+        )
 
-        if (result.error) {
+        if (error) {
           const partialOutput = [stdout, stderr].filter(Boolean).join("\n")
-          const message = [result.error.message || "command failed", partialOutput].filter(Boolean).join("\n")
+          const message = [error.message || "command failed", partialOutput].filter(Boolean).join("\n")
           return new Result({
             title: `Bash error: ${args.command}`,
             output: message,
           })
         }
 
-        if (result.status !== 0 && result.status !== null) {
-          const message = stderr || stdout || `exit code ${result.status}`
+        if (code !== 0 && code !== null) {
+          const message = stderr || stdout || `exit code ${code}`
           return new Result({
             title: `Bash error: ${args.command}`,
             output: message,

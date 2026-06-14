@@ -32,6 +32,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     createNewSession: mock(() => {}),
     currentSessionId: mock(() => "ses_test123"),
     openSessionList: mock(() => {}),
+    openQueuedMessages: mock(() => {}),
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
@@ -59,6 +60,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("memory"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
+    assert.ok(names.includes("queue"))
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
@@ -237,6 +239,22 @@ describe("executeCommand", () => {
       const result = await executeCommand("/s", ctx)
       assert.ok(result)
       assert.ok((ctx.openSessionList as any).mock.calls.length > 0)
+    })
+  })
+
+  describe("/queue", () => {
+    it("opens queued messages viewer", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/queue", ctx)
+      assert.ok(result)
+      assert.ok((ctx.openQueuedMessages as any).mock.calls.length > 0)
+    })
+
+    it("handles /queued alias", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/queued", ctx)
+      assert.ok(result)
+      assert.ok((ctx.openQueuedMessages as any).mock.calls.length > 0)
     })
   })
 

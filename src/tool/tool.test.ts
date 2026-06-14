@@ -50,7 +50,7 @@ describe("tool", () => {
       bash.execute({ command: "printf 'before timeout\\n'; sleep 2; printf 'after timeout\\n'", timeout: 1000 }, testCtx()),
     )
     assert.ok(result.title.startsWith("Bash error:"))
-    assert.ok(result.output.includes("ETIMEDOUT"))
+    assert.ok(result.output.toLowerCase().includes("timed out") || result.output.includes("ETIMEDOUT"))
     assert.ok(result.output.includes("before timeout"))
     assert.ok(!result.output.includes("after timeout"))
   })

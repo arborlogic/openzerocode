@@ -10,6 +10,7 @@ export const THEME = {
   accent: "#58a6ff",
   accentDim: "#1f6feb",
   user: "#7ee787",
+  peer: "#f0883e",
   tool: "#d2a8ff",
   error: "#f85149",
   warning: "#d29922",

@@ -38,7 +38,15 @@ export function sanitizeMessages(messages: Message[]): Message[] {
       continue
     }
 
-    if (msg) out.push(msg)
+    if (msg) {
+      // Strip display-only fields before sending to the API
+      if (msg.origin !== undefined) {
+        const { origin: _, ...clean } = msg
+        out.push(clean)
+      } else {
+        out.push(msg)
+      }
+    }
     i++
   }
 

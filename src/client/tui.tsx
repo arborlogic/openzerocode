@@ -1,10 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { ScrollBoxRenderable, TextareaRenderable, KeyBinding, PasteEvent } from "@opentui/core"
+import type { ScrollBoxRenderable, TextareaRenderable, PasteEvent } from "@opentui/core"
 import { Effect, Layer } from "effect"
-import { spawn, execFile } from "node:child_process"
-import { platform } from "os"
-import { promisify } from "node:util"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
@@ -12,7 +9,7 @@ import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest } from "../tool/types"
 import { createStreamState } from "./stream-state"
-import { runSession, streamSession, type RunMode, type StreamOptions } from "./session-runner"
+import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
@@ -40,15 +37,22 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
-import { testConnection, isConnected, isEnabled, setEnabled, readPage } from "../browser/geass-client"
-import { resolveSkillsDir, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
-import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
+import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
-import { createInputQueue } from "./input-queue"
+import { createInputQueue, type QueueItem } from "./input-queue"
 import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
 import { writeCompactTranscriptExport } from "./session-export"
+import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
+import { startPeerServer } from "../peer/server"
+import { setPeerContext } from "../peer/context"
+import { handleCli } from "./cli"
+import { encodePeerInput, decodePeerInput } from "./peer-input"
+import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, SIDEBAR_WIDTH } from "./tui-constants"
+import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
+import { messageToBlocks } from "./message-blocks"
+import { getFileDiff } from "./git-diff"
 import pkg from "../../package.json" with { type: "json" }
 
 // Version — injected at build time via scripts/build.ts; falls back to package.json in dev mode
@@ -56,243 +60,40 @@ const VERSION: string =
   (typeof process !== "undefined" && (process.env as Record<string, string>)["__OPENZEROCODE_VERSION__"]) ||
   pkg.version
 
-// Handle CLI flags before anything else
+// Handle CLI flags before booting the TUI.
 const args = process.argv.slice(2)
-if (args.includes("--version") || args.includes("-v")) {
-  console.log(`openzerocode v${VERSION}`)
-  process.exit(0)
-}
-if (args.includes("--help") || args.includes("-h")) {
-  console.log(`openzerocode v${VERSION}`)
-  console.log()
-  console.log("Usage: openzerocode [options] [prompt...]")
-  console.log("       openzerocode serve [--port PORT] [--host HOST]")
-  console.log()
-  console.log("Options:")
-  console.log("  -v, --version            Show version number")
-  console.log("  -h, --help               Show this help message")
-  console.log("  -r, --run PROMPT         Run a single prompt headlessly (no TUI, auto-approve tools)")
-  console.log()
-  console.log("Commands:")
-  console.log("  serve                    Start an HTTP server exposing the streaming session API")
-  console.log("    --port PORT            Port to listen on (default: 4096)")
-  console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
-  console.log()
-  console.log("Examples:")
-  console.log("  openzerocode                          Launch TUI")
-  console.log("  openzerocode --run 'reply a Threads post'  Headless agent run, stdout = result")
-  console.log()
-  console.log("If a prompt is provided as arguments, it runs in non-interactive mode.")
-  console.log("Otherwise, the terminal UI is launched.")
-  process.exit(0)
-}
+await handleCli(args, VERSION)
 
-if (args[0] === "serve") {
-  const flagValue = (name: string, fallback: string): string => {
-    const eq = args.find((a) => a.startsWith(`${name}=`))
-    if (eq) return eq.slice(name.length + 1)
-    const idx = args.indexOf(name)
-    if (idx >= 0 && args[idx + 1]) return args[idx + 1]!
-    return fallback
-  }
-  const port = Number.parseInt(flagValue("--port", "4096"), 10)
-  const host = flagValue("--host", "127.0.0.1")
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
-    console.error(`Invalid port: ${flagValue("--port", "4096")}`)
-    process.exit(1)
-  }
-  const { startServer } = await import("../server/index")
-  await startServer({ port, host })
-  // Bun.serve() keeps the event loop alive but returns immediately. Block here
-  // so the rest of this module (which boots the TUI) never executes.
-  await new Promise<never>(() => {})
-}
+// ─── Peer mode ──────────────────────────────────────────────────────────────
+// Module-level state shared between peer server (started before render) and
+// the SolidJS component (which wires up the enqueue callback after mount).
+let activePeerName: string | undefined
+let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number) => void) | undefined
+const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number }> = []
 
-// --run "prompt" — headless agent mode (no TUI, auto-approve all tools)
 {
-  const runFlagIdx = args.findIndex((a) => a === "--run" || a === "-r")
-  const headlessPrompt = runFlagIdx >= 0 && args[runFlagIdx + 1] ? args[runFlagIdx + 1] : undefined
-  if (headlessPrompt !== undefined) {
-    const provider = autoDetectProvider() ?? "opencode-zen"
-    const model = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider))
-    const layer = Layer.merge(buildLayer(provider, model), toolLayer)
-    const agentsInstruction = loadAgentsInstruction(process.cwd())
-    const contextInstruction = loadContextInstruction(process.cwd())
-
-    setEnabled(true)
-    await testConnection()
-
-    // ① LOAD — match current page URL to a skill, inject SKILL.md (+ LEARNINGS.md)
-    let activeSkill: LoadedSkill | undefined
-    if (isConnected()) {
-      const skillsDir = resolveSkillsDir(process.cwd())
-      if (skillsDir) {
-        try {
-          const page = await readPage()
-          if (page?.url) {
-            activeSkill = matchSkillByUrl(page.url, skillsDir)
-            if (activeSkill) {
-              process.stderr.write(`[skill: ${activeSkill.name}] matched by ${activeSkill.matchedBy}\n`)
-            }
-          }
-        } catch {
-          // page read failed — proceed without a skill
-        }
-      }
+  const nameIdx = args.indexOf("--name")
+  const nameArg = nameIdx >= 0 && args[nameIdx + 1] ? args[nameIdx + 1] : undefined
+  if (nameArg) {
+    // Generate token first so we can start the server before writing the registry.
+    // The port is only known after the server starts, so registration happens after.
+    const { generateToken } = await import("../peer/registry")
+    const token = generateToken()
+    const server = await startPeerServer(token, (text, from, hop) => {
+      if (_peerEnqueueFn) _peerEnqueueFn(text, from, hop)
+      else pendingPeerInputs.push({ text, fromPeer: from, hop })
+    })
+    const result = registerPeer(nameArg, server.port, process.cwd(), token)
+    if (!result.ok) {
+      console.error(`openzerocode: ${result.error}`)
+      server.stop()
+      process.exit(1)
     }
-    const skillSection = activeSkill ? buildSkillSection(activeSkill) : undefined
+    activePeerName = nameArg
 
-    const runSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
-      Effect.runPromise(effect.pipe(Effect.provide(layer))) as Promise<A>
-
-    const runtime = {
-      runSync,
-      systemPrompt: (mode: RunMode) => {
-        const base = buildSystemPrompt(mode, agentsInstruction, contextInstruction)
-        return skillSection ? `${base}\n\n${skillSection}` : base
-      },
-      parseJson: (raw: string) => tryParseJSON(raw),
-      ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
-    }
-
-    const options: StreamOptions = {
-      abort: new AbortController().signal,
-      model,
-      mode: "build" as RunMode,
-      provider,
-      keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
-    }
-
-    let finalContent = ""
-    let runOutcome: RunOutcome = "success"
-    let runError: string | undefined
-    const runTools: RunToolEvent[] = []
-    const runToolIndex = new Map<string, RunToolEvent>()
-    const runStart = new Date()
-
-    const gen = streamSession(headlessPrompt, [], options, runtime)
-    for await (const chunk of gen) {
-      switch (chunk.type) {
-        case "text":
-          process.stdout.write(chunk.content)
-          finalContent += chunk.content
-          break
-        case "tool_start": {
-          process.stderr.write(`\n[tool: ${chunk.name}] ${chunk.input.slice(0, 120)}\n`)
-          const ev: RunToolEvent = { name: chunk.name, input: chunk.input }
-          runTools.push(ev)
-          runToolIndex.set(chunk.name + ":" + (runTools.length - 1), ev)
-          break
-        }
-        case "tool_result": {
-          process.stderr.write(`[done: ${chunk.name}] ${chunk.output.slice(0, 120)}\n`)
-          // Attach output to the most recent tool event with this name
-          for (let i = runTools.length - 1; i >= 0; i--) {
-            if (runTools[i].name === chunk.name && runTools[i].output === undefined) {
-              runTools[i].output = chunk.output
-              if (chunk.error) runTools[i].error = true
-              break
-            }
-          }
-          break
-        }
-        case "status":
-          process.stderr.write(`\r${chunk.text.padEnd(40)}\r`)
-          break
-        case "error":
-          process.stderr.write(`\nError: ${chunk.message}\n`)
-          runOutcome = "fail"
-          runError = chunk.message
-          break
-      }
-    }
-
-    // ③ CAPTURE — write run trajectory to skills/<skill>/runs/
-    let runRecordPath: string | undefined
-    if (activeSkill) {
-      runRecordPath = writeRunRecord({
-        skillName: activeSkill.name,
-        skillDir: activeSkill.dir,
-        prompt: headlessPrompt,
-        matchedBy: activeSkill.matchedBy,
-        pageUrl: (isConnected() ? await readPage().catch(() => undefined) : undefined)?.url,
-        model,
-        provider,
-        tools: runTools,
-        finalText: finalContent,
-        outcome: runOutcome,
-        errorMessage: runError,
-        startedAt: runStart,
-        endedAt: new Date(),
-      })
-      process.stderr.write(`\n[capture] ${runRecordPath}\n`)
-    }
-
-    // ④⑤ REFLECT — on failure, run a second headless pass to append learnings
-    const skipReflect = process.env.OPENZERO_NO_REFLECT === "1"
-    if (runOutcome === "fail" && activeSkill && runRecordPath && !skipReflect) {
-      process.stderr.write(`\n[reflect] starting reflection for skill: ${activeSkill.name}\n`)
-      const reflectModel = normalizeBigPickleModel(
-        process.env.OPENZERO_REFLECT_MODEL ?? process.env.OPENZERO_MODEL ?? defaultModelForProvider(provider),
-      )
-      const reflectLayer = Layer.merge(buildLayer(provider, reflectModel), toolLayer)
-      const reflectRunSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
-        Effect.runPromise(effect.pipe(Effect.provide(reflectLayer))) as Promise<A>
-      const reflectRuntime = {
-        runSync: reflectRunSync,
-        systemPrompt: (mode: RunMode) => buildSystemPrompt(mode, agentsInstruction, contextInstruction),
-        parseJson: (raw: string) => tryParseJSON(raw),
-        ask: (_req: Omit<PermissionRequest, "id">) => Promise.resolve(),
-      }
-      const reflectOptions: StreamOptions = {
-        abort: new AbortController().signal,
-        model: reflectModel,
-        mode: "build" as RunMode,
-        provider,
-        keyName: getActiveConfiguredProviderKeyName(provider) ?? "anonymous",
-      }
-      const reflectPrompt = [
-        `You are reflecting on a failed agent run for the skill: ${activeSkill.name}.`,
-        ``,
-        `Files to read (use the read_file tool):`,
-        `1. SKILL.md (golden path): ${activeSkill.skillPath}`,
-        `2. Run record (trajectory): ${runRecordPath}`,
-        activeSkill.learnings ? `3. Existing LEARNINGS.md: ${activeSkill.dir}/LEARNINGS.md` : null,
-        ``,
-        `Your job:`,
-        `- Identify what failed: which step, which selector, which assumption was wrong.`,
-        `- If this is a KNOWLEDGE issue (wrong selector, wrong flow, wrong assumption):`,
-        `  Append a new learning entry to ${activeSkill.dir}/LEARNINGS.md using the format:`,
-        `  ## <date> <short description>`,
-        `  - Observed: <what happened>`,
-        `  - Fix/Alternative: <what to try instead>`,
-        `  - Confidence: low | medium | high`,
-        `  Create the file if it does not exist.`,
-        `- If this is a SCRIPT issue (bug in a .py or .js file):`,
-        `  Write a unified diff to ${activeSkill.dir}/runs/${new Date().toISOString().replace(/[:.]/g, "-")}-reflect.patch`,
-        `  Do NOT modify scripts directly.`,
-        `- Do NOT modify SKILL.md.`,
-        `- Do NOT make more than one file write.`,
-        `- Reply with a one-paragraph summary of what you found and what you wrote.`,
-      ]
-        .filter((l) => l !== null)
-        .join("\n")
-
-      const reflectGen = streamSession(reflectPrompt, [], reflectOptions, reflectRuntime)
-      for await (const chunk of reflectGen) {
-        if (chunk.type === "text") process.stderr.write(chunk.content)
-        else if (chunk.type === "tool_start")
-          process.stderr.write(`\n[reflect tool: ${chunk.name}] ${chunk.input.slice(0, 80)}\n`)
-        else if (chunk.type === "tool_result")
-          process.stderr.write(`[reflect done: ${chunk.name}]\n`)
-        else if (chunk.type === "error")
-          process.stderr.write(`\n[reflect error] ${chunk.message}\n`)
-      }
-      process.stderr.write("\n[reflect] done\n")
-    }
-
-    process.stdout.write("\n")
-    process.exit(runOutcome === "success" ? 0 : 1)
+    process.on("exit", () => { unregisterPeer(nameArg) })
+    process.on("SIGINT", () => { unregisterPeer(nameArg); process.exit(0) })
+    process.on("SIGTERM", () => { unregisterPeer(nameArg); process.exit(0) })
   }
 }
 
@@ -302,17 +103,6 @@ let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
-
-const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
-const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
-
-const PROMPT_KEY_BINDINGS: KeyBinding[] = [
-  { name: "return", action: "submit" },
-  { name: "return", shift: true, action: "newline" },
-  { name: "return", ctrl: true, action: "newline" },
-  { name: "return", meta: true, action: "newline" },
-  { name: "j", ctrl: true, action: "newline" },
-]
 
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
@@ -332,89 +122,6 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
   return Effect.runPromise(effect.pipe(Effect.provide(currentLayer)))
 }
 
-const execFileAsync = promisify(execFile)
-
-/** Run git command and return trimmed stdout, or empty string on failure. */
-async function runGit(args: string[], timeout = 1000): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync("git", args, {
-      encoding: "utf-8",
-      timeout,
-      maxBuffer: 1024 * 1024,
-    })
-    return stdout.trim()
-  } catch {
-    return ""
-  }
-}
-
-/** Check for modified/new/deleted files in the working tree vs HEAD. */
-async function getGitFileChanges(): Promise<{ modified: string[]; added: string[]; deleted: string[] }> {
-  const out = await runGit(["diff", "--name-status", "HEAD"], 2000)
-  if (!out) return { modified: [], added: [], deleted: [] }
-  const modified: string[] = []
-  const added: string[] = []
-  const deleted: string[] = []
-  for (const line of out.split("\n")) {
-    const status = line[0]
-    const path = line.slice(1).trim()
-    if (!path) continue
-    if (status === "M") modified.push(path)
-    else if (status === "A") added.push(path)
-    else if (status === "D") deleted.push(path)
-  }
-  return { modified, added, deleted }
-}
-
-async function copyToClipboard(text: string) {
-  if (!text) return
-  if (process.stdout.isTTY) {
-    const base64 = Buffer.from(text).toString("base64")
-    process.stdout.write(`\x1b]52;c;${base64}\x07`)
-  }
-
-  const command = platform() === "darwin"
-    ? ["pbcopy"]
-    : platform() === "win32"
-      ? ["clip"]
-      : ["xclip", "-selection", "clipboard"]
-
-  await new Promise<void>((resolve) => {
-    const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "ignore", "ignore"] })
-    child.on("error", () => resolve())
-    child.on("close", () => resolve())
-    child.stdin?.write(text)
-    child.stdin?.end()
-  })
-}
-
-async function readClipboard(): Promise<string> {
-  const command = platform() === "darwin"
-    ? ["pbpaste"]
-    : platform() === "win32"
-      ? ["powershell.exe", "-NoProfile", "-Command", "Get-Clipboard"]
-      : ["xclip", "-selection", "clipboard", "-o"]
-
-  return new Promise((resolve) => {
-    const child = spawn(command[0]!, command.slice(1), { stdio: ["ignore", "pipe", "ignore"] })
-    let output = ""
-    child.stdout?.on("data", (chunk) => { output += String(chunk) })
-    child.on("error", () => resolve(""))
-    child.on("close", () => resolve(output))
-  })
-}
-
-function openExternalUrl(url: string) {
-  const command = platform() === "darwin"
-    ? ["open", url]
-    : platform() === "win32"
-      ? ["cmd", "/c", "start", "", url]
-      : ["xdg-open", url]
-  const child = spawn(command[0]!, command.slice(1), { stdio: "ignore", detached: true })
-  child.on("error", () => {})
-  child.unref()
-}
-
 function systemPrompt(mode: RunMode) {
   return buildSystemPrompt(mode, agentsInstruction, contextInstruction)
 }
@@ -422,44 +129,6 @@ function systemPrompt(mode: RunMode) {
 function refreshAgentsInstruction() {
   agentsInstruction = loadAgentsInstruction(process.cwd())
 }
-
-function messageToBlocks(msg: Message): DisplayBlock[] {
-  if (msg.parts && msg.parts.length > 0) {
-    return msg.parts.map((part): DisplayBlock => {
-        switch (part.type) {
-          case "text":
-            return { kind: "assistant", text: part.text }
-          case "reasoning":
-            return { kind: "reasoning", text: part.text, title: "Thinking" }
-          case "tool-call":
-            return { kind: "tool-call", text: part.input, title: part.tool }
-          case "tool-result":
-            return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool }
-          default:
-            return { kind: "system", text: "" }
-        }
-      })
-  }
-
-  switch (msg.role) {
-    case "assistant": {
-      const result: DisplayBlock[] = []
-      if (msg.reasoning_content) result.push({ kind: "reasoning", text: msg.reasoning_content, title: "Thinking" })
-      if (msg.content) result.push({ kind: "assistant", text: msg.content })
-      return result
-    }
-    case "user":
-      return msg.content ? [{ kind: "user", text: msg.content }] : []
-    case "tool":
-      return msg.content ? [{ kind: "tool", text: msg.content, title: msg.tool_call_id }] : []
-    case "system":
-      return msg.content ? [{ kind: "system", text: msg.content }] : []
-    default:
-      return []
-  }
-}
-
-const SIDEBAR_WIDTH = 34
 
 function App() {
   const dimensions = useTerminalDimensions()
@@ -505,6 +174,7 @@ function App() {
   const [running, setRunning] = createSignal(false)
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
+  const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
   const [mode, setMode] = createSignal<RunMode>(initialMode)
   const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
@@ -518,7 +188,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -622,35 +292,7 @@ function App() {
     }
   })
   async function handleFileDiffRequest(file: GitFile) {
-    let raw = ""
-    try {
-      const { stdout } = await execFileAsync("git", ["diff", "HEAD", "--", file.path], {
-        encoding: "utf-8",
-        timeout: 5000,
-        maxBuffer: 8 * 1024 * 1024,
-      })
-      raw = stdout
-    } catch {
-      raw = ""
-    }
-    // Untracked / new file: `git diff HEAD` is empty. Fall back to
-    // `git diff --no-index /dev/null <file>` which produces a full-file
-    // addition diff. That command exits with code 1 when there are
-    // differences, so capture stdout from the error path as well.
-    if (!raw) {
-      try {
-        const { stdout } = await execFileAsync("git", ["diff", "--no-index", "--", "/dev/null", file.path], {
-          encoding: "utf-8",
-          timeout: 5000,
-          maxBuffer: 8 * 1024 * 1024,
-        })
-        raw = stdout
-      } catch (err) {
-        const stdout = (err as { stdout?: string })?.stdout
-        if (typeof stdout === "string") raw = stdout
-      }
-    }
-    const normalized = normalizeDiffHunkCounts(raw)
+    const normalized = await getFileDiff(file.path)
     setDiffOverlay({ file: file.path, content: normalized || "(no diff available)" })
   }
 
@@ -672,6 +314,7 @@ function App() {
     {
       onDepthChange: (depth) => {
         setQueuedInputs(depth)
+        setQueuedInputItems(inputQueue.pendingItems())
       },
       onDrainEnd: () => {
         scheduleAutoLoop()
@@ -679,6 +322,26 @@ function App() {
       },
     },
   )
+
+  const openQueuedMessagesPalette = () => {
+    setShowPalette(true)
+    setPalettePendingDelete(null)
+    setPaletteInput("")
+    setQueuedInputItems(inputQueue.pendingItems())
+    setPaletteMode("queuedMessages")
+    setPaletteIndex(0)
+  }
+
+  // Wire peer enqueue now that inputQueue is ready, flushing any prompts
+  // received during startup before the Solid component mounted.
+  if (activePeerName) {
+    _peerEnqueueFn = (text, fromPeer, hop) => {
+      inputQueue.enqueue(encodePeerInput(fromPeer, hop, text))
+    }
+    for (const pending of pendingPeerInputs.splice(0)) {
+      _peerEnqueueFn(pending.text, pending.fromPeer, pending.hop)
+    }
+  }
 
   function clearAutoLoopTimer(options?: { clearWindow?: boolean }) {
     if (autoLoopTimer) clearTimeout(autoLoopTimer)
@@ -871,7 +534,12 @@ function App() {
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
-  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string; directoryPath?: string }
+  type PaletteItem = { label: string; hint?: string; onSelect: () => void; kind?: "item" | "section"; sessionId?: string; directoryPath?: string; queueItemId?: number }
+  const paletteDeleteKey = (item: PaletteItem) => item.sessionId ?? null
+  const isPalettePendingDelete = (item: PaletteItem) => {
+    const key = paletteDeleteKey(item)
+    return key !== null && palettePendingDelete() === key
+  }
 
   const isSelectablePaletteItem = (item: PaletteItem | undefined) => item?.kind !== "section"
 
@@ -1300,6 +968,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("timeline");
           setPaletteIndex(0);
         },
+      },
+      {
+        label: "Queued messages",
+        hint: queuedInputs() > 0 ? `${queuedInputs()} waiting` : "none",
+        onSelect: openQueuedMessagesPalette,
       },
       {
         label: "USAGE",
@@ -1871,6 +1544,45 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     ]
   })
 
+  const queuedMessagePaletteItems = createMemo<PaletteItem[]>(() => {
+    const items: PaletteItem[] = []
+    const queued = queuedInputItems()
+
+    if (queued.length === 0) {
+      items.push({ label: "No queued messages", kind: "section", onSelect: () => {} })
+    } else {
+      items.push({ label: `${queued.length} message${queued.length === 1 ? "" : "s"} waiting`, kind: "section", onSelect: () => {} })
+      for (const item of queued) {
+        const preview = truncateText(item.text.replace(/\s+/g, " ").trim(), PALETTE_LABEL_MAX())
+        items.push({
+          label: preview || "(empty message)",
+          hint: "Enter cancel",
+          queueItemId: item.id,
+          onSelect: () => {
+            const ok = inputQueue.cancel(item.id)
+            setStatus(ok ? `cancelled queued message (${inputQueue.depth()} queued)` : "queued message already started")
+            setQueuedInputItems(inputQueue.pendingItems())
+            if (inputQueue.depth() === 0) setShowPalette(false)
+          },
+        })
+      }
+      items.push({ label: "", kind: "section", onSelect: () => {} })
+      items.push({
+        label: "Cancel all queued messages",
+        hint: `Enter (${queued.length})`,
+        queueItemId: -1,
+        onSelect: () => {
+          const count = inputQueue.clear()
+          setStatus(count > 0 ? `cancelled ${count} queued message${count === 1 ? "" : "s"}` : "no queued messages")
+          setQueuedInputItems(inputQueue.pendingItems())
+          setShowPalette(false)
+        },
+      })
+    }
+
+    return items
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "maxSteps"
       ? [
@@ -1894,6 +1606,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             ? providerKeyPaletteItems()
           : paletteMode() === "timeline"
             ? timelinePaletteItems()
+          : paletteMode() === "queuedMessages"
+            ? queuedMessagePaletteItems()
           : paletteMode() === "display"
             ? displayPaletteItems()
           : paletteMode() === "experiments"
@@ -1907,7 +1621,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const items = paletteItems()
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    // queuedMessages is intentionally unfiltered; the queue is small and simpler without search input
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -2000,6 +1715,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           user: { kind: "user", text: msg.content },
           entries: [],
           userMsgIndex: msgIdx,
+          peerOrigin: msg.origin?.peer,
         })
         continue
       }
@@ -2373,7 +2089,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
   }
 
-  const runQueuedPrompt = async (input: string, abortSignal: AbortSignal) => {
+  const runQueuedPrompt = async (rawInput: string, abortSignal: AbortSignal) => {
+    const { text: input, peerOrigin, peerHop } = decodePeerInput(rawInput)
+    // Update peer context so call_peer tool knows our name and current hop depth
+    setPeerContext(activePeerName, peerHop ?? 0)
+
     history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
     historyIndex = -1
     historyDraft = ""
@@ -2430,6 +2150,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     try {
       const next = await runSession(input, sanitizeMessages(messages()), {
         abort: runAbort.signal,
+        origin: peerOrigin ? { peer: peerOrigin } : undefined,
         streamReasoningChunk: (text) => { clearNoticesOnce(); streamState.streamReasoningChunk(text) },
         streamAssistantChunk: (text) => { clearNoticesOnce(); streamState.streamAssistantChunk(text) },
         streamToolCallChunk: (index, input) => { clearNoticesOnce(); streamState.streamToolCallChunk(index, input) },
@@ -2469,7 +2190,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       }, {
         runSync,
-        systemPrompt,
+        systemPrompt: peerOrigin
+          ? (mode: RunMode) =>
+              systemPrompt(mode) +
+              `\n\n[Peer Request]\nThis task was sent by peer process "${peerOrigin}". ` +
+              `After completing the task, use the call_peer tool to send a concise summary of what you did and any relevant results back to "${peerOrigin}". ` +
+              `If the task cannot be completed or requires clarification, call_peer back with that information instead.`
+          : systemPrompt,
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
@@ -2631,6 +2358,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteIndex(0)
           setSessionScope("cwd")
         },
+        openQueuedMessages: openQueuedMessagesPalette,
         openHelp: () => {
           setShowPalette(true)
           setPaletteMode("help")
@@ -2647,6 +2375,33 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         getAutoLoopInterval: autoLoopWindowMs,
         getAutoLoopConfirm: autoLoopConfirm,
         setAutoLoop: configureAutoLoop,
+        peerName: activePeerName,
+        listPeers: activePeerName ? listLivePeers : undefined,
+        callPeer: activePeerName
+          ? async (name: string, prompt: string) => {
+            const peer = findPeer(name)
+            if (!peer) return { ok: false, error: `No peer named "${name}" is online` }
+            const realWorkdir = canonicalWorkdir(process.cwd())
+            if (canonicalWorkdir(peer.workdir) === realWorkdir) return { ok: false, error: "Cannot call a peer with the same working directory" }
+            try {
+              const res = await fetch(`http://127.0.0.1:${peer.port}/prompt`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-peer-token": peer.token,
+                },
+                body: JSON.stringify({ text: prompt, from: activePeerName, hop: 1 }),
+              })
+              if (!res.ok) {
+                const body = await res.json().catch(() => ({})) as { error?: string }
+                return { ok: false, error: body.error ?? `HTTP ${res.status}` }
+              }
+              return { ok: true }
+            } catch (err) {
+              return { ok: false, error: err instanceof Error ? err.message : String(err) }
+            }
+          }
+          : undefined,
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -2829,29 +2584,31 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       return
     }
     if (showPalette()) {
-      // Text input for ALL palette modes (rename=text entry, models=filter, others=filter)
-      if ((event.ctrl || event.meta) && event.name === "v") {
-        void readClipboard().then((text) => {
-          if (!text) return
-          setPaletteInput((prev) => prev + text.trim())
-        })
-        event.preventDefault()
-        return
-      }
-      if (event.name === "backspace") {
-        setPaletteInput(prev => prev.slice(0, -1))
-        event.preventDefault()
-        return
-      }
-      if (event.name === "space") {
-        setPaletteInput(prev => prev + " ")
-        event.preventDefault()
-        return
-      }
-      if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
-        setPaletteInput(prev => prev + event.name)
-        event.preventDefault()
-        return
+      // Text input for palette modes that accept entry/filter text.
+      if (paletteMode() !== "queuedMessages") {
+        if ((event.ctrl || event.meta) && event.name === "v") {
+          void readClipboard().then((text) => {
+            if (!text) return
+            setPaletteInput((prev) => prev + text.trim())
+          })
+          event.preventDefault()
+          return
+        }
+        if (event.name === "backspace") {
+          setPaletteInput(prev => prev.slice(0, -1))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "space") {
+          setPaletteInput(prev => prev + " ")
+          event.preventDefault()
+          return
+        }
+        if (event.name && event.name.length === 1 && !event.ctrl && !event.meta) {
+          setPaletteInput(prev => prev + event.name)
+          event.preventDefault()
+          return
+        }
       }
       if (paletteMode() === "rename") {
         if (event.name === "escape") {
@@ -3129,6 +2886,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "timeline") {
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+        } else if (paletteMode() === "queuedMessages") {
+          setPalettePendingDelete(null)
           setPaletteMode("actions")
           setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
         } else if (paletteMode() === "userMessageActions") {
@@ -3652,6 +3413,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Base URL · ${paletteProviderKeyTarget()}`
                         : paletteMode() === "timeline"
                           ? "Timeline"
+                        : paletteMode() === "queuedMessages"
+                          ? "Queued Messages"
                           : paletteMode() === "userMessageActions"
                             ? "Message Actions"
                       : "Command Palette"}
@@ -3662,22 +3425,24 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             >  Esc / ✕</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
-                <text style={{ fg: THEME.muted }}>
-                  {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
-                </text>
-                <box
-                  backgroundColor={THEME.background}
-                  border={["left", "right"]}
-                  borderColor={THEME.border}
-                  paddingLeft={1}
-                  paddingRight={1}
-                  flexDirection="row"
-                >
-                  <text style={{ fg: THEME.text }}>{paletteInput()}</text>
-                  <text style={{ fg: THEME.accent }}>▌</text>
+            <Show when={paletteMode() !== "queuedMessages"}>
+              <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
+                  <text style={{ fg: THEME.muted }}>
+                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                  </text>
+                  <box
+                    backgroundColor={THEME.background}
+                    border={["left", "right"]}
+                    borderColor={THEME.border}
+                    paddingLeft={1}
+                    paddingRight={1}
+                    flexDirection="row"
+                  >
+                    <text style={{ fg: THEME.text }}>{paletteInput()}</text>
+                    <text style={{ fg: THEME.accent }}>▌</text>
+                  </box>
                 </box>
-              </box>
+            </Show>
             <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
@@ -3687,7 +3452,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     paddingTop={0}
                     paddingBottom={0}
                     backgroundColor={item.kind !== "section"
-                      ? item.sessionId && palettePendingDelete() === item.sessionId
+                      ? isPalettePendingDelete(item)
                         ? "#3d1717"
                         : index() === paletteIndex()
                           ? THEME.accentDim
@@ -3704,15 +3469,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     flexDirection="row"
                     gap={2}
                   >
-                    <text style={{ fg: item.kind === "section" ? THEME.accent : item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
+                    <text style={{ fg: item.kind === "section" ? THEME.accent : isPalettePendingDelete(item) ? "#ffb3b3" : index() === paletteIndex() ? "#ffffff" : THEME.text }}>
                       {truncateText(item.label, PALETTE_LABEL_MAX())}
                     </text>
                     <Show when={item.hint && item.kind !== "section"}>
                       <text
-                        style={{ fg: item.sessionId && palettePendingDelete() === item.sessionId ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
+                        style={{ fg: isPalettePendingDelete(item) ? "#ffb3b3" : index() === paletteIndex() ? THEME.border : THEME.muted }}
                         wrapMode="none"
                       >
-                        {truncateText(item.sessionId && palettePendingDelete() === item.sessionId ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX())}
+                        {truncateText(isPalettePendingDelete(item) ? "Ctrl+D again" : item.hint ?? "", PALETTE_HINT_MAX())}
                       </text>
                     </Show>
                   </box>
@@ -3747,6 +3512,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                       ? "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "providerKeys"
                       ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
+                    : paletteMode() === "queuedMessages"
+                      ? "↑↓ navigate  •  Enter cancel  •  Esc back"
                     : paletteMode() === "codexKeyname"
                       ? "Enter key name  •  Enter save  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}

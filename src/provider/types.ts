@@ -22,6 +22,7 @@ export type Message = {
   tool_calls?: ToolCall[]
   tool_call_id?: string
   parts?: Part[]
+  origin?: { peer: string }
 }
 
 export type ToolDef = {
