@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
+import { For, Index, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable, PasteEvent } from "@opentui/core"
 import { Effect, Layer } from "effect"
@@ -3116,9 +3116,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         </For>
         <Show when={running() && streamingEntries().length > 0}>
           <box marginTop={1} flexDirection="column">
-            <For each={streamingEntries()}>
-              {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
-            </For>
+            <Index each={streamingEntries()}>
+              {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
+            </Index>
           </box>
         </Show>
       </scrollbox>
