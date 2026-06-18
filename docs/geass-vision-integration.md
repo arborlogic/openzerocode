@@ -34,6 +34,16 @@ The screenshot tool calls GEASS `POST /screenshot` and returns metadata plus a M
 ![screenshot](data:image/png;base64,...)
 ```
 
+GEASS Desktop session window mode is supported through an environment variable. By default, OpenZeroCode talks to the main GEASS window through the existing root endpoints (`/navigate`, `/page`, etc.). To bind an OpenZeroCode process to a dedicated GEASS agent window on the same API port, start it with either:
+
+```sh
+GEASS_SESSION_ID=agent-a openzerocode
+# or
+OPENZEROCODE_GEASS_SESSION_ID=agent-a openzerocode
+```
+
+When set to a non-`default` value, the built-in browser tools route requests to `/sessions/:sessionId/...`. GEASS lazily creates the corresponding agent window and shows the binding/session id in that window. Cookies and browser session state are still shared by GEASS Desktop.
+
 `browser_observe_visual` calls GEASS `POST /observe-visual` and can now optionally call a local VLM before returning the result. This is useful when the current chat model cannot consume image data URLs directly or when large base64 tool output would be truncated.
 
 Local VLM defaults:
@@ -202,6 +212,7 @@ Do not auto-upload screenshots outside the selected model provider path. Do not 
 OpenZeroCode side:
 
 - [x] GEASS HTTP client exists: `src/browser/geass-client.ts`.
+- [x] Route browser tools to GEASS session windows when `OPENZEROCODE_GEASS_SESSION_ID` or `GEASS_SESSION_ID` is set.
 - [x] Browser action/read/screenshot tools exist under `src/tool/`.
 - [x] Tools are registered in `src/tool/registry.ts`.
 - [x] Add `browser_observe_visual` tool for combined screenshot + DOM context.

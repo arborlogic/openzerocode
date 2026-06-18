@@ -1,6 +1,21 @@
 const DEFAULT_PORT = 9876;
 const BASE_URL = `http://127.0.0.1:${DEFAULT_PORT}`;
 
+const env = (key: string): string | undefined =>
+  typeof process !== 'undefined' ? process.env[key] : undefined;
+
+const configuredSessionId = (): string | undefined => {
+  const value = env('OPENZEROCODE_GEASS_SESSION_ID') ?? env('GEASS_SESSION_ID');
+  const trimmed = value?.trim();
+  return trimmed && trimmed !== 'default' ? trimmed : undefined;
+};
+
+const apiPath = (path: string): string => {
+  const sessionId = configuredSessionId();
+  const normalizedPath = path.replace(/^\/+/, '');
+  return sessionId ? `sessions/${encodeURIComponent(sessionId)}/${normalizedPath}` : normalizedPath;
+};
+
 let _enabled: boolean = false;
 let _connected: boolean = false;
 
@@ -90,7 +105,7 @@ export interface ActionResult {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE_URL}/${path}`, {
+  const res = await fetch(`${BASE_URL}/${apiPath(path)}`, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
