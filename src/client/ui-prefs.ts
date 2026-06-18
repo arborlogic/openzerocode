@@ -15,8 +15,8 @@ type UIPrefs = {
   disabledToolGroups: string[]
   /**
    * MCP servers the user has explicitly turned on (allowlist; opt-in). MCP
-   * servers are off by default so we never spawn an external process (e.g.
-   * `npx chrome-devtools-mcp`) unattended.
+   * servers are off by default so we never spawn an external process
+   * (e.g. `chrome-devtools-mcp`) unattended.
    */
   enabledMcpServers: string[]
 }

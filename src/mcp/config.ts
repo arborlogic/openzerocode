@@ -19,7 +19,11 @@ export type McpConfigFile = {
 /**
  * Seed config written on first run. Chrome DevTools MCP is included as a ready
  * example. It is NOT spawned unless the user enables its group in
- * Experiments → Tools, so the npx download/launch never happens unattended.
+ * Experiments → Tools, so the download/launch never happens unattended.
+ *
+ * Uses the globally installed `chrome-devtools-mcp` (from npm) rather than
+ * `npx` to avoid version-resolution delay on every startup. If you don't have
+ * it installed globally, run `npm i -g chrome-devtools-mcp`.
  */
 const DEFAULT_CONFIG: McpConfigFile = {
   servers: [
@@ -27,8 +31,8 @@ const DEFAULT_CONFIG: McpConfigFile = {
       id: "chrome",
       label: "Chrome (MCP)",
       description: "chrome-devtools-mcp — control a running Chrome via DevTools Protocol",
-      command: "npx",
-      args: ["-y", "chrome-devtools-mcp@latest", "--autoConnect", "--channel=beta"],
+      command: "chrome-devtools-mcp",
+      args: ["--autoConnect"],
     },
   ],
 }
