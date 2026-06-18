@@ -14,6 +14,7 @@ export const BrowserScrollTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "browser_scroll",
+    group: "browser",
     description: [
       "Scroll the current page in the GEASS browser.",
       "Direction: up, down, top, or bottom. Amount is in pixels (default: 300).",

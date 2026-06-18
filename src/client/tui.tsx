@@ -7,7 +7,8 @@ import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
-import type { PermissionRequest } from "../tool/types"
+import type { PermissionRequest, Def } from "../tool/types"
+import { listSelectableGroups, toggleGroup } from "../tool/selection"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
@@ -230,6 +231,12 @@ function App() {
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
   const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
+  const [disabledToolGroups, setDisabledToolGroups] = createSignal<string[]>(_uiPrefs.disabledToolGroups)
+  const [registeredTools, setRegisteredTools] = createSignal<readonly Def[]>([])
+  runSync(Effect.gen(function* () {
+    const r = yield* ToolRegistry
+    return yield* r.all()
+  })).then(setRegisteredTools).catch(() => {})
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
   const [autoLoopWindowMs, setAutoLoopWindowMs] = createSignal<number | undefined>(undefined)
   const [autoLoopEndsAt, setAutoLoopEndsAt] = createSignal<number | undefined>(undefined)
@@ -1468,6 +1475,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
+        label: "TOOLS",
+        kind: "section",
+        onSelect: () => {},
+      },
+      ...listSelectableGroups(registeredTools(), disabledToolGroups()).map((g) => ({
+        label: g.enabled ? `✓ ${g.label}` : `  ${g.label}`,
+        hint: g.enabled ? `on · ${g.count} tool${g.count === 1 ? "" : "s"}` : "off · hidden from model",
+        onSelect: () => {
+          const next = toggleGroup(disabledToolGroups(), g.id)
+          setDisabledToolGroups(next)
+          saveUIPrefs({ disabledToolGroups: next })
+          setStatus(next.includes(g.id) ? `${g.label} disabled` : `${g.label} enabled`)
+          setShowPalette(false)
+        },
+      })),
+      {
         label: "GEASS",
         kind: "section",
         onSelect: () => {},
@@ -2176,6 +2199,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
         reasoning_effort: reasoningEffort(),
         maxSteps: maxSteps(),
+        disabledToolGroups: disabledToolGroups(),
         onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),

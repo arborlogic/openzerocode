@@ -6,6 +6,7 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
+import { selectEnabledTools } from "../tool/selection"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
 import { estimateTokens, getModelConfig } from "../provider/models"
 import type { StreamChunk } from "../server/types"
@@ -32,6 +33,8 @@ type SessionUi = {
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
   maxSteps?: number
   origin?: { peer: string }
+  /** Selectable tool groups to hide from the model (denylist; core tools always on). */
+  disabledToolGroups?: string[]
 }
 
 type SessionRuntime = {
@@ -57,6 +60,8 @@ export type StreamOptions = {
   maxSteps?: number
   /** When set, the user message is tagged with this peer origin for display. */
   origin?: { peer: string }
+  /** Selectable tool groups to hide from the model (denylist; core tools always on). */
+  disabledToolGroups?: string[]
 }
 
 /**
@@ -128,10 +133,13 @@ export async function* streamSession(
   const resultHistory: Message[] = [...history, userMessage]
   yield { type: "message", message: userMessage }
 
-  const tools = await runtime.runSync(Effect.gen(function* () {
+  const allTools = await runtime.runSync(Effect.gen(function* () {
     const r = yield* ToolRegistry
     return yield* r.all()
   }))
+  // Hide user-disabled tool groups (e.g. the GEASS browser tools) from the model
+  // so it never tries them; core tools have no group and always pass.
+  const tools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
   const toolDefs = options.mode === "plan" ? [] : convertToolsToDefs(tools)
 
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
@@ -427,6 +435,7 @@ export async function runSession(
     reasoning_effort: ui.reasoning_effort,
     maxSteps: ui.maxSteps,
     origin: ui.origin,
+    disabledToolGroups: ui.disabledToolGroups,
   }, runtime)
   const resultHistory: Message[] = [...history]
 

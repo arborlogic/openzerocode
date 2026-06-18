@@ -9,6 +9,8 @@ type UIPrefs = {
   geassEnabled: boolean
   autoCompressionEnabled: boolean
   maxSteps: number
+  /** Selectable tool groups the user has turned off (denylist; core tools always on). */
+  disabledToolGroups: string[]
 }
 
 const DEFAULTS: UIPrefs = {
@@ -18,6 +20,7 @@ const DEFAULTS: UIPrefs = {
   geassEnabled: false,
   autoCompressionEnabled: false,
   maxSteps: 50,
+  disabledToolGroups: [],
 }
 
 function getPrefsPath() {

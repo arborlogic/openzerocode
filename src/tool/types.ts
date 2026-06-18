@@ -41,17 +41,26 @@ export class Def {
   readonly description: string
   readonly parameters: Schema.Struct<Schema.Struct.Fields>
   readonly execute: (args: unknown, ctx: Context) => Effect.Effect<Result>
+  /**
+   * Optional selection group. Tools with a group are *selectable* — the user
+   * can disable the whole group from Experiments → Tools, and disabled groups
+   * are filtered out of the tool list sent to the model. Tools without a group
+   * are core and always enabled (read/edit/write/bash/grep/glob/web_fetch/todo).
+   */
+  readonly group?: string
 
   constructor(input: {
     id: string
     description: string
     parameters: Schema.Struct<Schema.Struct.Fields>
     execute: (args: unknown, ctx: Context) => Effect.Effect<Result>
+    group?: string
   }) {
     this.id = input.id
     this.description = input.description
     this.parameters = input.parameters
     this.execute = input.execute
+    this.group = input.group
   }
 }
 
