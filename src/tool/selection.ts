@@ -16,6 +16,14 @@ export const TOOL_GROUPS: Record<string, { label: string; description: string }>
   },
 }
 
+/**
+ * Register a label/description for a dynamic group (e.g. MCP servers, whose
+ * group ids are only known at runtime). Safe to call repeatedly.
+ */
+export function registerGroupLabel(id: string, label: string, description = ""): void {
+  TOOL_GROUPS[id] = { label, description }
+}
+
 export type ToolGroupInfo = {
   id: string
   label: string

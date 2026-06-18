@@ -17,6 +17,7 @@ import { BrowserScrollTool } from "./browser-scroll"
 import { BrowserScreenshotTool } from "./browser-screenshot"
 import { BrowserObserveVisualTool } from "./browser-observe-visual"
 import { CallPeerTool } from "./call-peer"
+import { getMcpTools } from "../mcp/store"
 
 export interface Interface {
   readonly all: () => Effect.Effect<readonly Def[]>
@@ -50,10 +51,13 @@ export const layer = Layer.effect(
     ]
     const custom: Def[] = []
 
+    // MCP tools live in a module-level store (src/mcp/store.ts) rather than the
+    // per-layer `custom` array so they survive Layer rebuilds (provider/model
+    // switches) and stay visible to every turn once a server is loaded.
     return {
-      all: () => Effect.succeed([...builtins, ...custom] as readonly Def[]),
+      all: () => Effect.succeed([...builtins, ...custom, ...getMcpTools()] as readonly Def[]),
       get: (id: string) =>
-        Effect.succeed([...builtins, ...custom].find((t) => t.id === id)),
+        Effect.succeed([...builtins, ...custom, ...getMcpTools()].find((t) => t.id === id)),
       register: (def: Def) =>
         Effect.sync(() => { custom.push(def) }),
     }

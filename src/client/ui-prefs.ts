@@ -13,6 +13,12 @@ type UIPrefs = {
    * on). The "browser" group also acts as the single on/off control for GEASS.
    */
   disabledToolGroups: string[]
+  /**
+   * MCP servers the user has explicitly turned on (allowlist; opt-in). MCP
+   * servers are off by default so we never spawn an external process (e.g.
+   * `npx chrome-devtools-mcp`) unattended.
+   */
+  enabledMcpServers: string[]
 }
 
 const DEFAULTS: UIPrefs = {
@@ -22,6 +28,7 @@ const DEFAULTS: UIPrefs = {
   autoCompressionEnabled: false,
   maxSteps: 50,
   disabledToolGroups: [],
+  enabledMcpServers: [],
 }
 
 function getPrefsPath() {

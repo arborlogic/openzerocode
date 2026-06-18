@@ -48,6 +48,12 @@ export class Def {
    * are core and always enabled (read/edit/write/bash/grep/glob/web_fetch/todo).
    */
   readonly group?: string
+  /**
+   * Pre-built JSON Schema for the tool parameters. When set, it is sent to the
+   * model verbatim instead of deriving a schema from `parameters`. Used by MCP
+   * tools, whose schema already arrives as JSON Schema from the server.
+   */
+  readonly jsonSchema?: Record<string, unknown>
 
   constructor(input: {
     id: string
@@ -55,12 +61,14 @@ export class Def {
     parameters: Schema.Struct<Schema.Struct.Fields>
     execute: (args: unknown, ctx: Context) => Effect.Effect<Result>
     group?: string
+    jsonSchema?: Record<string, unknown>
   }) {
     this.id = input.id
     this.description = input.description
     this.parameters = input.parameters
     this.execute = input.execute
     this.group = input.group
+    this.jsonSchema = input.jsonSchema
   }
 }
 

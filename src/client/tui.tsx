@@ -8,7 +8,9 @@ import { ToolRegistry } from "../tool/registry"
 import { Provider, type ModelInfo } from "../provider/types"
 import type { Message } from "../provider/types"
 import type { PermissionRequest, Def } from "../tool/types"
-import { listSelectableGroups, toggleGroup } from "../tool/selection"
+import { listSelectableGroups, toggleGroup, TOOL_GROUPS } from "../tool/selection"
+import { loadMcpConfig, mcpGroupId } from "../mcp/config"
+import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpServer, isServerLoaded, unloadAllMcpServers } from "../mcp/store"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
@@ -236,10 +238,22 @@ function App() {
   const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
   const [disabledToolGroups, setDisabledToolGroups] = createSignal<string[]>(_uiPrefs.disabledToolGroups)
   const [registeredTools, setRegisteredTools] = createSignal<readonly Def[]>([])
-  runSync(Effect.gen(function* () {
-    const r = yield* ToolRegistry
-    return yield* r.all()
-  })).then(setRegisteredTools).catch(() => {})
+  const refreshRegisteredTools = () =>
+    runSync(Effect.gen(function* () {
+      const r = yield* ToolRegistry
+      return yield* r.all()
+    })).then(setRegisteredTools).catch(() => {})
+  refreshRegisteredTools()
+
+  // MCP servers are opt-in: only auto-start ones the user has explicitly enabled.
+  const [enabledMcpServers, setEnabledMcpServers] = createSignal<string[]>(_uiPrefs.enabledMcpServers)
+  setConfiguredServers(loadMcpConfig())
+  for (const server of getConfiguredServers()) {
+    if (!enabledMcpServers().includes(server.id)) continue
+    loadMcpServer(server)
+      .then((n) => { refreshRegisteredTools(); setStatus(`MCP ${server.id}: ${n} tools loaded`) })
+      .catch((e) => setStatus(`MCP ${server.id} failed: ${e instanceof Error ? e.message : String(e)}`))
+  }
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
   const [autoLoopWindowMs, setAutoLoopWindowMs] = createSignal<number | undefined>(undefined)
   const [autoLoopEndsAt, setAutoLoopEndsAt] = createSignal<number | undefined>(undefined)
@@ -1460,6 +1474,58 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   
   const experimentPaletteItems = createMemo<PaletteItem[]>(() => {
     geassRevision()
+    // Selectable groups derived from loaded tools, plus configured-but-not-yet-
+    // loaded MCP servers so the user can enable them from here.
+    const builtinGroups = listSelectableGroups(registeredTools(), disabledToolGroups())
+    const seen = new Set(builtinGroups.map((g) => g.id))
+    const mcpExtra = getConfiguredServers()
+      .map((s) => mcpGroupId(s.id))
+      .filter((gid) => !seen.has(gid))
+      .map((gid) => ({
+        id: gid,
+        label: TOOL_GROUPS[gid]?.label ?? gid,
+        description: TOOL_GROUPS[gid]?.description ?? "",
+        count: 0,
+        // MCP groups are opt-in: enabled state comes from the allowlist, not the
+        // builtin denylist. A loaded server already appears in builtinGroups.
+        enabled: enabledMcpServers().includes(gid.slice("mcp:".length)),
+      }))
+    const groups = [...builtinGroups, ...mcpExtra]
+
+    const toggleGroupItem = (g: { id: string; label: string; count: number; enabled: boolean }) => {
+      if (g.id.startsWith("mcp:")) {
+        const serverId = g.id.slice("mcp:".length)
+        const server = getConfiguredServers().find((s) => s.id === serverId)
+        const nowEnabled = !enabledMcpServers().includes(serverId)
+        const nextList = nowEnabled
+          ? [...enabledMcpServers(), serverId]
+          : enabledMcpServers().filter((s) => s !== serverId)
+        setEnabledMcpServers(nextList)
+        saveUIPrefs({ enabledMcpServers: nextList })
+        if (nowEnabled && server && !isServerLoaded(serverId)) {
+          setStatus(`starting MCP ${serverId}...`)
+          loadMcpServer(server)
+            .then((n) => { refreshRegisteredTools(); setStatus(`MCP ${serverId}: ${n} tools loaded`) })
+            .catch((e) => setStatus(`MCP ${serverId} failed: ${e instanceof Error ? e.message : String(e)}`))
+        } else if (!nowEnabled && isServerLoaded(serverId)) {
+          unloadMcpServer(serverId)
+          refreshRegisteredTools()
+          setStatus(`${g.label} disabled`)
+        }
+        return
+      }
+      const next = toggleGroup(disabledToolGroups(), g.id)
+      setDisabledToolGroups(next)
+      saveUIPrefs({ disabledToolGroups: next })
+      const nowEnabled = !next.includes(g.id)
+      if (g.id === "browser") {
+        setEnabled(nowEnabled)
+        setGeassRevision((v) => v + 1)
+        if (nowEnabled) testConnection().then(() => setGeassRevision((v) => v + 1))
+      }
+      setStatus(nowEnabled ? `${g.label} enabled` : `${g.label} disabled`)
+    }
+
     return [
       {
         label: "EXPERIMENTS",
@@ -1482,26 +1548,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         kind: "section",
         onSelect: () => {},
       },
-      ...listSelectableGroups(registeredTools(), disabledToolGroups()).map((g) => ({
+      ...groups.map((g) => ({
         // Toggling a group keeps the palette open so several can be flipped in
-        // one visit. The Browser group also drives the GEASS connection so it
-        // is the single control — no separate Enable GEASS toggle.
+        // one visit. The Browser group also drives the GEASS connection; MCP
+        // groups spawn/stop their server on toggle.
         label: g.enabled ? `✓ ${g.label}` : `  ${g.label}`,
         hint: g.id === "browser"
           ? (g.enabled ? (isConnected() ? "on · ● Online" : "on · ○ Offline") : "off · hidden from model")
-          : (g.enabled ? `on · ${g.count} tool${g.count === 1 ? "" : "s"}` : "off · hidden from model"),
-        onSelect: () => {
-          const next = toggleGroup(disabledToolGroups(), g.id)
-          setDisabledToolGroups(next)
-          saveUIPrefs({ disabledToolGroups: next })
-          const nowEnabled = !next.includes(g.id)
-          if (g.id === "browser") {
-            setEnabled(nowEnabled)
-            setGeassRevision(v => v + 1)
-            if (nowEnabled) testConnection().then(() => setGeassRevision(v => v + 1))
-          }
-          setStatus(nowEnabled ? `${g.label} enabled` : `${g.label} disabled`)
-        },
+          : g.id.startsWith("mcp:")
+            ? (g.enabled ? (g.count > 0 ? `on · ${g.count} tools` : "on · starting…") : "off · server stopped")
+            : (g.enabled ? `on · ${g.count} tool${g.count === 1 ? "" : "s"}` : "off · hidden from model"),
+        onSelect: () => toggleGroupItem(g),
       })),
       ...(!disabledToolGroups().includes("browser") ? [{
         label: "Test GEASS connection",
@@ -1818,6 +1875,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const exitApp = (code = 0) => {
     if (exitTask) return exitTask
     exitTask = (async () => {
+      unloadAllMcpServers()
       renderer.setTerminalTitle("")
       renderer.destroy()
       process.exit(code)
