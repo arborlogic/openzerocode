@@ -65,6 +65,59 @@ function DiffText(props: { content: string; fg?: string; bg?: string }) {
   )
 }
 
+function visibleWidth(text: string): number {
+  return text.length
+}
+
+function padCell(text: string, width: number): string {
+  return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`
+}
+
+function MarkdownTable(props: {
+  table: { headers: string[]; rows: string[][] }
+  fg?: string
+  bg?: string
+}) {
+  const widths = createMemo(() => {
+    const columnCount = props.table.headers.length
+    return Array.from({ length: columnCount }, (_, index) => {
+      const headerWidth = visibleWidth(props.table.headers[index] ?? "")
+      const rowWidth = Math.max(
+        0,
+        ...props.table.rows.map((row) => visibleWidth(row[index] ?? "")),
+      )
+      return Math.max(3, headerWidth, rowWidth)
+    })
+  })
+
+  const rowText = (cells: string[]) =>
+    `│ ${widths().map((width, index) => padCell(cells[index] ?? "", width)).join(" │ ")} │`
+
+  const separator = createMemo(() =>
+    `├${widths().map((width) => "─".repeat(width + 2)).join("┼")}┤`,
+  )
+
+  const top = createMemo(() =>
+    `┌${widths().map((width) => "─".repeat(width + 2)).join("┬")}┐`,
+  )
+
+  const bottom = createMemo(() =>
+    `└${widths().map((width) => "─".repeat(width + 2)).join("┴")}┘`,
+  )
+
+  return (
+    <box flexDirection="column" width="100%" marginTop={1} marginBottom={1}>
+      <text content={top()} fg={props.fg} bg={props.bg} wrapMode="none" />
+      <text content={rowText(props.table.headers)} fg="#58a6ff" bg={props.bg} wrapMode="none" />
+      <text content={separator()} fg={props.fg} bg={props.bg} wrapMode="none" />
+      <For each={props.table.rows}>
+        {(row) => <text content={rowText(row)} fg={props.fg} bg={props.bg} wrapMode="none" />}
+      </For>
+      <text content={bottom()} fg={props.fg} bg={props.bg} wrapMode="none" />
+    </box>
+  )
+}
+
 /**
  * Renders markdown content, replacing ```diff / ```patch blocks with
  * a unified diff-like text view.
@@ -90,6 +143,9 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
               const seg = segment()
               if (seg.type === "diff") {
                 return <DiffText content={seg.content} fg={props.fg} bg={props.bg} />
+              }
+              if (seg.type === "table") {
+                return <MarkdownTable table={seg.table} fg={props.fg} bg={props.bg} />
               }
               return (
                 <markdown

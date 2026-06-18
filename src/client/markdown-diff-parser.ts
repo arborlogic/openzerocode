@@ -1,6 +1,12 @@
+export type MarkdownTable = {
+  headers: string[]
+  rows: string[][]
+}
+
 export type MarkdownDiffSegment =
   | { type: "markdown"; content: string }
   | { type: "diff"; content: string; file?: string }
+  | { type: "table"; table: MarkdownTable; content: string }
 
 const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
 
@@ -71,6 +77,113 @@ export function normalizeUnifiedDiffHunks(diff: string): string {
   return normalized.join("\n")
 }
 
+function splitMarkdownTableRow(line: string): string[] {
+  let trimmed = line.trim()
+  if (trimmed.startsWith("|")) trimmed = trimmed.slice(1)
+  if (trimmed.endsWith("|")) trimmed = trimmed.slice(0, -1)
+
+  const cells: string[] = []
+  let current = ""
+  let escaped = false
+
+  for (const char of trimmed) {
+    if (escaped) {
+      current += char
+      escaped = false
+      continue
+    }
+    if (char === "\\") {
+      escaped = true
+      continue
+    }
+    if (char === "|") {
+      cells.push(current.trim())
+      current = ""
+      continue
+    }
+    current += char
+  }
+
+  cells.push(current.trim())
+  return cells
+}
+
+function isMarkdownTableSeparator(line: string, expectedCells: number): boolean {
+  const cells = splitMarkdownTableRow(line)
+  return cells.length === expectedCells && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()))
+}
+
+function looksLikeMarkdownTableRow(line: string): boolean {
+  return line.includes("|") && splitMarkdownTableRow(line).length >= 2
+}
+
+function normalizeTableRow(cells: string[], length: number): string[] {
+  if (cells.length === length) return cells
+  if (cells.length > length) return cells.slice(0, length)
+  return [...cells, ...Array.from({ length: length - cells.length }, () => "")]
+}
+
+/**
+ * Parse GitHub-flavored markdown pipe tables into explicit table segments.
+ * OpenTUI's markdown renderer currently leaves these tables as raw pipe text,
+ * so completed assistant responses render them with a small native TUI table.
+ */
+export function parseMarkdownTables(content: string): MarkdownDiffSegment[] {
+  const lines = content.split("\n")
+  const segments: MarkdownDiffSegment[] = []
+  let markdownStart = 0
+  let i = 0
+  let inFence = false
+
+  function pushMarkdownUntil(lineIndex: number) {
+    if (lineIndex <= markdownStart) return
+    const markdown = lines.slice(markdownStart, lineIndex).join("\n")
+    if (markdown) segments.push({ type: "markdown", content: markdown })
+  }
+
+  while (i < lines.length) {
+    const line = lines[i]!
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence
+      i++
+      continue
+    }
+
+    if (!inFence && i + 1 < lines.length && looksLikeMarkdownTableRow(line)) {
+      const headers = splitMarkdownTableRow(line)
+      const separator = lines[i + 1]!
+      if (isMarkdownTableSeparator(separator, headers.length)) {
+        pushMarkdownUntil(i)
+
+        const tableStart = i
+        i += 2
+        const rows: string[][] = []
+        while (i < lines.length && looksLikeMarkdownTableRow(lines[i]!)) {
+          rows.push(normalizeTableRow(splitMarkdownTableRow(lines[i]!), headers.length))
+          i++
+        }
+
+        segments.push({
+          type: "table",
+          table: { headers, rows },
+          content: lines.slice(tableStart, i).join("\n"),
+        })
+        markdownStart = i
+        continue
+      }
+    }
+
+    i++
+  }
+
+  pushMarkdownUntil(lines.length)
+  return segments
+}
+
+function pushMarkdownSegments(segments: MarkdownDiffSegment[], content: string) {
+  segments.push(...parseMarkdownTables(content))
+}
+
 /**
  * Parse markdown content into segments: normal markdown vs ```diff/```patch blocks.
  */
@@ -88,7 +201,7 @@ export function parseDiffBlocks(content: string, streaming = false): MarkdownDif
     // Text before this diff block
     const before = content.slice(lastIndex, match.index)
     if (before) {
-      segments.push({ type: "markdown", content: before })
+      pushMarkdownSegments(segments, before)
     }
 
     const filename = match[2] ?? ""
@@ -117,7 +230,7 @@ export function parseDiffBlocks(content: string, streaming = false): MarkdownDif
     const openDiff = streaming ? remaining.match(/```(diff|patch)\s*(\S*)\n([\s\S]*)$/) : null
     if (openDiff && openDiff.index !== undefined) {
       const before = remaining.slice(0, openDiff.index)
-      if (before) segments.push({ type: "markdown", content: before })
+      if (before) pushMarkdownSegments(segments, before)
       const filename = openDiff[2] ?? ""
       const diffContent = openDiff[3] ?? ""
       segments.push({
@@ -126,7 +239,7 @@ export function parseDiffBlocks(content: string, streaming = false): MarkdownDif
         file: filename || undefined,
       })
     } else {
-      segments.push({ type: "markdown", content: remaining })
+      pushMarkdownSegments(segments, remaining)
     }
   }
 

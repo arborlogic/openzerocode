@@ -1,6 +1,6 @@
 import assert from "node:assert"
 import { describe, it } from "bun:test"
-import { normalizeUnifiedDiffHunks, parseDiffBlocks } from "./markdown-diff-parser"
+import { normalizeUnifiedDiffHunks, parseDiffBlocks, parseMarkdownTables } from "./markdown-diff-parser"
 
 describe("parseDiffBlocks", () => {
   it("returns a single markdown segment when there are no diff blocks", () => {
@@ -146,6 +146,41 @@ describe("parseDiffBlocks", () => {
   it("keeps an unclosed trailing diff fence as markdown when not streaming", () => {
     const md = "```diff\n-old\n+new"
     const result = parseDiffBlocks(md)
+    assert.equal(result.length, 1)
+    assert.equal(result[0]!.type, "markdown")
+  })
+
+  it("extracts markdown pipe tables as table segments", () => {
+    const md = [
+      "Before",
+      "| Method | Latency | Notes |",
+      "|---|---|---|",
+      "| streaming | ~32ms | per-chunk flush |",
+      "| non-streaming | n/a | render once |",
+      "| diff block | in-place | opentui <diff> |",
+      "After",
+    ].join("\n")
+
+    const result = parseDiffBlocks(md)
+    assert.equal(result.length, 3)
+    assert.equal(result[0]!.type, "markdown")
+    assert.equal(result[1]!.type, "table")
+    const tableSeg = result[1] as Extract<(typeof result)[number], { type: "table" }>
+    assert.deepEqual(tableSeg.table.headers, ["Method", "Latency", "Notes"])
+    assert.deepEqual(tableSeg.table.rows[0], ["streaming", "~32ms", "per-chunk flush"])
+    assert.deepEqual(tableSeg.table.rows[2], ["diff block", "in-place", "opentui <diff>"])
+    assert.equal(result[2]!.type, "markdown")
+  })
+
+  it("does not parse pipe-looking text inside fenced code as markdown tables", () => {
+    const md = [
+      "```ts",
+      "const row = '| Method | Latency |'",
+      "const sep = '|---|---|'",
+      "```",
+    ].join("\n")
+
+    const result = parseMarkdownTables(md)
     assert.equal(result.length, 1)
     assert.equal(result[0]!.type, "markdown")
   })
