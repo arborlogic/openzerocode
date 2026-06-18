@@ -2,6 +2,75 @@ export type MarkdownDiffSegment =
   | { type: "markdown"; content: string }
   | { type: "diff"; content: string; file?: string }
 
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
+
+function formatRange(start: string, count: number): string {
+  return count === 1 ? start : `${start},${count}`
+}
+
+/**
+ * Normalize unified diff hunk ranges so the <diff> renderer can parse patches
+ * produced by LLMs even when their @@ -a,b +c,d @@ line counts are stale.
+ */
+export function normalizeUnifiedDiffHunks(diff: string): string {
+  const lines = diff.split("\n")
+  const normalized = [...lines]
+
+  let hunkIndex = -1
+  let oldStart = ""
+  let newStart = ""
+  let suffix = ""
+  let oldCount = 0
+  let newCount = 0
+
+  function flushHunk() {
+    if (hunkIndex < 0) return
+    normalized[hunkIndex] = `@@ -${formatRange(oldStart, oldCount)} +${formatRange(newStart, newCount)} @@${suffix}`
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const hunk = line.match(HUNK_HEADER_PATTERN)
+    if (hunk) {
+      flushHunk()
+      hunkIndex = i
+      oldStart = hunk[1]!
+      newStart = hunk[3]!
+      suffix = hunk[5] ?? ""
+      oldCount = 0
+      newCount = 0
+      continue
+    }
+
+    if (hunkIndex < 0) continue
+
+    if (line.startsWith("@@ ")) {
+      // A malformed hunk-like line: stop counting the current hunk but leave
+      // the malformed line untouched rather than making the patch worse.
+      flushHunk()
+      hunkIndex = -1
+      continue
+    }
+
+    if (line.startsWith("\\")) continue
+
+    const marker = line[0]
+    if (marker === "+") {
+      newCount++
+    } else if (marker === "-") {
+      oldCount++
+    } else {
+      // Unified diff context lines normally begin with a space. Be permissive
+      // for LLM output and treat blank/unmarked lines inside a hunk as context.
+      oldCount++
+      newCount++
+    }
+  }
+
+  flushHunk()
+  return normalized.join("\n")
+}
+
 /**
  * Parse markdown content into segments: normal markdown vs ```diff/```patch blocks.
  */
@@ -27,7 +96,7 @@ export function parseDiffBlocks(content: string, streaming = false): MarkdownDif
 
     // Strip the leading/trailing diff header lines if present but keep the hunk
     // The <diff> component expects unified diff format starting from ---/+++
-    const cleanDiff = diffContent.trimEnd()
+    const cleanDiff = normalizeUnifiedDiffHunks(diffContent.trimEnd())
 
     // If the block has a leading diff --git line, keep it; otherwise
     // the parser handles plain unified diff just fine.
@@ -53,7 +122,7 @@ export function parseDiffBlocks(content: string, streaming = false): MarkdownDif
       const diffContent = openDiff[3] ?? ""
       segments.push({
         type: "diff",
-        content: diffContent.trimEnd(),
+        content: normalizeUnifiedDiffHunks(diffContent.trimEnd()),
         file: filename || undefined,
       })
     } else {
