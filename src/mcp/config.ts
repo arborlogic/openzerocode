@@ -19,20 +19,26 @@ export type McpConfigFile = {
 /**
  * Seed config written on first run. Chrome DevTools MCP is included as a ready
  * example. It is NOT spawned unless the user enables its group in
- * Experiments → Tools, so the download/launch never happens unattended.
+ * Experiments → Tools, so Chrome is never launched unattended.
  *
  * Uses the globally installed `chrome-devtools-mcp` (from npm) rather than
  * `npx` to avoid version-resolution delay on every startup. If you don't have
  * it installed globally, run `npm i -g chrome-devtools-mcp`.
+ *
+ * Important: default to launching Chrome directly instead of `--autoConnect`.
+ * `--autoConnect` only works when the user already has a compatible Chrome
+ * running with remote debugging enabled, which is a fragile default and often
+ * looks like “Chrome MCP cannot connect”. Launching Chrome through the MCP
+ * server is much more reliable for first-run behavior.
  */
 const DEFAULT_CONFIG: McpConfigFile = {
   servers: [
     {
       id: "chrome",
       label: "Chrome (MCP)",
-      description: "chrome-devtools-mcp — control a running Chrome via DevTools Protocol",
+      description: "chrome-devtools-mcp — launch/control Chrome via DevTools Protocol",
       command: "chrome-devtools-mcp",
-      args: ["--autoConnect"],
+      args: [],
     },
   ],
 }
@@ -64,7 +70,40 @@ export function loadMcpConfig(): McpServerConfig[] {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<McpConfigFile>
     const servers = Array.isArray(parsed.servers) ? parsed.servers : []
-    return servers.filter((s): s is McpServerConfig => Boolean(s && s.id && s.command))
+    const valid = servers.filter((s): s is McpServerConfig => Boolean(s && s.id && s.command))
+
+    // Migrate the old first-run Chrome example away from `--autoConnect`.
+    // That mode requires the user to pre-launch Chrome with remote debugging,
+    // which causes confusing connection failures for the default setup.
+    let changed = false
+    const migrated = valid.map((server) => {
+      if (
+        server.id === "chrome" &&
+        server.command === "chrome-devtools-mcp" &&
+        Array.isArray(server.args) &&
+        server.args.length === 1 &&
+        server.args[0] === "--autoConnect"
+      ) {
+        changed = true
+        return {
+          ...server,
+          description: "chrome-devtools-mcp — launch/control Chrome via DevTools Protocol",
+          args: [],
+        }
+      }
+      return server
+    })
+
+    if (changed) {
+      try {
+        ensureDir(path)
+        writeFileSync(path, JSON.stringify({ servers: migrated }, null, 2), "utf-8")
+      } catch {
+        // Non-critical: use the migrated config in memory even if persisting fails.
+      }
+    }
+
+    return migrated
   } catch {
     return []
   }
