@@ -31,7 +31,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
  */
 export class McpClient {
   private proc?: ChildProcessWithoutNullStreams
-  private buffer = ""
+  private buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   private nextId = 1
   private readonly pending = new Map<JsonRpcId, Pending>()
   private closed = false
@@ -40,6 +40,7 @@ export class McpClient {
 
   /** Spawn the process and complete the MCP initialize handshake. */
   async start(): Promise<void> {
+    this.closed = false
     const proc = spawn(this.spec.command, this.spec.args ?? [], {
       cwd: this.spec.cwd,
       env: { ...process.env, ...(this.spec.env ?? {}) },
@@ -47,10 +48,16 @@ export class McpClient {
     }) as ChildProcessWithoutNullStreams
     this.proc = proc
 
-    proc.stdout.setEncoding("utf-8")
-    proc.stdout.on("data", (chunk: string) => this.onStdout(chunk))
-    proc.on("exit", () => this.failAll(new Error("MCP server exited")))
-    proc.on("error", (err) => this.failAll(err instanceof Error ? err : new Error(String(err))))
+    proc.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk))
+    proc.stderr.on("data", () => {})
+    proc.on("exit", () => {
+      this.closed = true
+      this.failAll(new Error("MCP server exited"))
+    })
+    proc.on("error", (err) => {
+      this.closed = true
+      this.failAll(err instanceof Error ? err : new Error(String(err)))
+    })
 
     await this.request("initialize", {
       protocolVersion: MCP_PROTOCOL_VERSION,
@@ -87,8 +94,8 @@ export class McpClient {
     return !this.closed && !!this.proc && this.proc.exitCode === null
   }
 
-  private onStdout(chunk: string): void {
-    this.buffer += chunk
+  private onStdout(chunk: Buffer): void {
+    this.buffer = Buffer.concat([this.buffer, chunk])
     const { messages, rest } = decodeMessages(this.buffer)
     this.buffer = rest
     for (const msg of messages) this.dispatch(msg)
