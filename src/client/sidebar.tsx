@@ -114,10 +114,11 @@ export function Sidebar(props: {
   const fileItems = createMemo(() => buildFileItems(gitFiles()))
   let gitRefreshSeq = 0
 
-  // Poll session lock status every 3s while sidebar is visible
+  // Poll session lock status every 6s while sidebar is visible. This still keeps
+  // the "in use" badge reasonably fresh but cuts idle wakeups in half.
   const [lockTick, setLockTick] = createSignal(0)
   createEffect(() => {
-    const id = setInterval(() => setLockTick(v => v + 1), 3000)
+    const id = setInterval(() => setLockTick(v => v + 1), 6000)
     return () => clearInterval(id)
   })
 
@@ -135,14 +136,26 @@ export function Sidebar(props: {
     return () => clearTimeout(id)
   }
 
+  const gitSnapshotTrigger = createMemo(() => {
+    const msgs = props.messages()
+    const last = msgs.at(-1)
+    const toolParts = last?.parts?.filter((part) => part.type === "tool-call" || part.type === "tool-result").length ?? 0
+    return `${msgs.length}:${last?.role ?? ""}:${last?.content?.length ?? 0}:${toolParts}`
+  })
+
   createEffect(() => {
-    props.messages().length
+    gitSnapshotTrigger()
     return refreshGitSnapshot(300)
   })
 
   // Force refresh when gitRefreshKey changes (external trigger via palette)
   createEffect(() => {
-    props.gitRefreshKey
+    void props.gitRefreshKey
+    return refreshGitSnapshot(0)
+  })
+
+  createEffect(() => {
+    void props.cwd
     return refreshGitSnapshot(0)
   })
 

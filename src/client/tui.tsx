@@ -10,7 +10,7 @@ import type { Message } from "../provider/types"
 import type { PermissionRequest, Def } from "../tool/types"
 import { listSelectableGroups, toggleGroup, TOOL_GROUPS } from "../tool/selection"
 import { loadMcpConfig, mcpGroupId } from "../mcp/config"
-import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpServer, isServerLoaded, unloadAllMcpServers } from "../mcp/store"
+import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpServer, isServerLoaded, isServerLoading, unloadAllMcpServers } from "../mcp/store"
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
@@ -1502,7 +1502,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           : enabledMcpServers().filter((s) => s !== serverId)
         setEnabledMcpServers(nextList)
         saveUIPrefs({ enabledMcpServers: nextList })
-        if (nowEnabled && server && !isServerLoaded(serverId)) {
+        if (nowEnabled && server && !isServerLoaded(serverId) && !isServerLoading(serverId)) {
           setStatus(`starting MCP ${serverId}...`)
           loadMcpServer(server)
             .then((n) => { refreshRegisteredTools(); setStatus(`MCP ${serverId}: ${n} tools loaded`) })
@@ -1733,11 +1733,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setPaletteIndex(firstSelectablePaletteIndex(paletteItems()))
   })
 
-  // Poll lock status while session list palette is open
+  // Poll lock status while session list palette is open.
+  // A slower interval reduces idle CPU wakeups without materially affecting UX.
   createEffect(() => {
     if (!showPalette()) return
     if (paletteMode() !== "sessions") return
-    const id = setInterval(() => setLockPollRevision(v => v + 1), 2000)
+    const id = setInterval(() => setLockPollRevision(v => v + 1), 5000)
     return () => clearInterval(id)
   })
 
