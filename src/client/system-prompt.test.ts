@@ -9,10 +9,18 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /In Build mode, default to doing the work instead of only describing it\./)
     assert.match(prompt, /You are currently in Build mode\./)
     assert.match(prompt, /Unless the user explicitly asks for analysis, explanation, brainstorming, or a plan/)
-    assert.match(prompt, /do not stop at a proposal; make the change in the workspace\./)
+    assert.match(prompt, /execute in the same turn instead of stopping at a proposal/)
     assert.match(prompt, /Drive the task to completion/)
     assert.match(prompt, /Do not ask the user whether to continue/)
     assert.match(prompt, /Reporting when done/)
+  })
+
+  it("includes an environment section with the working directory", () => {
+    const prompt = buildSystemPrompt("build", undefined, undefined, "/tmp/example-project")
+
+    assert.match(prompt, /# Environment/)
+    assert.match(prompt, /Working directory: \/tmp\/example-project/)
+    assert.match(prompt, /Platform: /)
   })
 
   it("includes plan-mode restrictions", () => {
