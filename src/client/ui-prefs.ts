@@ -6,10 +6,12 @@ type UIPrefs = {
   showCompletedTools: boolean
   showThinkingBlocks: boolean
   layoutMode: "horizontal" | "vertical"
-  geassEnabled: boolean
   autoCompressionEnabled: boolean
   maxSteps: number
-  /** Selectable tool groups the user has turned off (denylist; core tools always on). */
+  /**
+   * Selectable tool groups the user has turned off (denylist; core tools always
+   * on). The "browser" group also acts as the single on/off control for GEASS.
+   */
   disabledToolGroups: string[]
 }
 
@@ -17,7 +19,6 @@ const DEFAULTS: UIPrefs = {
   showCompletedTools: false,
   showThinkingBlocks: true,
   layoutMode: "horizontal",
-  geassEnabled: false,
   autoCompressionEnabled: false,
   maxSteps: 50,
   disabledToolGroups: [],

@@ -38,7 +38,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
-import { testConnection, isConnected, isEnabled, setEnabled } from "../browser/geass-client"
+import { testConnection, isConnected, setEnabled } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -223,8 +223,11 @@ function App() {
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
-  setEnabled(_uiPrefs.geassEnabled)
-  if (_uiPrefs.geassEnabled) {
+  // The Browser tool group is the single control for GEASS: if it is enabled,
+  // turn the GEASS client on and probe the connection at startup.
+  const _browserEnabled = !_uiPrefs.disabledToolGroups.includes("browser")
+  setEnabled(_browserEnabled)
+  if (_browserEnabled) {
     testConnection().then(() => setGeassRevision(v => v + 1))
   }
   const [showCompletedTools, setShowCompletedTools] = createSignal(_uiPrefs.showCompletedTools)
@@ -1480,44 +1483,34 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => {},
       },
       ...listSelectableGroups(registeredTools(), disabledToolGroups()).map((g) => ({
+        // Toggling a group keeps the palette open so several can be flipped in
+        // one visit. The Browser group also drives the GEASS connection so it
+        // is the single control — no separate Enable GEASS toggle.
         label: g.enabled ? `✓ ${g.label}` : `  ${g.label}`,
-        hint: g.enabled ? `on · ${g.count} tool${g.count === 1 ? "" : "s"}` : "off · hidden from model",
+        hint: g.id === "browser"
+          ? (g.enabled ? (isConnected() ? "on · ● Online" : "on · ○ Offline") : "off · hidden from model")
+          : (g.enabled ? `on · ${g.count} tool${g.count === 1 ? "" : "s"}` : "off · hidden from model"),
         onSelect: () => {
           const next = toggleGroup(disabledToolGroups(), g.id)
           setDisabledToolGroups(next)
           saveUIPrefs({ disabledToolGroups: next })
-          setStatus(next.includes(g.id) ? `${g.label} disabled` : `${g.label} enabled`)
-          setShowPalette(false)
+          const nowEnabled = !next.includes(g.id)
+          if (g.id === "browser") {
+            setEnabled(nowEnabled)
+            setGeassRevision(v => v + 1)
+            if (nowEnabled) testConnection().then(() => setGeassRevision(v => v + 1))
+          }
+          setStatus(nowEnabled ? `${g.label} enabled` : `${g.label} disabled`)
         },
       })),
-      {
-        label: "GEASS",
-        kind: "section",
-        onSelect: () => {},
-      },
-      {
-        label: isEnabled() ? "Disable GEASS" : "Enable GEASS",
-        hint: isEnabled() ? (isConnected() ? "● Online" : "○ Offline") : "",
-        onSelect: () => {
-          const nextEnabled = !isEnabled()
-          setEnabled(nextEnabled)
-          saveUIPrefs({ geassEnabled: nextEnabled })
-          setGeassRevision(v => v + 1)
-          if (isEnabled()) {
-            testConnection().then(() => setGeassRevision(v => v + 1))
-          }
-          setShowPalette(false)
-        },
-      },
-      ...(isEnabled() ? [{
-        label: "Test Connect",
+      ...(!disabledToolGroups().includes("browser") ? [{
+        label: "Test GEASS connection",
         hint: isConnected() ? "● Online" : "○ Offline",
         onSelect: () => {
           testConnection().then(ok => {
             setGeassRevision(v => v + 1)
             setStatus(ok ? "GEASS connected" : "GEASS connection failed")
           })
-          setShowPalette(false)
         },
       }] : []),
       { label: "", onSelect: () => {} },
