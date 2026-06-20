@@ -4,7 +4,21 @@ const BASE_URL = `http://127.0.0.1:${DEFAULT_PORT}`;
 const env = (key: string): string | undefined =>
   typeof process !== 'undefined' ? process.env[key] : undefined;
 
+let _runtimeSessionId: string | undefined;
+
+/**
+ * Bind subsequent browser requests to a dedicated GEASS agent window for the
+ * given OpenZeroCode session. Pass the raw OpenZeroCode session id (e.g.
+ * `ses_xxx`); it is prefixed with `ozc-` so the window is recognizable on the
+ * GEASS side. Pass `null`/`undefined` to fall back to env-var configuration.
+ */
+export function setRuntimeSessionId(rawId: string | null | undefined): void {
+  const trimmed = rawId?.trim();
+  _runtimeSessionId = trimmed && trimmed !== 'default' ? `ozc-${trimmed}` : undefined;
+}
+
 const configuredSessionId = (): string | undefined => {
+  if (_runtimeSessionId) return _runtimeSessionId;
   const value = env('OPENZEROCODE_GEASS_SESSION_ID') ?? env('GEASS_SESSION_ID');
   const trimmed = value?.trim();
   return trimmed && trimmed !== 'default' ? trimmed : undefined;

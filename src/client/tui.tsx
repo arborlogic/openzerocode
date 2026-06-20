@@ -40,7 +40,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
-import { testConnection, isConnected, setEnabled } from "../browser/geass-client"
+import { testConnection, isConnected, setEnabled, setRuntimeSessionId } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -170,6 +170,10 @@ function App() {
     sid = createSession(currentModel, currentProvider).id
   }
   const [sessionId, setSessionId] = createSignal(sid)
+  // Bind each OpenZeroCode session to its own GEASS agent window so browser
+  // requests don't all land on the main window. Runs on startup, switch, and
+  // new-session creation since they all funnel through the sessionId signal.
+  createEffect(() => { setRuntimeSessionId(sessionId()) })
   const [sessionMeta, setSessionMeta] = createSignal(currentSessionMeta())
   const [messages, setMessages] = createSignal(initialMessages)
   const [status, setStatus] = createSignal("waiting for input")
