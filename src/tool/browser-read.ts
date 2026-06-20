@@ -8,6 +8,7 @@ export const BrowserReadTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "browser_read",
+    group: "browser",
     description: [
       "Read the current page content from the GEASS browser.",
       "Returns structured data: URL, title, headings, buttons, links, inputs, tables, and visible text.",

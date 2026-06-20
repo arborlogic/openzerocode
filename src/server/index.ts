@@ -229,7 +229,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           reasoning_effort: body.reasoning_effort,
         }, {
           runSync,
-          systemPrompt: (m) => buildSystemPrompt(m, agentsInstruction, contextInstruction),
+          systemPrompt: (m) => buildSystemPrompt(m, agentsInstruction, contextInstruction, workdir),
           parseJson: tryParseJSON,
           compactionSummary: state?.compaction?.summary,
           // Server mode: auto-approve all tool requests. Permission gating is

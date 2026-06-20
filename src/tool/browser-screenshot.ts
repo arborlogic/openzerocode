@@ -8,6 +8,7 @@ export const BrowserScreenshotTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "browser_screenshot",
+    group: "browser",
     description: [
       "Take a screenshot of the current page in the GEASS browser.",
       "Returns a base64-encoded PNG image.",

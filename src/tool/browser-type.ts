@@ -12,6 +12,7 @@ export const BrowserTypeTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "browser_type",
+    group: "browser",
     description: [
       "Type text into an input field on the current page in the GEASS browser.",
       "Use targetLabel to match by visible label (e.g. 'Email', 'Password').",

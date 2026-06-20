@@ -13,6 +13,7 @@ This document records the currently confirmed architecture state and directions 
 - **Active client entry**: `src/client/tui.tsx`
 - **Runtime**: Bun with `@opentui/solid/preload`
 - **Old readline client**: Removed, no longer an active code path
+- **Agent loop**: `src/client/session-runner.ts` (`streamSession`) — see [agent-loop.md](agent-loop.md) for the turn execution model
 
 ### Session Persistence
 
@@ -37,8 +38,12 @@ See [memory-architecture.md](memory-architecture.md) for detailed design.
 
 Registry structure (stable):
 
+- `opencode-zen` — OpenCode Zen (Big Pickle); anonymous default model
+- `openai` — OpenAI API
+- `openai-codex` — OpenAI Codex
 - `openrouter` — OpenRouter API
-- `big-pickle` — Big Pickle API
+- `zero-api` — Zero-API
+- `deepseek` — DeepSeek (V4 Flash / V4 Pro, 1M context)
 - Extensible through registry
 
 Implementation: `src/provider/registry.ts` + `src/provider/config.ts`

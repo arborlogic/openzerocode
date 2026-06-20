@@ -10,6 +10,7 @@ export const BrowserNavigateTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "browser_navigate",
+    group: "browser",
     description: [
       "Navigate the GEASS browser to a URL.",
       "Requires GEASS desktop to be running.",

@@ -19,6 +19,7 @@ export const CallPeerTool = Effect.gen(function* () {
 
   return new Def({
     id: "call_peer",
+    group: "peer",
     description:
       "Send a message or request to another named openzerocode peer process working on a different project. " +
       "Use this when you need the other AI agent to take action or when you want to share results. " +

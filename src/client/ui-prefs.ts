@@ -6,18 +6,29 @@ type UIPrefs = {
   showCompletedTools: boolean
   showThinkingBlocks: boolean
   layoutMode: "horizontal" | "vertical"
-  geassEnabled: boolean
   autoCompressionEnabled: boolean
   maxSteps: number
+  /**
+   * Selectable tool groups the user has turned off (denylist; core tools always
+   * on). The "browser" group also acts as the single on/off control for GEASS.
+   */
+  disabledToolGroups: string[]
+  /**
+   * MCP servers the user has explicitly turned on (allowlist; opt-in). MCP
+   * servers are off by default so we never spawn an external process
+   * (e.g. `chrome-devtools-mcp`) unattended.
+   */
+  enabledMcpServers: string[]
 }
 
 const DEFAULTS: UIPrefs = {
   showCompletedTools: false,
   showThinkingBlocks: true,
   layoutMode: "horizontal",
-  geassEnabled: false,
   autoCompressionEnabled: false,
   maxSteps: 50,
+  disabledToolGroups: [],
+  enabledMcpServers: [],
 }
 
 function getPrefsPath() {

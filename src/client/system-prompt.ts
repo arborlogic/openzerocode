@@ -1,3 +1,5 @@
+import { existsSync } from "fs"
+import { resolve } from "path"
 import type { RunMode } from "./session-runner"
 import { isConnected } from "../browser/geass-client"
 
@@ -46,9 +48,7 @@ const BASE_SYSTEM_PROMPT = [
 const BUILD_MODE_REMINDER = [
   "You are currently in Build mode.",
   "You are permitted to read files, edit files, and run commands.",
-  "If the user is asking for an implementation or file change, do not stop at a proposal; make the change in the workspace.",
-  "Do not announce a plan and then end the turn. Announce briefly (one sentence is enough), then immediately execute it in the same turn.",
-  "Treat the user's request as a standing instruction until it is fully done — do not re-confirm intermediate steps.",
+  "Apply the completion and reporting rules above to every request in this session: announce briefly (one sentence), then execute in the same turn instead of stopping at a proposal.",
 ].join("\n")
 
 const PLAN_MODE_REMINDER = [
@@ -56,6 +56,17 @@ const PLAN_MODE_REMINDER = [
   "Do not write code, do not call tools, and do not make changes.",
   "Explain the approach, risks, and step-by-step plan only.",
 ].join("\n")
+
+function buildEnvironmentSection(cwd: string): string {
+  const isGit = existsSync(resolve(cwd, ".git"))
+  return [
+    "# Environment",
+    `- Working directory: ${cwd}`,
+    `- Platform: ${process.platform}`,
+    `- Today's date: ${new Date().toISOString().slice(0, 10)}`,
+    `- Git repository: ${isGit ? "yes" : "no"}`,
+  ].join("\n")
+}
 
 function buildGeassSection(): string | null {
   if (!isConnected()) return null
@@ -75,16 +86,27 @@ function buildGeassSection(): string | null {
   ].join("\n")
 }
 
-export function buildSystemPrompt(mode: RunMode, agentsInstruction?: string, contextInstruction?: string) {
+export function buildSystemPrompt(
+  mode: RunMode,
+  agentsInstruction?: string,
+  contextInstruction?: string,
+  cwd: string = process.cwd(),
+) {
   const parts = [BASE_SYSTEM_PROMPT, mode === "plan" ? PLAN_MODE_REMINDER : BUILD_MODE_REMINDER]
 
+  parts.push(buildEnvironmentSection(cwd))
+
+  // Plan mode disables tools entirely (toolDefs is emptied in session-runner),
+  // so tool-specific guidance (todo list, GEASS browser tools) only belongs in
+  // Build mode — describing tools the model cannot call wastes tokens and
+  // contradicts the "do not call tools" plan-mode instruction.
   if (mode !== "plan") {
     parts.push(TODO_INSTRUCTIONS)
-  }
 
-  const geassSection = buildGeassSection()
-  if (geassSection) {
-    parts.push(geassSection)
+    const geassSection = buildGeassSection()
+    if (geassSection) {
+      parts.push(geassSection)
+    }
   }
 
   if (agentsInstruction) {

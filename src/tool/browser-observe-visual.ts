@@ -79,6 +79,7 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "browser_observe_visual",
+    group: "browser",
     description: [
       "Capture the current GEASS browser view for visual inspection.",
       "Returns structured page context and viewport metadata, plus either a local VLM analysis or a PNG screenshot data URL.",

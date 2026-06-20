@@ -155,13 +155,16 @@ export function parseGitPorcelain(out: string): Pick<GitFile, "path" | "status">
 
 export async function readGitSnapshot(cwd: string): Promise<GitSnapshot> {
   // Dedup concurrent calls within the same workspace: if a fetch is already
-  // in-flight, share its result. Keep cwd in the key so split workspaces don't
-  // reuse a snapshot from a different project.
-  if (pendingGitSnapshot?.cwd === cwd) return pendingGitSnapshot.promise
+  // in-flight, chain a fresh snapshot after it rather than returning the existing
+  // promise directly. Returning the in-flight promise risks stale data when a file
+  // is created *after* that snapshot started but *before* this call arrived.
+  if (pendingGitSnapshot?.cwd === cwd) {
+    return pendingGitSnapshot.promise.then(() => readGitSnapshot(cwd))
+  }
 
   const promise = Promise.all([
     runGit(cwd, ["diff", "--numstat", "HEAD"], 2000),
-    runGit(cwd, ["status", "--porcelain"], 2000),
+    runGit(cwd, ["status", "--porcelain", "-uall"], 2000),
     runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"], 1000),
     runGit(cwd, ["log", "--oneline", `-${RECENT_COMMIT_LIMIT}`], 1000),
   ]).then(([diff, porcelain, branch, commits]) => {
