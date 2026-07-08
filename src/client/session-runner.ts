@@ -140,7 +140,7 @@ export async function* streamSession(
   // Hide user-disabled tool groups (e.g. the GEASS browser tools) from the model
   // so it never tries them; core tools have no group and always pass.
   const tools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
-  const learnToolIds = new Set(["read", "grep", "glob", "learn_memory_apply"])
+  const learnToolIds = new Set(["read", "grep", "glob", "learn_memory_apply", "learn_project_memory_apply"])
   const modeTools = options.mode === "learn"
     ? tools.filter((tool) => learnToolIds.has(tool.id))
     : tools

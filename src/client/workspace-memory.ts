@@ -51,6 +51,10 @@ export function findWorkspaceBoundary(startDir: string): string {
     if (
       existsSync(resolve(current, ".git"))
       || existsSync(resolve(current, "package.json"))
+      || existsSync(resolve(current, "pubspec.yaml"))
+      || existsSync(resolve(current, "Cargo.toml"))
+      || existsSync(resolve(current, "go.mod"))
+      || existsSync(resolve(current, "pyproject.toml"))
     ) {
       return current
     }
@@ -64,6 +68,33 @@ function loadGlobalMemoryFile(filename: "AGENTS.md" | "CONTEXT.md"): { path: str
   const path = globalMemoryPath(filename)
   const content = readTextFile(path)
   return content ? { path, content } : undefined
+}
+
+function joinMemoryContents(files: Array<{ path: string, content: string }>): string | undefined {
+  if (files.length === 0) return undefined
+  return files.map((file) => file.content).join("\n\n")
+}
+
+/**
+ * Load only explicit user-global AGENTS.md memory. Project files and conditional
+ * files are not auto-injected; Learn mode can help the user extract relevant
+ * global experience into a project's DEVELOPMENT.md when requested.
+ */
+export function loadAgentsInstruction(_startDir = process.cwd()): string | undefined {
+  return joinMemoryContents([
+    ...[loadGlobalMemoryFile("AGENTS.md")].filter((file): file is { path: string, content: string } => !!file),
+  ])
+}
+
+/**
+ * Load only explicit user-global CONTEXT.md memory. Project files and conditional
+ * files are not auto-injected; Learn mode can help the user extract relevant
+ * global experience into a project's DEVELOPMENT.md when requested.
+ */
+export function loadContextInstruction(_startDir = process.cwd()): string | undefined {
+  return joinMemoryContents([
+    ...[loadGlobalMemoryFile("CONTEXT.md")].filter((file): file is { path: string, content: string } => !!file),
+  ])
 }
 
 export type WorkspaceMemoryStatus = {
@@ -85,36 +116,24 @@ export function inspectWorkspaceMemory(startDir = process.cwd()): WorkspaceMemor
   const workspaceBoundary = findWorkspaceBoundary(cwd)
   const agentsFile = loadGlobalMemoryFile("AGENTS.md")
   const contextFile = loadGlobalMemoryFile("CONTEXT.md")
+  const agentsPaths = agentsFile ? [agentsFile.path] : []
+  const contextPaths = contextFile ? [contextFile.path] : []
   const sessionSummaryCandidate = resolve(workspaceBoundary, "SESSION_SUMMARY.md")
   const sessionSummaryPath = existsSync(sessionSummaryCandidate) ? sessionSummaryCandidate : undefined
 
   return {
     cwd,
     workspaceBoundary,
-    agentsPath: agentsFile?.path,
-    contextPath: contextFile?.path,
-    agentsPaths: agentsFile ? [agentsFile.path] : [],
-    contextPaths: contextFile ? [contextFile.path] : [],
+    agentsPath: agentsPaths[0],
+    contextPath: contextPaths[0],
+    agentsPaths,
+    contextPaths,
     sessionSummaryPath,
-    agentsLoaded: !!agentsFile,
-    contextLoaded: !!contextFile,
+    agentsLoaded: agentsPaths.length > 0,
+    contextLoaded: contextPaths.length > 0,
     sessionSummaryPresent: !!sessionSummaryPath,
     sessionSummaryAutomatic: false,
   }
-}
-
-/**
- * Load user-global AGENTS.md memory from ~/.openzerocode/AGENTS.md.
- */
-export function loadAgentsInstruction(_startDir = process.cwd()): string | undefined {
-  return loadGlobalMemoryFile("AGENTS.md")?.content
-}
-
-/**
- * Load user-global CONTEXT.md memory from ~/.openzerocode/CONTEXT.md.
- */
-export function loadContextInstruction(_startDir = process.cwd()): string | undefined {
-  return loadGlobalMemoryFile("CONTEXT.md")?.content
 }
 
 function relativeToWorkspace(status: WorkspaceMemoryStatus, path: string): string {
@@ -137,7 +156,8 @@ export function formatWorkspaceMemoryStatus(status: WorkspaceMemoryStatus): stri
     `- workspace boundary: ${status.workspaceBoundary}`,
     `- user global AGENTS.md: ${formatLoaded(status.agentsPaths)}`,
     `- user global CONTEXT.md: ${formatLoaded(status.contextPaths)}`,
-    `- project memory files: not loaded (project AGENTS.md/CONTEXT.md are treated as regular repository files)`,
+    `- project DEVELOPMENT.md: manual Learn-mode extraction target (not auto-loaded)`,
+    `- project memory files: not loaded automatically (project AGENTS.md/CONTEXT.md are treated as regular repository files)`,
     `- SESSION_SUMMARY.md: ${status.sessionSummaryPresent ? `present at ${status.sessionSummaryPath} (manual only, not auto-loaded)` : "not present (and never auto-loaded)"}`,
     `- automatic prompt inputs: ${automaticInputs.join(", ") || "none"}`,
   ]

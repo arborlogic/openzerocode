@@ -205,6 +205,7 @@ test("streamSession exposes only read/search/memory tools in learn mode", async 
       testTool("grep"),
       testTool("glob"),
       testTool("learn_memory_apply"),
+      testTool("learn_project_memory_apply"),
       testTool("write"),
       testTool("bash"),
       testTool("web_fetch"),
@@ -216,7 +217,7 @@ test("streamSession exposes only read/search/memory tools in learn mode", async 
 
   assert.deepEqual(
     requests[0]?.tools?.map((tool) => tool.function.name),
-    ["read", "grep", "glob", "learn_memory_apply"],
+    ["read", "grep", "glob", "learn_memory_apply", "learn_project_memory_apply"],
   )
 })
 

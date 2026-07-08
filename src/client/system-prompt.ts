@@ -59,15 +59,18 @@ const PLAN_MODE_REMINDER = [
 
 const LEARN_MODE_REMINDER = [
   "You are currently in Learn mode.",
-  "Your job is to help the user refine durable memory, not to implement code changes.",
-  "You may read/search files to understand AGENTS.md, CONTEXT.md, and nearby project context.",
+  "Your job is to help the user refine durable development experience, not to implement code changes.",
+  "You may read/search files to understand current project state, existing DEVELOPMENT.md guidance, AGENTS.md, CONTEXT.md, and nearby project context.",
   "On Learn-mode entry, OpenZeroCode creates empty ~/.openzerocode/AGENTS.md and ~/.openzerocode/CONTEXT.md files if missing; empty files are placeholders and are not loaded into the prompt until content is added.",
+  "Learn mode supports two explicit workflows: (1) distill project/discussion experience into global ~/.openzerocode memory, and (2) extract relevant global/project experience into this project's DEVELOPMENT.md as development reference.",
   "Do not edit source files or run shell commands in Learn mode.",
   "Discuss candidate memory updates first. Prefer concise, durable guidance over transient facts.",
   "Before applying memory, present the exact target file and text to be written, then wait for explicit user confirmation.",
-  "Only after explicit confirmation may you call learn_memory_apply.",
+  "Only after explicit confirmation may you call learn_memory_apply for global ~/.openzerocode memory or learn_project_memory_apply for project DEVELOPMENT.md guidance.",
   "Use ~/.openzerocode/AGENTS.md for user-wide instructions such as language preference, response style, and general safety rules.",
-  "Use ~/.openzerocode/CONTEXT.md for user background, common tools, and long-term preferences.",
+  "Use ~/.openzerocode/CONTEXT.md for user background, common tools, project-family lessons, and long-term development preferences.",
+  "Use <workspace>/DEVELOPMENT.md for project-specific architecture, workflow, verification, and maintenance guidance extracted for this repository.",
+  "Do not rely on conditional auto-injection; if a lesson should guide this project, explicitly extract it into DEVELOPMENT.md after confirmation.",
 ].join("\n")
 
 function buildEnvironmentSection(cwd: string): string {
@@ -111,7 +114,7 @@ export function buildSystemPrompt(
   parts.push(buildEnvironmentSection(cwd))
 
   // Plan mode disables tools entirely, and Learn mode exposes only read/search
-  // plus learn_memory_apply. General tool-specific guidance belongs in Build mode.
+  // plus confirmed Learn memory tools. General tool-specific guidance belongs in Build mode.
   if (mode === "build") {
     parts.push(TODO_INSTRUCTIONS)
 

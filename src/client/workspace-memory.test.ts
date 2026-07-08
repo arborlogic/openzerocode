@@ -113,6 +113,25 @@ describe("loadAgentsInstruction", () => {
 
     assert.equal(result, undefined)
   })
+
+  it("does not auto-load conditional instructions from memory.d", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode", "memory.d"), { recursive: true })
+    writeFileSync(join(root, "pubspec.yaml"), "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n")
+    writeFileSync(join(home, ".openzerocode", "memory.d", "flutter.md"), [
+      "---",
+      "type: agents",
+      "whenAnyFile:",
+      "  - pubspec.yaml",
+      "---",
+      "Run Flutter verification.",
+    ].join("\n"))
+
+    const result = withHome(home, () => loadAgentsInstruction(root))
+
+    assert.equal(result, undefined)
+  })
 })
 
 describe("loadContextInstruction", () => {
@@ -199,6 +218,7 @@ describe("inspectWorkspaceMemory", () => {
 
     assert.match(text, /Workspace memory status/)
     assert.match(text, /user global AGENTS\.md: loaded/)
+    assert.match(text, /project DEVELOPMENT\.md: manual Learn-mode extraction target \(not auto-loaded\)/)
     assert.match(text, /project memory files: not loaded/)
     assert.match(text, /user global CONTEXT\.md: not loaded/)
     assert.match(text, /SESSION_SUMMARY\.md: not present \(and never auto-loaded\)/)

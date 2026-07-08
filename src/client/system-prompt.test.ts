@@ -34,9 +34,11 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt("learn")
 
     assert.match(prompt, /You are currently in Learn mode\./)
-    assert.match(prompt, /help the user refine durable memory/)
+    assert.match(prompt, /help the user refine durable development experience/)
     assert.match(prompt, /wait for explicit user confirmation/)
     assert.match(prompt, /learn_memory_apply/)
+    assert.match(prompt, /learn_project_memory_apply/)
+    assert.match(prompt, /DEVELOPMENT\.md/)
     assert.match(prompt, /~\/\.openzerocode\/AGENTS\.md/)
     assert.match(prompt, /~\/\.openzerocode\/CONTEXT\.md/)
     assert.doesNotMatch(prompt, /<project>\/\.openzerocode\/CONTEXT\.md/)
