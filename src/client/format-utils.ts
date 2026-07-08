@@ -2,6 +2,69 @@ import type { CompactionInfo } from "./sessions"
 import type { ModelInfo } from "../provider/types"
 import { getKnownModelConfig, getModelConfig } from "../provider/models"
 
+// File extension → tree-sitter filetype mapping
+const LANGUAGE_EXTENSIONS: Record<string, string> = {
+  ".ts": "typescript",
+  ".tsx": "typescriptreact",
+  ".mts": "typescript",
+  ".cts": "typescript",
+  ".js": "javascript",
+  ".jsx": "javascriptreact",
+  ".mjs": "javascript",
+  ".cjs": "javascript",
+  ".py": "python",
+  ".rs": "rust",
+  ".go": "go",
+  ".cpp": "cpp",
+  ".cc": "cpp",
+  ".cxx": "cpp",
+  ".c++": "cpp",
+  ".c": "c",
+  ".h": "c",
+  ".cs": "csharp",
+  ".java": "java",
+  ".kt": "kotlin",
+  ".kts": "kotlin",
+  ".rb": "ruby",
+  ".php": "php",
+  ".scala": "scala",
+  ".html": "html",
+  ".htm": "html",
+  ".css": "css",
+  ".scss": "css",
+  ".json": "json",
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".toml": "toml",
+  ".lua": "lua",
+  ".hs": "haskell",
+  ".sh": "bash",
+  ".bash": "bash",
+  ".zsh": "bash",
+  ".sql": "sql",
+  ".xml": "html",
+  ".md": "markdown",
+  ".markdown": "markdown",
+  ".swift": "swift",
+  ".zig": "zig",
+  ".vue": "html",
+  ".svelte": "html",
+  ".hcl": "bash",
+  ".tf": "bash",
+  ".nix": "bash",
+  ".ex": "ruby",
+  ".exs": "ruby",
+  ".erl": "ruby",
+  ".r": "python",
+  ".R": "python",
+}
+
+export function detectFiletype(filePath: string): string {
+  const ext = filePath.match(/\.[^.]*$/)?.[0]?.toLowerCase()
+  if (!ext) return "none"
+  return LANGUAGE_EXTENSIONS[ext] ?? "none"
+}
+
 export function formatQueueStatus(status: string, depth: number) {
   return depth > 0 ? `${status} • ${depth} queued` : status
 }

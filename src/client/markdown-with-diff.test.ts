@@ -150,6 +150,39 @@ describe("parseDiffBlocks", () => {
     assert.equal(result[0]!.type, "markdown")
   })
 
+  it("detects diff content inside ```bash blocks", () => {
+    const md = [
+      "Changes:",
+      "```bash",
+      "--- a/README.md",
+      "+++ b/README.md",
+      "@@ -1,3 +1,4 @@",
+      " # Title",
+      "+New line",
+      " old line",
+      "```",
+    ].join("\n")
+
+    const result = parseDiffBlocks(md)
+    assert.equal(result.length, 2)
+    assert.equal(result[0]!.type, "markdown")
+    assert.equal(result[1]!.type, "diff")
+    assert.ok(result[1]!.content.includes("+New line"))
+  })
+
+  it("does not treat plain bash output as diff", () => {
+    const md = [
+      "```bash",
+      "$ ls -la",
+      "total 0",
+      "```",
+    ].join("\n")
+
+    const result = parseDiffBlocks(md)
+    assert.equal(result.length, 1)
+    assert.equal(result[0]!.type, "markdown")
+  })
+
   it("extracts markdown pipe tables as table segments", () => {
     const md = [
       "Before",

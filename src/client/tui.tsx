@@ -28,6 +28,11 @@ import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction 
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
+import { addDefaultParsers } from "@opentui/core"
+import parsers from "../../parsers-config"
+
+// Register tree-sitter WASM parsers for syntax highlighting
+addDefaultParsers(parsers.parsers)
 import { THEME, MARKDOWN_SYNTAX } from "./theme"
 import { ToastViewport } from "./toast-viewport"
 import type { ToastItem } from "./toast-viewport"

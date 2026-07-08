@@ -1,5 +1,6 @@
 import type { Message } from "../provider/types"
 import type { DisplayBlock } from "./display-block"
+import { tryParseJSON } from "./format-utils"
 
 export function messageToBlocks(msg: Message): DisplayBlock[] {
   if (msg.parts && msg.parts.length > 0) {
@@ -9,8 +10,14 @@ export function messageToBlocks(msg: Message): DisplayBlock[] {
           return { kind: "assistant", text: part.text }
         case "reasoning":
           return { kind: "reasoning", text: part.text, title: "Thinking" }
-        case "tool-call":
-          return { kind: "tool-call", text: part.input, title: part.tool }
+        case "tool-call": {
+          const meta: Record<string, unknown> = {}
+          const parsed = tryParseJSON(part.input)
+          if (typeof parsed.filePath === "string") {
+            meta.filePath = parsed.filePath
+          }
+          return { kind: "tool-call", text: part.input, title: part.tool, meta }
+        }
         case "tool-result":
           return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool }
         default:

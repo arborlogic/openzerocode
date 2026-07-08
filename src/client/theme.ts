@@ -16,6 +16,13 @@ export const THEME = {
   warning: "#d29922",
   headerBg: "#161b22",
   headerBorder: "#21262d",
+  // Diff colors
+  diffAddedBg: "#12261e",
+  diffRemovedBg: "#2d1215",
+  diffAddedSign: "#7ee787",
+  diffRemovedSign: "#ff7b72",
+  diffHunkSign: "#d2a8ff",
+  diffLineNumberFg: "#8b949e",
 }
 
 export const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([

@@ -3,4 +3,6 @@ export type DisplayBlock = {
   text: string
   title?: string
   streaming?: boolean
+  /** Extra metadata (e.g. file path for write/read_file tool results) */
+  meta?: Record<string, unknown>
 }
