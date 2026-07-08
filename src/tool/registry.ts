@@ -6,6 +6,7 @@ import { GrepTool } from "./grep"
 import { GlobTool } from "./glob"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
+import { ApplyPatchTool } from "./apply-patch"
 import { WebFetchTool } from "./web-fetch"
 import { TodoWriteTool } from "./todo"
 import { BrowserNavigateTool } from "./browser-navigate"
@@ -39,6 +40,7 @@ export const layer = Layer.effect(
       yield* GlobTool,
       yield* BashTool,
       yield* EditTool,
+      yield* ApplyPatchTool,
       yield* WebFetchTool,
       yield* TodoWriteTool,
       yield* BrowserNavigateTool,

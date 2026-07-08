@@ -55,9 +55,10 @@ function globToRegExp(pattern: string) {
   return new RegExp(`^${escaped.replace(/\*\*/g, "::DOUBLE_STAR::").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/::DOUBLE_STAR::/g, ".*")}$`)
 }
 
-async function walkFiles(root: string, include?: string): Promise<string[]> {
+async function walkFiles(root: string, include?: string | string[]): Promise<string[]> {
   const results: string[] = []
-  const includeRe = include ? globToRegExp(include) : undefined
+  const includes = Array.isArray(include) ? include : include ? [include] : []
+  const includeRes = includes.map(globToRegExp)
 
   async function walk(current: string) {
     const entries = await readdir(current, { withFileTypes: true })
@@ -69,7 +70,7 @@ async function walkFiles(root: string, include?: string): Promise<string[]> {
         continue
       }
       const relative = path.relative(root, full).split(path.sep).join("/")
-      if (!includeRe || includeRe.test(relative)) {
+      if (includeRes.length === 0 || includeRes.some((includeRe) => includeRe.test(relative))) {
         results.push(full)
       }
     }
@@ -111,7 +112,7 @@ function spawnRg(args: string[], cwd: string, abort: AbortSignal): Promise<{ std
   })
 }
 
-async function searchWithFallback(pattern: string, targetPath: string, include?: string): Promise<string> {
+async function searchWithFallback(pattern: string, targetPath: string, include?: string | string[]): Promise<string> {
   let regex: RegExp
   try {
     regex = new RegExp(pattern)
@@ -162,10 +163,10 @@ export const GrepTool = Effect.gen(function* () {
           const outputs = await Promise.all(patterns.map(async (pat) => {
             const rgArgs = ["-n", pat]
             for (const inc of includes) rgArgs.push("--glob", inc)
-            rgArgs.push(searchPath)
+            rgArgs.push(".")
             const result = await spawnRg(rgArgs, searchPath, ctx.abort)
             if (result.error && "code" in result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") {
-              return searchWithFallback(pat, searchPath, includes[0])
+              return searchWithFallback(pat, searchPath, includes)
             } else if (result.error) {
               return `rg failed: ${result.error.message}`
             } else if (result.status === 0) {
