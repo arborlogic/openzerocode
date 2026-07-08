@@ -20,8 +20,8 @@ export type CommandContext = {
   setCurrentProvider: (id: string) => Promise<{ ok: boolean; message: string }>
   currentModel: string
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
-  mode: "build" | "plan"
-  setMode: (mode: "build" | "plan") => void
+  mode: "build" | "plan" | "learn"
+  setMode: (mode: "build" | "plan" | "learn") => void
   reasoningEffort: "low" | "medium" | "high" | "max" | undefined
   setReasoningEffort: (effort: "low" | "medium" | "high" | "max" | undefined) => void
   messages: () => Message[]
@@ -59,9 +59,9 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "new", description: "Start a fresh session" },
   { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
-  { name: "mode", description: "Toggle build / plan mode" },
+  { name: "mode", description: "Switch mode: /mode build|plan|learn (no arg toggles build/plan)" },
   { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off" },
-  { name: "memory", description: "Show loaded workspace memory files and prompt-memory status" },
+  { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
   { name: "model", description: "Switch model: /model <name> or /model list" },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
@@ -129,11 +129,11 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
       const nextMode = ctx.mode === "build" ? "plan" : "build"
       ctx.setMode(nextMode)
       notifyCommand(ctx, "success", "Mode updated", `Mode set to ${nextMode}`)
-    } else if (arg === "build" || arg === "plan") {
+    } else if (arg === "build" || arg === "plan" || arg === "learn") {
       ctx.setMode(arg)
       notifyCommand(ctx, "success", "Mode updated", `Mode set to ${arg}`)
     } else {
-      notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan")
+      notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan|learn")
     }
     return true
   }
@@ -162,7 +162,7 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "memory") {
     const status = inspectWorkspaceMemory(process.cwd())
-    notifyCommand(ctx, "info", "Workspace memory", formatWorkspaceMemoryStatus(status))
+    notifyCommand(ctx, "info", "Prompt memory", formatWorkspaceMemoryStatus(status))
     return true
   }
 

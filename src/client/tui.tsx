@@ -24,7 +24,7 @@ import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDif
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError, isRateLimitError, delay } from "./errors"
-import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
+import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { buildSystemPrompt } from "./system-prompt"
@@ -126,11 +126,12 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 }
 
 function systemPrompt(mode: RunMode) {
-  return buildSystemPrompt(mode, agentsInstruction, contextInstruction)
+  return buildSystemPrompt(mode, agentsInstruction, contextInstruction, process.cwd())
 }
 
 function refreshAgentsInstruction() {
   agentsInstruction = loadAgentsInstruction(process.cwd())
+  contextInstruction = loadContextInstruction(process.cwd())
 }
 
 function App() {
@@ -151,7 +152,7 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
-      if (loaded.mode === "plan") initialMode = "plan"
+      if (loaded.mode === "plan" || loaded.mode === "learn") initialMode = loaded.mode
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
@@ -182,7 +183,22 @@ function App() {
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
-  const [mode, setMode] = createSignal<RunMode>(initialMode)
+  const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
+  const bootstrapLearnMemory = () => {
+    const result = ensureGlobalMemoryFiles()
+    if (result.created.length > 0) {
+      const created = result.created.map((path) => displayPath(path)).join(", ")
+      showToast("info", "Learn memory initialized", `Created empty global memory files: ${created}`, 5000)
+      refreshAgentsInstruction()
+    }
+  }
+  const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
+    setModeRaw((prev) => {
+      const resolved = typeof next === "function" ? (next as (prev: RunMode) => RunMode)(prev) : next
+      if (resolved === "learn" && prev !== "learn") bootstrapLearnMemory()
+      return resolved
+    })
+  }
   const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
@@ -226,6 +242,7 @@ function App() {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
     }, duration)
   }
+  if (initialMode === "learn") bootstrapLearnMemory()
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
@@ -1047,9 +1064,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch mode",
-        hint: mode() === "build" ? "build → plan" : "plan → build",
+        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → learn" : "learn → build",
         onSelect: () => {
-          setMode(m => m === "build" ? "plan" : "build")
+          setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
           setShowPalette(false)
         },
       },
@@ -1960,7 +1977,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setSelectionRevision((v) => v + 1)
     }
     setMessages(loaded?.messages ?? [])
-    setMode(loaded?.mode === "plan" ? "plan" : "build")
+    setMode(loaded?.mode === "plan" || loaded?.mode === "learn" ? loaded.mode : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
@@ -3316,10 +3333,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
               <text
-                style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}
-                onMouseDown={() => { const next = mode() === "build" ? "plan" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#d29922" }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "learn" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
               >
-                {mode() === "build" ? "Build" : "Plan"}
+                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Learn"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
@@ -3428,7 +3445,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")
-            setMode(m => m === "build" ? "plan" : "build")
+            setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
             setStatus(`Mode: ${mode()}`)
           } else if (noArgs.has(name)) {
             setComposerText("/" + name)

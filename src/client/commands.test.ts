@@ -134,6 +134,13 @@ describe("executeCommand", () => {
       assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
+    it("switches to learn mode", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/mode learn", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "learn")
+    })
+
     it("toggles mode when no argument given", async () => {
       const ctx = stubCtx() // mode is "build"
       const result = await executeCommand("/mode", ctx)
@@ -222,7 +229,7 @@ describe("executeCommand", () => {
       const first = calls[0]
       const args = first.arguments ?? first
       assert.equal(args[0], "info")
-      assert.equal(args[1], "Workspace memory")
+      assert.equal(args[1], "Prompt memory")
     })
   })
 
@@ -373,7 +380,7 @@ describe("executeCommand", () => {
     const call = (ctx.showToast as any).mock.calls[0]
     const args = call.arguments ?? call
     assert.equal(args[0], "info")
-    assert.equal(args[1], "Workspace memory")
+    assert.equal(args[1], "Prompt memory")
   })
 
   it("returns false for unknown command", async () => {

@@ -12,7 +12,7 @@ import { estimateTokens, getModelConfig } from "../provider/models"
 import type { StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
-export type RunMode = "build" | "plan"
+export type RunMode = "build" | "plan" | "learn"
 
 type SessionUi = {
   abort: AbortSignal
@@ -140,7 +140,11 @@ export async function* streamSession(
   // Hide user-disabled tool groups (e.g. the GEASS browser tools) from the model
   // so it never tries them; core tools have no group and always pass.
   const tools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
-  const toolDefs = options.mode === "plan" ? [] : convertToolsToDefs(tools)
+  const learnToolIds = new Set(["read", "grep", "glob", "learn_memory_apply"])
+  const modeTools = options.mode === "learn"
+    ? tools.filter((tool) => learnToolIds.has(tool.id))
+    : tools
+  const toolDefs = options.mode === "plan" ? [] : convertToolsToDefs(modeTools)
 
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
   const currentTurnStart = allMessages.length

@@ -10,7 +10,10 @@ Commands
   /new                  Start a fresh session
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
-  /mode                  Toggle build / plan mode
+  /mode [build|plan|learn]
+                         Switch mode; no arg cycles build / plan / learn
+  /memory                Show loaded global memory files
+                         Learn mode bootstraps empty ~/.openzerocode memory files
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
   /tools                 Toggle completed tool details
@@ -55,7 +58,7 @@ Command Palette  (Ctrl+P / F2)
     Usage dashboard      Token usage by session / provider / model
 
   MODEL
-    Switch mode          Toggle build ↔ plan
+    Switch mode          Cycle build → plan → learn
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
 

@@ -57,6 +57,19 @@ const PLAN_MODE_REMINDER = [
   "Explain the approach, risks, and step-by-step plan only.",
 ].join("\n")
 
+const LEARN_MODE_REMINDER = [
+  "You are currently in Learn mode.",
+  "Your job is to help the user refine durable memory, not to implement code changes.",
+  "You may read/search files to understand AGENTS.md, CONTEXT.md, and nearby project context.",
+  "On Learn-mode entry, OpenZeroCode creates empty ~/.openzerocode/AGENTS.md and ~/.openzerocode/CONTEXT.md files if missing; empty files are placeholders and are not loaded into the prompt until content is added.",
+  "Do not edit source files or run shell commands in Learn mode.",
+  "Discuss candidate memory updates first. Prefer concise, durable guidance over transient facts.",
+  "Before applying memory, present the exact target file and text to be written, then wait for explicit user confirmation.",
+  "Only after explicit confirmation may you call learn_memory_apply.",
+  "Use ~/.openzerocode/AGENTS.md for user-wide instructions such as language preference, response style, and general safety rules.",
+  "Use ~/.openzerocode/CONTEXT.md for user background, common tools, and long-term preferences.",
+].join("\n")
+
 function buildEnvironmentSection(cwd: string): string {
   const isGit = existsSync(resolve(cwd, ".git"))
   return [
@@ -92,15 +105,14 @@ export function buildSystemPrompt(
   contextInstruction?: string,
   cwd: string = process.cwd(),
 ) {
-  const parts = [BASE_SYSTEM_PROMPT, mode === "plan" ? PLAN_MODE_REMINDER : BUILD_MODE_REMINDER]
+  const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : mode === "learn" ? LEARN_MODE_REMINDER : BUILD_MODE_REMINDER
+  const parts = [BASE_SYSTEM_PROMPT, modeReminder]
 
   parts.push(buildEnvironmentSection(cwd))
 
-  // Plan mode disables tools entirely (toolDefs is emptied in session-runner),
-  // so tool-specific guidance (todo list, GEASS browser tools) only belongs in
-  // Build mode — describing tools the model cannot call wastes tokens and
-  // contradicts the "do not call tools" plan-mode instruction.
-  if (mode !== "plan") {
+  // Plan mode disables tools entirely, and Learn mode exposes only read/search
+  // plus learn_memory_apply. General tool-specific guidance belongs in Build mode.
+  if (mode === "build") {
     parts.push(TODO_INSTRUCTIONS)
 
     const geassSection = buildGeassSection()

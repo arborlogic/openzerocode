@@ -1,152 +1,206 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { mkdtempSync, mkdirSync, writeFileSync } from "fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
+import { ensureGlobalMemoryFiles, formatWorkspaceMemoryStatus, inspectWorkspaceMemory, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 
 function makeTempWorkspace() {
   return mkdtempSync(join(tmpdir(), "ozc-workspace-memory-"))
 }
 
+function withHome<T>(home: string, fn: () => T): T {
+  const previous = process.env.HOME
+  process.env.HOME = home
+  try {
+    return fn()
+  } finally {
+    if (previous === undefined) delete process.env.HOME
+    else process.env.HOME = previous
+  }
+}
+
+describe("ensureGlobalMemoryFiles", () => {
+  it("creates empty global AGENTS.md and CONTEXT.md on first Learn-mode bootstrap", () => {
+    const home = makeTempWorkspace()
+
+    const result = withHome(home, () => ensureGlobalMemoryFiles())
+
+    const agentsPath = join(home, ".openzerocode", "AGENTS.md")
+    const contextPath = join(home, ".openzerocode", "CONTEXT.md")
+    assert.equal(result.agentsPath, agentsPath)
+    assert.equal(result.contextPath, contextPath)
+    assert.deepEqual(result.created, [agentsPath, contextPath])
+    assert.equal(existsSync(agentsPath), true)
+    assert.equal(existsSync(contextPath), true)
+    assert.equal(readFileSync(agentsPath, "utf8"), "")
+    assert.equal(readFileSync(contextPath, "utf8"), "")
+  })
+
+  it("does not overwrite existing global memory files", () => {
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
+    const agentsPath = join(home, ".openzerocode", "AGENTS.md")
+    const contextPath = join(home, ".openzerocode", "CONTEXT.md")
+    writeFileSync(agentsPath, "existing agents\n")
+    writeFileSync(contextPath, "existing context\n")
+
+    const result = withHome(home, () => ensureGlobalMemoryFiles())
+
+    assert.deepEqual(result.created, [])
+    assert.equal(readFileSync(agentsPath, "utf8"), "existing agents\n")
+    assert.equal(readFileSync(contextPath, "utf8"), "existing context\n")
+  })
+
+  it("empty bootstrapped global files are not loaded into the prompt", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    writeFileSync(join(root, "package.json"), "{}\n")
+
+    const result = withHome(home, () => {
+      ensureGlobalMemoryFiles()
+      return {
+        agents: loadAgentsInstruction(root),
+        context: loadContextInstruction(root),
+      }
+    })
+
+    assert.equal(result.agents, undefined)
+    assert.equal(result.context, undefined)
+  })
+})
+
 describe("loadAgentsInstruction", () => {
-  it("returns undefined when no AGENTS.md exists", () => {
+  it("returns undefined when no global AGENTS.md exists", () => {
     const dir = makeTempWorkspace()
-    const result = loadAgentsInstruction(dir)
+    const home = makeTempWorkspace()
+    const result = withHome(home, () => loadAgentsInstruction(dir))
     assert.equal(result, undefined)
   })
 
-  it("loads AGENTS.md from the workspace root", () => {
+  it("loads user global AGENTS.md from ~/.openzerocode", () => {
     const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
     writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "AGENTS.md"), "- This repo uses pnpm.\n")
+    writeFileSync(join(home, ".openzerocode", "AGENTS.md"), "- Reply in Traditional Chinese.\n")
 
-    const result = loadAgentsInstruction(root)
+    const result = withHome(home, () => loadAgentsInstruction(root))
 
-    assert.equal(result, "- This repo uses pnpm.")
+    assert.equal(result, "- Reply in Traditional Chinese.")
   })
 
-  it("finds AGENTS.md by walking up from a nested directory", () => {
+  it("ignores project AGENTS.md files", () => {
     const root = makeTempWorkspace()
-    const nested = join(root, "src", "routes")
-    mkdirSync(nested, { recursive: true })
-    writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "AGENTS.md"), "- Run tests with bun test.\n")
-
-    const result = loadAgentsInstruction(nested)
-
-    assert.equal(result, "- Run tests with bun test.")
-  })
-
-  it("prefers the nearest AGENTS.md when multiple parents have one", () => {
-    const root = makeTempWorkspace()
-    const subdir = join(root, "packages", "app")
-    const nested = join(subdir, "src")
-    mkdirSync(nested, { recursive: true })
+    const home = makeTempWorkspace()
+    mkdirSync(join(root, ".openzerocode"), { recursive: true })
     writeFileSync(join(root, "package.json"), "{}\n")
     writeFileSync(join(root, "AGENTS.md"), "- root instruction\n")
-    writeFileSync(join(subdir, "AGENTS.md"), "- package instruction\n")
+    writeFileSync(join(root, ".openzerocode", "AGENTS.md"), "- project instruction\n")
 
-    const result = loadAgentsInstruction(nested)
+    const result = withHome(home, () => loadAgentsInstruction(root))
 
-    assert.equal(result, "- package instruction")
+    assert.equal(result, undefined)
   })
 
-  it("returns undefined for an empty AGENTS.md", () => {
+  it("returns undefined for an empty global AGENTS.md", () => {
     const root = makeTempWorkspace()
-    writeFileSync(join(root, "AGENTS.md"), "   \n")
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
+    writeFileSync(join(home, ".openzerocode", "AGENTS.md"), "   \n")
 
-    const result = loadAgentsInstruction(root)
+    const result = withHome(home, () => loadAgentsInstruction(root))
+
+    assert.equal(result, undefined)
+  })
+})
+
+describe("loadContextInstruction", () => {
+  it("returns undefined when no global CONTEXT.md exists", () => {
+    const dir = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    const result = withHome(home, () => loadContextInstruction(dir))
+    assert.equal(result, undefined)
+  })
+
+  it("loads user global CONTEXT.md from ~/.openzerocode", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
+    writeFileSync(join(root, "package.json"), "{}\n")
+    writeFileSync(join(home, ".openzerocode", "CONTEXT.md"), "User background details.\n")
+
+    const result = withHome(home, () => loadContextInstruction(root))
+
+    assert.equal(result, "User background details.")
+  })
+
+  it("ignores project CONTEXT.md files", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(root, ".openzerocode"), { recursive: true })
+    writeFileSync(join(root, "package.json"), "{}\n")
+    writeFileSync(join(root, "CONTEXT.md"), "Root context.\n")
+    writeFileSync(join(root, ".openzerocode", "CONTEXT.md"), "Project context.\n")
+
+    const result = withHome(home, () => loadContextInstruction(root))
+
+    assert.equal(result, undefined)
+  })
+
+  it("returns undefined for an empty global CONTEXT.md", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
+    writeFileSync(join(home, ".openzerocode", "CONTEXT.md"), "   \n")
+
+    const result = withHome(home, () => loadContextInstruction(root))
 
     assert.equal(result, undefined)
   })
 })
 
 describe("inspectWorkspaceMemory", () => {
-  it("reports nearest memory files and manual session summary status", () => {
+  it("reports global memory files and manual session summary status", () => {
     const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
     const nested = join(root, "packages", "app", "src")
     mkdirSync(nested, { recursive: true })
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
+    mkdirSync(join(root, ".openzerocode"), { recursive: true })
     writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "AGENTS.md"), "root agents\n")
-    writeFileSync(join(root, "CONTEXT.md"), "root context\n")
+    writeFileSync(join(home, ".openzerocode", "AGENTS.md"), "global agents\n")
+    writeFileSync(join(root, ".openzerocode", "AGENTS.md"), "project agents\n")
+    writeFileSync(join(root, ".openzerocode", "CONTEXT.md"), "project context\n")
     writeFileSync(join(root, "SESSION_SUMMARY.md"), "handoff notes\n")
 
-    const status = inspectWorkspaceMemory(nested)
+    const status = withHome(home, () => inspectWorkspaceMemory(nested))
 
     assert.equal(status.workspaceBoundary, root)
     assert.equal(status.agentsLoaded, true)
-    assert.equal(status.contextLoaded, true)
+    assert.equal(status.contextLoaded, false)
     assert.equal(status.sessionSummaryPresent, true)
     assert.equal(status.sessionSummaryAutomatic, false)
-    assert.equal(status.agentsPath, join(root, "AGENTS.md"))
-    assert.equal(status.contextPath, join(root, "CONTEXT.md"))
+    assert.deepEqual(status.agentsPaths, [join(home, ".openzerocode", "AGENTS.md")])
+    assert.deepEqual(status.contextPaths, [])
+    assert.equal(status.agentsPath, join(home, ".openzerocode", "AGENTS.md"))
+    assert.equal(status.contextPath, undefined)
     assert.equal(status.sessionSummaryPath, join(root, "SESSION_SUMMARY.md"))
   })
 
   it("formats a readable status summary", () => {
     const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(home, ".openzerocode"), { recursive: true })
     writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "AGENTS.md"), "repo rules\n")
+    writeFileSync(join(home, ".openzerocode", "AGENTS.md"), "global rules\n")
 
-    const text = formatWorkspaceMemoryStatus(inspectWorkspaceMemory(root))
+    const text = withHome(home, () => formatWorkspaceMemoryStatus(inspectWorkspaceMemory(root)))
 
     assert.match(text, /Workspace memory status/)
-    assert.match(text, /AGENTS\.md: loaded/)
-    assert.match(text, /CONTEXT\.md: not loaded/)
+    assert.match(text, /user global AGENTS\.md: loaded/)
+    assert.match(text, /project memory files: not loaded/)
+    assert.match(text, /user global CONTEXT\.md: not loaded/)
     assert.match(text, /SESSION_SUMMARY\.md: not present \(and never auto-loaded\)/)
-  })
-})
-
-describe("loadContextInstruction", () => {
-  it("returns undefined when no CONTEXT.md exists", () => {
-    const dir = makeTempWorkspace()
-    const result = loadContextInstruction(dir)
-    assert.equal(result, undefined)
-  })
-
-  it("loads CONTEXT.md from the workspace root", () => {
-    const root = makeTempWorkspace()
-    writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "CONTEXT.md"), "Project background details.\n")
-
-    const result = loadContextInstruction(root)
-
-    assert.equal(result, "Project background details.")
-  })
-
-  it("finds CONTEXT.md by walking up from a nested directory", () => {
-    const root = makeTempWorkspace()
-    const nested = join(root, "src", "routes")
-    mkdirSync(nested, { recursive: true })
-    writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "CONTEXT.md"), "Important project context.\n")
-
-    const result = loadContextInstruction(nested)
-
-    assert.equal(result, "Important project context.")
-  })
-
-  it("prefers the nearest CONTEXT.md when multiple parents have one", () => {
-    const root = makeTempWorkspace()
-    const subdir = join(root, "packages", "app")
-    const nested = join(subdir, "src")
-    mkdirSync(nested, { recursive: true })
-    writeFileSync(join(root, "package.json"), "{}\n")
-    writeFileSync(join(root, "CONTEXT.md"), "root context\n")
-    writeFileSync(join(subdir, "CONTEXT.md"), "package context\n")
-
-    const result = loadContextInstruction(nested)
-
-    assert.equal(result, "package context")
-  })
-
-  it("returns undefined for an empty CONTEXT.md", () => {
-    const root = makeTempWorkspace()
-    writeFileSync(join(root, "CONTEXT.md"), "   \n")
-
-    const result = loadContextInstruction(root)
-
-    assert.equal(result, undefined)
   })
 })

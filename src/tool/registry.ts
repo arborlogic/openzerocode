@@ -17,6 +17,7 @@ import { BrowserScrollTool } from "./browser-scroll"
 import { BrowserScreenshotTool } from "./browser-screenshot"
 import { BrowserObserveVisualTool } from "./browser-observe-visual"
 import { CallPeerTool } from "./call-peer"
+import { LearnMemoryApplyTool } from "./learn-memory"
 import { getMcpTools } from "../mcp/store"
 
 export interface Interface {
@@ -48,6 +49,7 @@ export const layer = Layer.effect(
       yield* BrowserScreenshotTool,
       yield* BrowserObserveVisualTool,
       yield* CallPeerTool,
+      yield* LearnMemoryApplyTool,
     ]
     const custom: Def[] = []
 

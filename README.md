@@ -27,14 +27,14 @@ We're grateful for the OpenCode project's design — this project wouldn't exist
 This repo is actively implemented. Current capabilities include:
 
 - **Solid-based terminal UI** in `src/client/tui.tsx` — streaming responses, reasoning display, command palette
-- **Build / Plan mode** toggle for structured vs. free-form agent behavior
+- **Build / Plan / Learn modes** — implementation, planning, and confirmed workspace-memory refinement
 - **Provider switching** — OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, plus configurable OpenAI-compatible endpoints
 - **Model switching** — switch models on the fly
 - **Multi-session persistence** under `~/.openzerocode/sessions`
 - **Session management** — rename, delete, compact, timeline actions (revert/copy/fork)
 - **Headless and server modes** — `--run` for one-shot CLI runs and `serve` for the streaming HTTP API
 - **Sidebar context** — token usage, cost tracking, git diff summary
-- **Workspace prompt memory** — `AGENTS.md` instructions + `CONTEXT.md` project context injected into the system prompt
+- **Prompt memory** — user-global `~/.openzerocode/AGENTS.md` / `CONTEXT.md` injected into the system prompt; Learn mode creates missing empty global memory files on first entry and can propose/apply confirmed updates
 - **Session handoff** — `SESSION_SUMMARY.md` for concise local continuation notes
 - **GEASS browser tools** — optional browser navigation, reading, interaction, screenshots, and visual observation
 - **16 built-in tools**:
@@ -323,15 +323,18 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
             └────────────────────────────────────┘
 ```
 
-## Workspace Memory Model
+## Prompt Memory Model
 
-OpenZeroCode separates repo memory into three lightweight artifacts:
+OpenZeroCode keeps durable prompt memory user-global and intentionally small:
 
-- `AGENTS.md`: stable repo-specific instructions, workflows, and guardrails.
-- `CONTEXT.md`: background context, shared vocabulary, and known mismatches worth surfacing in prompts.
+- `~/.openzerocode/AGENTS.md`: user personal cross-project preferences, language/response style, and general safety rules.
+- `~/.openzerocode/CONTEXT.md`: user background, common tools, and long-term preferences.
 - `SESSION_SUMMARY.md`: concise handoff notes for humans/continuation; not auto-injected into the system prompt.
 
-The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` from the nearest workspace via `src/client/workspace-memory.ts`.
+Project `AGENTS.md` / `CONTEXT.md` files are treated as regular repository documentation, not automatic prompt memory.
+
+`/mode learn` switches the agent into a memory-refinement workflow: it can read/search project context, discuss concise candidate updates, and only after explicit user confirmation call `learn_memory_apply` to update global `~/.openzerocode` memory. Learn mode does not expose general edit/write/bash tools.
+
 
 ### Key source files
 
@@ -339,7 +342,7 @@ The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` fr
 |------|---------|
 | `src/client/tui.tsx` | Main TUI entrypoint & UI orchestration |
 | `src/client/sessions.ts` | Session persistence helpers |
-| `src/client/workspace-memory.ts` | Loads `AGENTS.md` and `CONTEXT.md` into the system prompt |
+| `src/client/workspace-memory.ts` | Loads user-global `AGENTS.md` and `CONTEXT.md` into the system prompt |
 | `SESSION_SUMMARY.md` | Manual session handoff / continuation notes |
 | `src/provider/registry.ts` | Provider registration & resolution |
 | `src/tool/registry.ts` | Built-in tool registration |
@@ -356,7 +359,7 @@ The current automatic prompt assembly path loads `AGENTS.md` and `CONTEXT.md` fr
 | **Provider layer** | OpenRouter, others | OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, extensible |
 | **Tool system** | Built-in tools | File/search/shell/edit/web tools + todo + GEASS browser tools + permission system |
 | **Session storage** | Local files | Local files under `~/.openzerocode/` |
-| **Prompt memory** | Varies | `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
+| **Prompt memory** | Varies | User-global `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
 | **Cloud dependency** | Requires `zero` for operation | None — works entirely offline |
 | **Binary distribution** | Platform-specific npm packages | Platform-specific npm packages (`darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`) plus source-first local install via `python3 scripts/dev-install.py` |
 

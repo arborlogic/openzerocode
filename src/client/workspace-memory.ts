@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "fs"
-import { basename, dirname, resolve } from "path"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
+import { homedir } from "os"
+import { dirname, join, resolve } from "path"
 
 function readTextFile(path: string): string | undefined {
   if (!existsSync(path)) return undefined
@@ -7,7 +8,44 @@ function readTextFile(path: string): string | undefined {
   return text || undefined
 }
 
-function findWorkspaceBoundary(startDir: string): string {
+function userOpenZeroCodeDir(): string {
+  return join(process.env.HOME ?? homedir(), ".openzerocode")
+}
+
+function globalMemoryPath(filename: "AGENTS.md" | "CONTEXT.md"): string {
+  return resolve(userOpenZeroCodeDir(), filename)
+}
+
+export type GlobalMemoryBootstrapResult = {
+  agentsPath: string
+  contextPath: string
+  created: string[]
+}
+
+/**
+ * Learn mode needs a stable user-global place where the user can confirm
+ * durable memories. On first Learn-mode entry, create empty global memory files
+ * if they do not exist yet. Empty files are intentionally ignored by prompt
+ * loading until the user confirms real content.
+ */
+export function ensureGlobalMemoryFiles(): GlobalMemoryBootstrapResult {
+  const dir = userOpenZeroCodeDir()
+  mkdirSync(dir, { recursive: true })
+
+  const agentsPath = resolve(dir, "AGENTS.md")
+  const contextPath = resolve(dir, "CONTEXT.md")
+  const created: string[] = []
+
+  for (const path of [agentsPath, contextPath]) {
+    if (existsSync(path)) continue
+    writeFileSync(path, "")
+    created.push(path)
+  }
+
+  return { agentsPath, contextPath, created }
+}
+
+export function findWorkspaceBoundary(startDir: string): string {
   let current = resolve(startDir)
   while (true) {
     if (
@@ -22,22 +60,10 @@ function findWorkspaceBoundary(startDir: string): string {
   }
 }
 
-function findNearestFile(startDir: string, filename: string): string | undefined {
-  let current = resolve(startDir)
-  const boundary = findWorkspaceBoundary(startDir)
-  while (true) {
-    const candidate = resolve(current, filename)
-    if (existsSync(candidate)) return candidate
-    if (current === boundary) return undefined
-    const parent = dirname(current)
-    if (parent === current) return undefined
-    current = parent
-  }
-}
-
-function loadWorkspaceFile(startDir: string, filename: string): string | undefined {
-  const path = findNearestFile(startDir, filename)
-  return path ? readTextFile(path) : undefined
+function loadGlobalMemoryFile(filename: "AGENTS.md" | "CONTEXT.md"): { path: string, content: string } | undefined {
+  const path = globalMemoryPath(filename)
+  const content = readTextFile(path)
+  return content ? { path, content } : undefined
 }
 
 export type WorkspaceMemoryStatus = {
@@ -45,6 +71,8 @@ export type WorkspaceMemoryStatus = {
   workspaceBoundary: string
   agentsPath?: string
   contextPath?: string
+  agentsPaths: string[]
+  contextPaths: string[]
   sessionSummaryPath?: string
   agentsLoaded: boolean
   contextLoaded: boolean
@@ -55,49 +83,63 @@ export type WorkspaceMemoryStatus = {
 export function inspectWorkspaceMemory(startDir = process.cwd()): WorkspaceMemoryStatus {
   const cwd = resolve(startDir)
   const workspaceBoundary = findWorkspaceBoundary(cwd)
-  const agentsPath = findNearestFile(cwd, "AGENTS.md")
-  const contextPath = findNearestFile(cwd, "CONTEXT.md")
+  const agentsFile = loadGlobalMemoryFile("AGENTS.md")
+  const contextFile = loadGlobalMemoryFile("CONTEXT.md")
   const sessionSummaryCandidate = resolve(workspaceBoundary, "SESSION_SUMMARY.md")
   const sessionSummaryPath = existsSync(sessionSummaryCandidate) ? sessionSummaryCandidate : undefined
 
   return {
     cwd,
     workspaceBoundary,
-    agentsPath,
-    contextPath,
+    agentsPath: agentsFile?.path,
+    contextPath: contextFile?.path,
+    agentsPaths: agentsFile ? [agentsFile.path] : [],
+    contextPaths: contextFile ? [contextFile.path] : [],
     sessionSummaryPath,
-    agentsLoaded: !!(agentsPath && readTextFile(agentsPath)),
-    contextLoaded: !!(contextPath && readTextFile(contextPath)),
+    agentsLoaded: !!agentsFile,
+    contextLoaded: !!contextFile,
     sessionSummaryPresent: !!sessionSummaryPath,
     sessionSummaryAutomatic: false,
   }
 }
 
 /**
- * Load AGENTS.md content from the nearest workspace root.
- * Returns undefined if no AGENTS.md is found.
+ * Load user-global AGENTS.md memory from ~/.openzerocode/AGENTS.md.
  */
-export function loadAgentsInstruction(startDir = process.cwd()): string | undefined {
-  return loadWorkspaceFile(startDir, "AGENTS.md")
+export function loadAgentsInstruction(_startDir = process.cwd()): string | undefined {
+  return loadGlobalMemoryFile("AGENTS.md")?.content
 }
 
 /**
- * Load CONTEXT.md content from the nearest workspace root.
- * Returns undefined if no CONTEXT.md is found.
+ * Load user-global CONTEXT.md memory from ~/.openzerocode/CONTEXT.md.
  */
-export function loadContextInstruction(startDir = process.cwd()): string | undefined {
-  return loadWorkspaceFile(startDir, "CONTEXT.md")
+export function loadContextInstruction(_startDir = process.cwd()): string | undefined {
+  return loadGlobalMemoryFile("CONTEXT.md")?.content
+}
+
+function relativeToWorkspace(status: WorkspaceMemoryStatus, path: string): string {
+  return path.startsWith(`${status.workspaceBoundary}/`)
+    ? path.replace(`${status.workspaceBoundary}/`, "")
+    : path
+}
+
+function formatLoaded(paths: string[]): string {
+  return paths.length > 0 ? `loaded from ${paths.join(", ")}` : "not loaded"
 }
 
 export function formatWorkspaceMemoryStatus(status: WorkspaceMemoryStatus): string {
+  const automaticInputs = [...status.agentsPaths, ...status.contextPaths]
+    .map((path) => relativeToWorkspace(status, path))
+
   const lines = [
     `Workspace memory status`,
     `- cwd: ${status.cwd}`,
     `- workspace boundary: ${status.workspaceBoundary}`,
-    `- AGENTS.md: ${status.agentsLoaded ? `loaded from ${status.agentsPath}` : "not loaded"}`,
-    `- CONTEXT.md: ${status.contextLoaded ? `loaded from ${status.contextPath}` : "not loaded"}`,
+    `- user global AGENTS.md: ${formatLoaded(status.agentsPaths)}`,
+    `- user global CONTEXT.md: ${formatLoaded(status.contextPaths)}`,
+    `- project memory files: not loaded (project AGENTS.md/CONTEXT.md are treated as regular repository files)`,
     `- SESSION_SUMMARY.md: ${status.sessionSummaryPresent ? `present at ${status.sessionSummaryPath} (manual only, not auto-loaded)` : "not present (and never auto-loaded)"}`,
-    `- automatic prompt inputs: ${[status.agentsLoaded ? basename(status.agentsPath!) : undefined, status.contextLoaded ? basename(status.contextPath!) : undefined].filter(Boolean).join(", ") || "none"}`,
+    `- automatic prompt inputs: ${automaticInputs.join(", ") || "none"}`,
   ]
 
   return lines.join("\n")
