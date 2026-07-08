@@ -70,8 +70,9 @@ describe("createCompactSummaryMessage", () => {
   it("creates a system message with prefix", () => {
     const msg = createCompactSummaryMessage("executed 3 commands")
     assert.equal(msg.role, "system")
-    assert.ok(msg.content?.startsWith(COMPACT_SUMMARY_PREFIX))
-    assert.ok(msg.content?.includes("executed 3 commands"))
+    const text = typeof msg.content === "string" ? msg.content : ""
+    assert.ok(text.startsWith(COMPACT_SUMMARY_PREFIX))
+    assert.ok(text.includes("executed 3 commands"))
   })
 })
 

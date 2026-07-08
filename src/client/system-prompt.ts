@@ -63,6 +63,17 @@ const PLAN_MODE_REMINDER = [
   "Explain the approach, risks, and step-by-step plan only.",
 ].join("\n")
 
+const VISION_SECTION = [
+  "# Vision",
+  "",
+  "If your model supports vision (GPT-4o, Claude, etc.), browser screenshots and image files are sent directly to you as images.",
+  "You can see and analyze them in detail without any intermediate step.",
+  "",
+  "Use the `analyze_image` tool when you need to analyze an arbitrary image file (PNG, JPEG, etc.).",
+  "If your model does not support vision, images are automatically analyzed by a local VLM and you receive a textual description instead.",
+  "Configure the local VLM via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
+].join("\n")
+
 const LEARN_MODE_REMINDER = [
   "You are currently in Learn mode.",
   "Your job is to help the user refine durable development experience, not to implement code changes.",
@@ -128,6 +139,8 @@ export function buildSystemPrompt(
     if (geassSection) {
       parts.push(geassSection)
     }
+
+    parts.push(VISION_SECTION)
   }
 
   if (agentsInstruction) {

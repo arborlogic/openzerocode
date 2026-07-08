@@ -24,14 +24,18 @@ export class Context {
   }
 }
 
+export type ResultImage = { mimeType: string; base64: string }
+
 export class Result {
   readonly title: string
   readonly output: string
+  readonly images?: ResultImage[]
   readonly metadata?: Metadata
 
-  constructor(input: { title: string; output: string; metadata?: Metadata }) {
+  constructor(input: { title: string; output: string; images?: ResultImage[]; metadata?: Metadata }) {
     this.title = input.title
     this.output = input.output
+    this.images = input.images
     this.metadata = input.metadata
   }
 }

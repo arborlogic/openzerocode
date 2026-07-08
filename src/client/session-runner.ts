@@ -8,7 +8,8 @@ import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools } from "../tool/selection"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
-import { estimateTokens, getModelConfig } from "../provider/models"
+import { estimateTokens, getModelConfig, modelSupportsVision } from "../provider/models"
+import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
@@ -390,10 +391,36 @@ export async function* streamSession(
           yield { type: "message", message: errorMsg }
           continue
         }
-        const text = convertToolResult(result)
+        let toolContent = convertToolResult(result)
         const isError = result.title === "Error"
-        yield { type: "tool_result", id: finishedCall.id, name, output: text, error: isError }
-        const toolMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: text })
+
+        // Vision fallback: when the model doesn't support images, use local VLM
+        // to analyze images and strip them from the content sent to the API.
+        if (result.images && result.images.length > 0 && !modelSupportsVision(options.model)) {
+          const vlmTexts: string[] = []
+          for (const img of result.images) {
+            try {
+              const analysis = await Effect.runPromise(Effect.promise(() => analyzeImageWithLocalVlm({
+                endpoint: getDefaultLocalVlmEndpoint(),
+                model: getDefaultLocalVlmModel(),
+                prompt: "Describe this image in detail for a coding assistant. Focus on UI elements, layout, text, and visual state.",
+                imageBase64: img.base64,
+                imageFormat: img.mimeType === "image/jpeg" ? "jpeg" : "png",
+              })))
+              vlmTexts.push(analysis.text)
+            } catch {
+              vlmTexts.push("[Image analysis unavailable — local VLM not reachable]")
+            }
+          }
+          if (vlmTexts.length > 0) {
+            const vlmSuffix = "\n\n=== Visual Analysis (local VLM) ===\n" + vlmTexts.join("\n\n")
+            toolContent = { text: toolContent.text + vlmSuffix }
+            // contentParts intentionally omitted — model can't process images
+          }
+        }
+
+        yield { type: "tool_result", id: finishedCall.id, name, output: toolContent.text, error: isError }
+        const toolMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: toolContent.text, contentParts: toolContent.contentParts })
         allMessages.push(toolMsg)
         resultHistory.push(toolMsg)
         yield { type: "message", message: toolMsg }

@@ -20,7 +20,7 @@ import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getModelConfig } from "../provider/models"
-import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey } from "./format-utils"
+import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError, isRateLimitError, delay } from "./errors"
@@ -464,7 +464,7 @@ function App() {
         ],
       })
     }))
-    return parseAutoLoopSupervisorDecision(result.message.content ?? "")
+    return parseAutoLoopSupervisorDecision(contentToText(result.message.content))
   }
 
   async function queueAutoLoopContinuation() {
@@ -847,7 +847,7 @@ function App() {
     for (let vi = 0; vi < visible.length; vi++) {
       const msg = visible[vi];
       const i = total - 1 - vi  // original index (for display numbering)
-      const text = (msg.content ?? "").replace(/\n/g, " ").slice(0, 50);
+      const text = contentToText(msg.content).replace(/\n/g, " ").slice(0, 50);
       const isActive = i === timelineTargetMsgIdx();
       items.push({
         label: (isActive ? ">" : " ") + " " + text,
@@ -857,7 +857,7 @@ function App() {
           // Open unified message actions (Revert / Copy / Fork)
           const actualIdx = messages().indexOf(msg)
           if (actualIdx >= 0) {
-            setUserMsgActionTarget({ index: actualIdx, text: msg.content ?? "" })
+            setUserMsgActionTarget({ index: actualIdx, text: contentToText(msg.content) })
           }
           setPaletteMode("userMessageActions");
           setPaletteIndex(0);
@@ -1831,7 +1831,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const msg = allMsgs[msgIdx]
       if (msg.role === "user" && msg.content) {
         result.push({
-          user: { kind: "user", text: msg.content },
+          user: { kind: "user", text: contentToText(msg.content) },
           entries: [],
           userMsgIndex: msgIdx,
           peerOrigin: msg.origin?.peer,
@@ -1903,8 +1903,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return { kind: "tool-call", text: part.input || "{}", title: part.tool, streaming: true } satisfies DisplayBlock
         case "tool-result":
           return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool, streaming: true } satisfies DisplayBlock
+        case "image":
+          return { kind: "system", text: `[image: ${part.mimeType}]`, streaming: true } satisfies DisplayBlock
       }
-    }),
+    }).filter(Boolean) as DisplayBlock[],
   )
 
   const scrollBottom = () => {
@@ -2025,8 +2027,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setMessages(msgsUpToTarget)
     setNotices([])
     setPermissionRules(permissionRules())
-    setComposerText(targetMsg.content ?? "")
-    setDraft(targetMsg.content ?? "")
+    setComposerText(contentToText(targetMsg.content))
+    setDraft(contentToText(targetMsg.content))
     setStatus("forked session from message")
   }
 
@@ -2181,7 +2183,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         })
       }))
 
-      const summary = result.message.content?.trim()
+      const summary = contentToText(result.message.content).trim()
       if (!summary) {
         setStatus("compaction failed")
         showToast("error", "Compaction failed", "The provider returned an empty summary.")

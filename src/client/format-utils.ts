@@ -1,5 +1,6 @@
 import type { CompactionInfo } from "./sessions"
 import type { ModelInfo } from "../provider/types"
+export { contentToText } from "../provider/content"
 import { getKnownModelConfig, getModelConfig } from "../provider/models"
 
 // File extension → tree-sitter filetype mapping

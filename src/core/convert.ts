@@ -1,6 +1,8 @@
 import { Schema } from "effect"
 import { Def, Result } from "../tool/tool"
-import type { ToolDef } from "../provider/types"
+import { dataUrlFromImage } from "../provider/content"
+import type { ToolDef, ContentPart } from "../provider/types"
+import { filterImagesForModel, formatImageBudgetNotice } from "../provider/image-budget"
 import { truncateToolOutput } from "../tool/truncate"
 
 export function convertToolToDef(def: Def): ToolDef {
@@ -31,6 +33,26 @@ export function convertToolsToDefs(defs: readonly Def[]): ToolDef[] {
   return defs.map(convertToolToDef)
 }
 
-export function convertToolResult(result: Result): string {
-  return [result.title, "---", truncateToolOutput(result.output)].join("\n")
+export type ToolResultContent = {
+  text: string
+  contentParts?: ContentPart[]
+}
+
+export function convertToolResult(result: Result): ToolResultContent {
+  const imageBudget = filterImagesForModel(result.images)
+  const budgetNotice = formatImageBudgetNotice(imageBudget.skipped)
+  const text = [result.title, "---", truncateToolOutput(result.output) + budgetNotice].join("\n")
+
+  if (imageBudget.images.length === 0) {
+    return { text }
+  }
+
+  const contentParts: ContentPart[] = [{ type: "text", text }]
+  for (const img of imageBudget.images) {
+    contentParts.push({
+      type: "image_url",
+      image_url: { url: dataUrlFromImage(img) },
+    })
+  }
+  return { text, contentParts }
 }

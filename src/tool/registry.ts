@@ -17,6 +17,7 @@ import { BrowserSelectTool } from "./browser-select"
 import { BrowserScrollTool } from "./browser-scroll"
 import { BrowserScreenshotTool } from "./browser-screenshot"
 import { BrowserObserveVisualTool } from "./browser-observe-visual"
+import { AnalyzeImageTool } from "./analyze-image"
 import { CallPeerTool } from "./call-peer"
 import { LearnMemoryApplyTool } from "./learn-memory"
 import { LearnProjectMemoryApplyTool } from "./learn-project-memory"
@@ -51,6 +52,7 @@ export const layer = Layer.effect(
       yield* BrowserScrollTool,
       yield* BrowserScreenshotTool,
       yield* BrowserObserveVisualTool,
+      yield* AnalyzeImageTool,
       yield* CallPeerTool,
       yield* LearnMemoryApplyTool,
       yield* LearnProjectMemoryApplyTool,

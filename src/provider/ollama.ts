@@ -1,5 +1,6 @@
 import { Effect, Layer } from "effect"
 import { Provider, type CompletionRequest, type CompletionResult, type Chunk, type Message, type ToolCall, type Usage } from "./types"
+import { contentToText, parseImageDataUrl } from "./content"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
 
@@ -32,6 +33,18 @@ function stringifyArgs(raw: unknown): string {
   try { return JSON.stringify(raw) } catch { return "{}" }
 }
 
+function extractImagesFromContent(content: string | Array<{ type: string; image_url?: { url: string } }> | undefined): string[] | undefined {
+  if (!content || typeof content === "string") return undefined
+  const images: string[] = []
+  for (const part of content) {
+    if (part.type === "image_url" && part.image_url?.url) {
+      const image = parseImageDataUrl(part.image_url.url)
+      if (image) images.push(image.base64)
+    }
+  }
+  return images.length > 0 ? images : undefined
+}
+
 function sanitizeMessages(messages: Message[]): unknown[] {
   // Track tool_call_id → name so tool result messages can include tool_name.
   const toolCallNames = new Map<string, string>()
@@ -45,7 +58,7 @@ function sanitizeMessages(messages: Message[]): unknown[] {
       }
       return {
         role: rest.role,
-        content: rest.content ?? "",
+        content: contentToText(rest.content),
         tool_calls: rest.tool_calls
           .filter((tc) => tc.function.name)
           .map((tc) => ({
@@ -62,12 +75,15 @@ function sanitizeMessages(messages: Message[]): unknown[] {
       const toolName = rest.tool_call_id ? (toolCallNames.get(rest.tool_call_id) ?? undefined) : undefined
       return {
         role: "tool",
-        content: typeof rest.content === "string" ? rest.content : "",
+        content: contentToText(rest.content),
         ...(toolName ? { tool_name: toolName } : {}),
       }
     }
 
-    return { role: rest.role, content: rest.content ?? "" }
+    const images = extractImagesFromContent(rest.content)
+    const result: Record<string, unknown> = { role: rest.role, content: contentToText(rest.content) }
+    if (images) result.images = images
+    return result
   })
 }
 

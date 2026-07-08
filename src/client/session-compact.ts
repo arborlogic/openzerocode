@@ -1,4 +1,5 @@
 import type { Message, Part } from "../provider/types"
+import { contentToText } from "../provider/content"
 import { estimateTokens } from "../provider/models"
 
 export const COMPACT_SUMMARY_PREFIX = "[Session Summary]"
@@ -22,7 +23,7 @@ function messageBody(msg: Message): string {
   if (msg.parts?.length) {
     return msg.parts.map(partToText).filter(Boolean).join("\n\n")
   }
-  return [msg.reasoning_content, msg.content].filter(Boolean).join("\n\n")
+  return [msg.reasoning_content, contentToText(msg.content)].filter(Boolean).join("\n\n")
 }
 
 function messageToTranscript(msg: Message): string {
@@ -31,7 +32,7 @@ function messageToTranscript(msg: Message): string {
 }
 
 export function isCompactSummaryMessage(msg: Message): boolean {
-  return msg.role === "system" && (msg.content ?? "").startsWith(COMPACT_SUMMARY_PREFIX)
+  return msg.role === "system" && contentToText(msg.content).startsWith(COMPACT_SUMMARY_PREFIX)
 }
 
 export function stripCompactSummaryMessages(messages: Message[]): Message[] {

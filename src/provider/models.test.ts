@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { getKnownModelConfig, getModelConfig, estimateTokens, estimateCost } from "./models"
+import { getKnownModelConfig, getModelConfig, estimateTokens, estimateCost, modelSupportsVision } from "./models"
 import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
@@ -18,6 +18,13 @@ describe("getKnownModelConfig", () => {
 
   it("returns undefined for unknown models", () => {
     assert.equal(getKnownModelConfig("unknown-model"), undefined)
+  })
+
+  it("returns config for gpt-5.5 provider-prefixed model ids", () => {
+    const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.equal(cfg?.vision, true)
   })
 
   it("returns config for claude models with thinking suffix", () => {
@@ -87,6 +94,17 @@ describe("getModelConfig", () => {
     assert.equal(cfg.contextLimit, 1_000_000)
     assert.equal(cfg.pricing?.input, 2.5)
     assert.equal(cfg.pricing?.output, 15)
+  })
+})
+
+describe("modelSupportsVision", () => {
+  it("treats gpt-5.5 and provider-prefixed gpt-5.5 as vision-capable", () => {
+    assert.equal(modelSupportsVision("gpt-5.5"), true)
+    assert.equal(modelSupportsVision("openaicodex/gpt-5.5"), true)
+  })
+
+  it("does not treat arbitrary unknown models as vision-capable", () => {
+    assert.equal(modelSupportsVision("some-text-model"), false)
   })
 })
 

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
 import { Effect } from "effect"
-import { Provider, type ToolDef } from "./types"
+import { Provider, type Interface, type ToolDef } from "./types"
 import { layer } from "./zero-api"
 
 // Integration test: hits the live Zero API. Skip the whole suite when the
@@ -23,6 +23,68 @@ const BASH_TOOL: ToolDef = {
     },
   },
 }
+
+describe("zero-api provider request serialization", () => {
+  async function captureCompleteRequest(req: Parameters<Interface["complete"]>[0]) {
+    const originalFetch = globalThis.fetch
+    let requestBody: any
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({
+        id: "chatcmpl_test",
+        model: req.model,
+        choices: [{ message: { role: "assistant", content: "seen" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }), { status: 200, headers: { "Content-Type": "application/json" } })
+    }) as typeof fetch
+
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.complete(req)
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+    return requestBody
+  }
+
+  it("preserves multimodal image content in non-streaming chat completions", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "openaicodex/gpt-5.5",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "what is in this image?" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAECAw==" } },
+        ],
+      }],
+      stream: false,
+    })
+
+    assert.equal(requestBody.model, "openaicodex/gpt-5.5")
+    assert.equal(requestBody.stream, false)
+    assert.deepEqual(requestBody.messages[0].content, [
+      { type: "text", text: "what is in this image?" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAECAw==" } },
+    ])
+  })
+
+  it("omits max_tokens from chat completion requests", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "openaicodex/gpt-5.5",
+      messages: [{ role: "user", content: "say hi" }],
+      stream: false,
+      max_tokens: 400,
+    })
+
+    assert.equal(requestBody.max_tokens, undefined)
+    assert.equal(requestBody.model, "openaicodex/gpt-5.5")
+    assert.equal(requestBody.stream, false)
+  })
+})
 
 describeIfKey("zero-api provider", () => {
   it("models returns a list", async () => {
