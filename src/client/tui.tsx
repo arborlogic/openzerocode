@@ -335,6 +335,25 @@ function App() {
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+  let compactionWaiters: Array<() => void> = []
+  const notifyCompactionIdle = () => {
+    const waiters = compactionWaiters.splice(0)
+    for (const resolve of waiters) resolve()
+  }
+  const waitForCompactionToFinish = (abortSignal: AbortSignal) => {
+    if (!compacting() || abortSignal.aborted) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        abortSignal.removeEventListener("abort", finish)
+        resolve()
+      }
+      compactionWaiters.push(finish)
+      abortSignal.addEventListener("abort", finish, { once: true })
+    })
+  }
   const inputQueue = createInputQueue(
     async (item, signal) => {
       await runQueuedPrompt(item.text, signal)
@@ -2165,10 +2184,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     } finally {
       setCompacting(false)
+      notifyCompactionIdle()
     }
   }
 
   const runQueuedPrompt = async (rawInput: string, abortSignal: AbortSignal) => {
+    if (compacting()) {
+      setStatus(formatQueueStatus("waiting for compaction...", queuedInputs()))
+      await waitForCompactionToFinish(abortSignal)
+      if (abortSignal.aborted) return
+    }
+
     const { text: input, peerOrigin, peerHop } = decodePeerInput(rawInput)
     // Update peer context so call_peer tool knows our name and current hop depth
     setPeerContext(activePeerName, peerHop ?? 0)
@@ -2340,12 +2366,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     const rawInput = draft().trim()
     if (!rawInput) return
-    if (compacting()) {
-      setStatus("compaction running — please wait")
-      showToast("info", "Compaction running", "Please wait for compaction to finish before sending input.")
-      return
-    }
-
     let input = rawInput
     for (const [marker, content] of pastedContent) {
       if (input.includes(marker)) {
@@ -2536,9 +2556,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const wasDraining = inputQueue?.isDraining() ?? false
     inputQueue?.enqueue(input)
     setComposerText("")
-    if (wasDraining) {
-      // Queue was already processing an earlier item; this one is queued
-      setStatus(formatQueueStatus("queued", queuedInputs()))
+    if (wasDraining || compacting()) {
+      // Queue was already processing an earlier item, or compaction is running;
+      // this item will run once the queue/compaction is ready.
+      setStatus(formatQueueStatus(compacting() ? "queued until compaction finishes" : "queued", queuedInputs()))
     }
     // Otherwise (was not draining): the item starts running immediately,
     // and runQueuedPrompt will set the status to "thinking...".
@@ -3402,11 +3423,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
-          if (compacting()) {
-            setStatus("compaction running — please wait")
-            showToast("info", "Compaction running", "Please wait for compaction to finish before running commands.")
-            return
-          }
           // Commands that execute immediately with no arguments
           const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact"])
           if (name === "mode") {
