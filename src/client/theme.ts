@@ -17,8 +17,8 @@ export const THEME = {
   headerBg: "#161b22",
   headerBorder: "#21262d",
   // Diff colors
-  diffAddedBg: "#12261e",
-  diffRemovedBg: "#2d1215",
+  diffAddedBg: "#1f3d2b",
+  diffRemovedBg: "#4a1f25",
   diffAddedSign: "#7ee787",
   diffRemovedSign: "#ff7b72",
   diffHunkSign: "#d2a8ff",
