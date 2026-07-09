@@ -2,7 +2,12 @@ import type { KeyBinding } from "@opentui/core"
 
 export const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
 export const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
+
 export const SIDEBAR_WIDTH = 34
+
+export function sidebarWidthForTerminal(terminalWidth: number) {
+  return Math.max(24, Math.min(SIDEBAR_WIDTH, terminalWidth - 4))
+}
 
 export const PROMPT_KEY_BINDINGS: KeyBinding[] = [
   { name: "return", action: "submit" },

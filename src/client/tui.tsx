@@ -57,7 +57,7 @@ import { startPeerServer } from "../peer/server"
 import { setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
-import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, SIDEBAR_WIDTH } from "./tui-constants"
+import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -1891,6 +1891,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
+  const sidebarWidth = createMemo(() => sidebarWidthForTerminal(dimensions().width))
+  const overlaySidebarWidth = createMemo(() => Math.max(24, Math.min(sidebarWidth(), dimensions().width - 4)))
 
   const streamingEntries = createMemo<DisplayBlock[]>(() =>
     streamState.parts().map((part) => {
@@ -3398,7 +3400,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           messages={messages}
           todos={todos}
           theme={THEME}
-          width={SIDEBAR_WIDTH}
+          width={sidebarWidth()}
           provider={providerLabel()}
           model={modelLabel()}
           modelInfo={modelInfoLabel()}
@@ -3418,7 +3420,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           right={0}
           top={0}
           height="100%"
-          width={SIDEBAR_WIDTH + 1}
+          width={overlaySidebarWidth() + 1}
           zIndex={50}
           flexDirection="row"
         >
@@ -3427,7 +3429,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             messages={messages}
             todos={todos}
             theme={THEME}
-            width={SIDEBAR_WIDTH}
+            width={overlaySidebarWidth()}
             provider={providerLabel()}
             model={modelLabel()}
             modelInfo={modelInfoLabel()}
