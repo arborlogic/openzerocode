@@ -72,6 +72,38 @@ describe("zero-api provider request serialization", () => {
     ])
   })
 
+  it("moves tool image attachments into a follow-up user multimodal message", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "openaicodex/gpt-5.5",
+      messages: [{
+        role: "tool",
+        tool_call_id: "call_img",
+        content: [
+          { type: "text", text: "Screenshot captured" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAECAw==" } },
+        ],
+        parts: [
+          { type: "tool-result", id: "call_img", tool: "browser_screenshot", output: "Screenshot captured" },
+          { type: "image", mimeType: "image/png", base64: "AAECAw==" },
+        ],
+      }],
+      stream: false,
+    })
+
+    assert.equal(requestBody.messages.length, 2)
+    assert.deepEqual(requestBody.messages[0], {
+      role: "tool",
+      tool_call_id: "call_img",
+      content: "Screenshot captured",
+    })
+    assert.equal(requestBody.messages[1].role, "user")
+    assert.deepEqual(requestBody.messages[1].content[1], {
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,AAECAw==" },
+    })
+    assert.equal(requestBody.messages[1].parts, undefined)
+  })
+
   it("omits max_tokens from chat completion requests", async () => {
     const requestBody = await captureCompleteRequest({
       model: "openaicodex/gpt-5.5",

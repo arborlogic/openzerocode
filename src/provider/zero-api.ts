@@ -68,8 +68,43 @@ function responseToolCallFromItem(item: any, index = 0): ToolCall {
   }
 }
 
+function contentPartsText(content: any): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+}
+
+function hasImageContentParts(content: any): boolean {
+  return Array.isArray(content) && content.some((part) => part?.type === "image_url" && part.image_url?.url)
+}
+
 function sanitizeMessages(messages: CompletionRequest["messages"]) {
-  return messages.map(({ parts, ...rest }: any) => rest)
+  return messages.flatMap(({ parts, ...rest }: any) => {
+    // OpenAI-compatible chat APIs generally accept image_url parts only on
+    // user messages. Tool outputs in OpenZeroCode can contain screenshots or
+    // analyze_image attachments, so keep the tool result text as the required
+    // tool message and immediately follow it with a user multimodal message
+    // carrying the same image parts. This lets Zero-API forward the image to
+    // vision-capable upstream models during the normal conversation turn.
+    if (rest.role === "tool" && hasImageContentParts(rest.content)) {
+      const text = contentPartsText(rest.content) || (typeof rest.content === "string" ? rest.content : "")
+      return [
+        { ...rest, content: text },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "The previous tool result included these image attachment(s). Analyze them directly as part of the conversation." },
+            ...rest.content.filter((part: any) => part?.type === "image_url" && part.image_url?.url),
+          ],
+        },
+      ]
+    }
+
+    return [rest]
+  })
 }
 
 /** Timeout for a single reader.read() call before we consider the stream stuck. */
