@@ -1,5 +1,6 @@
 import assert from "node:assert"
 import { describe, it } from "bun:test"
+import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { normalizeUnifiedDiffHunks, parseDiffBlocks, parseMarkdownTables } from "./markdown-diff-parser"
 
 describe("parseDiffBlocks", () => {
@@ -277,5 +278,14 @@ describe("parseDiffBlocks", () => {
     assert.equal(doneResult[0]!.type, "markdown")
     assert.equal(doneResult[1]!.type, "diff")
     assert.equal(doneResult[2]!.type, "markdown")
+  })
+
+  it("keeps diff row colors enabled while leaving context rows transparent", () => {
+    assert.equal(DIFF_RENDER_PROPS.contextBg, "transparent")
+    assert.equal(DIFF_RENDER_PROPS.lineNumberBg, "transparent")
+    assert.ok(DIFF_RENDER_PROPS.addedLineNumberBg)
+    assert.ok(DIFF_RENDER_PROPS.removedLineNumberBg)
+    assert.equal("addedContentBg" in DIFF_RENDER_PROPS, false)
+    assert.equal("removedContentBg" in DIFF_RENDER_PROPS, false)
   })
 })

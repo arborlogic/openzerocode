@@ -71,7 +71,7 @@ export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) 
 
   if (props.entry.kind === "assistant") {
     return (
-      <box marginTop={props.isFirst ? 0 : 1}>
+      <box marginTop={props.isFirst ? 0 : 1} backgroundColor={THEME.background}>
         <MarkdownWithDiff
           content={props.entry.text}
           syntaxStyle={MARKDOWN_SYNTAX}

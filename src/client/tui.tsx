@@ -45,6 +45,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
+import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { testConnection, isConnected, setEnabled, setRuntimeSessionId } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
@@ -3225,6 +3226,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         paddingTop={1}
         paddingBottom={1}
         scrollY={true}
+        backgroundColor={THEME.background}
       >
         <For each={turns()}>
           {(turn, index) => (
@@ -3242,7 +3244,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           )}
         </For>
         <Show when={running() && streamingEntries().length > 0}>
-          <box marginTop={1} flexDirection="column">
+          <box marginTop={1} flexDirection="column" backgroundColor={THEME.background}>
             <Index each={streamingEntries()}>
               {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
             </Index>
@@ -3682,16 +3684,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   onMouseDown={() => setDiffOverlay(null)}
                 >Esc / tap to close</text>
               </box>
-              <scrollbox flexGrow={1} scrollY={true} paddingLeft={1} paddingRight={1} paddingBottom={1}>
+              <scrollbox flexGrow={1} scrollY={true} paddingLeft={1} paddingRight={1} paddingBottom={1} backgroundColor={THEME.surface}>
                 <diff
                   diff={overlay.content}
                   view="unified"
                   showLineNumbers={true}
                   syntaxStyle={MARKDOWN_SYNTAX}
                   fg={THEME.text}
-                  addedBg="#1a4d1a"
-                  removedBg="#4d1a1a"
-                  contextBg="transparent"
+                  addedBg={THEME.diffAddedBg}
+                  removedBg={THEME.diffRemovedBg}
+                  {...DIFF_RENDER_PROPS}
                   addedSignColor="#22c55e"
                   removedSignColor="#ef4444"
                   lineNumberFg="#6b7280"

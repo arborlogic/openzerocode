@@ -19,6 +19,7 @@
 import { Index, Show, createMemo, type ComponentProps } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
 import { parseDiffBlocks } from "./markdown-diff-parser"
+import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { THEME } from "./theme"
 import stringWidth from "string-width"
 
@@ -121,6 +122,7 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
                     lineNumberFg={THEME.diffLineNumberFg}
                     addedBg={THEME.diffAddedBg}
                     removedBg={THEME.diffRemovedBg}
+                    {...DIFF_RENDER_PROPS}
                     addedSignColor={THEME.diffAddedSign}
                     removedSignColor={THEME.diffRemovedSign}
                     marginTop={1}
