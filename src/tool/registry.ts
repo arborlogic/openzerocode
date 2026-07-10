@@ -6,6 +6,7 @@ import { GrepTool } from "./grep"
 import { GlobTool } from "./glob"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
+import { ApplyPatchTool } from "./apply-patch"
 import { WebFetchTool } from "./web-fetch"
 import { TodoWriteTool } from "./todo"
 import { BrowserNavigateTool } from "./browser-navigate"
@@ -16,7 +17,10 @@ import { BrowserSelectTool } from "./browser-select"
 import { BrowserScrollTool } from "./browser-scroll"
 import { BrowserScreenshotTool } from "./browser-screenshot"
 import { BrowserObserveVisualTool } from "./browser-observe-visual"
+import { AnalyzeImageTool } from "./analyze-image"
 import { CallPeerTool } from "./call-peer"
+import { LearnMemoryApplyTool } from "./learn-memory"
+import { LearnProjectMemoryApplyTool } from "./learn-project-memory"
 import { getMcpTools } from "../mcp/store"
 
 export interface Interface {
@@ -37,6 +41,7 @@ export const layer = Layer.effect(
       yield* GlobTool,
       yield* BashTool,
       yield* EditTool,
+      yield* ApplyPatchTool,
       yield* WebFetchTool,
       yield* TodoWriteTool,
       yield* BrowserNavigateTool,
@@ -47,7 +52,10 @@ export const layer = Layer.effect(
       yield* BrowserScrollTool,
       yield* BrowserScreenshotTool,
       yield* BrowserObserveVisualTool,
+      yield* AnalyzeImageTool,
       yield* CallPeerTool,
+      yield* LearnMemoryApplyTool,
+      yield* LearnProjectMemoryApplyTool,
     ]
     const custom: Def[] = []
 

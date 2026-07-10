@@ -261,6 +261,7 @@ Provider 凭证可以通过环境变量或本地配置文件提供：
 | `opencode-zen` | OpenCode Zen | `OPENCODE_API`、`OPENCODE_API_KEY`（可选；可匿名使用免费模型） |
 | `openai` | OpenAI | `OPENAI_API_KEY` |
 | `openai-codex` | OpenAI Codex | 通过 `/codex-login` 使用 ChatGPT OAuth |
+| `xai-oauth` | xAI Grok OAuth | 通过 `/xai-login` 使用 SuperGrok / X Premium+ OAuth |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |

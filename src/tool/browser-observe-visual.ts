@@ -82,7 +82,7 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
     group: "browser",
     description: [
       "Capture the current GEASS browser view for visual inspection.",
-      "Returns structured page context and viewport metadata, plus either a local VLM analysis or a PNG screenshot data URL.",
+      "Returns structured page context and viewport metadata, plus either a local VLM analysis or a compressed screenshot attachment.",
       "Set analyzeWithLocalVlm=true to ask the configured local VLM (default http://10.66.66.5:8080) for a textual visual description.",
       "Use after browser_read when visual state matters (canvas, layout, dialogs, QR codes, hidden overlays).",
       "Requires GEASS desktop to be running.",
@@ -103,13 +103,13 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
           return new Result({ title: "GEASS Offline", output: msg })
         }
 
-        const observation = yield* Effect.promise(() => Geass.observeVisual(args.analyzeWithLocalVlm === true ? {
+        const observation = yield* Effect.promise(() => Geass.observeVisual({
           screenshot: {
             format: DEFAULT_VLM_IMAGE_FORMAT,
             quality: DEFAULT_VLM_IMAGE_FORMAT === 'jpeg' ? DEFAULT_VLM_IMAGE_QUALITY : undefined,
             maxLongEdge: DEFAULT_VLM_IMAGE_MAX_LONG_EDGE,
           },
-        } : undefined))
+        }))
         const screenshot = observation.screenshot
         const pageSummary = formatPageSummary(observation.page)
         const metadataLines = [
@@ -134,7 +134,15 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
           height: screenshot.height,
           viewport: screenshot.viewport,
           elementCount: observation.page.structured?.elements.length,
+          originalWidth: screenshot.originalWidth,
+          originalHeight: screenshot.originalHeight,
+          resized: screenshot.resized,
+          format: screenshot.format,
+          quality: screenshot.quality,
         }
+
+        const mimeType = screenshot.format === 'jpeg' ? 'image/jpeg' : 'image/png'
+        let images: Array<{ mimeType: string; base64: string }> | undefined
 
         if (args.analyzeWithLocalVlm === true) {
           try {
@@ -177,17 +185,13 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
               '=== Local VLM Visual Analysis Failed ===',
               message,
               '',
-              'Falling back to screenshot data URL for a vision-capable model or human-visible transcript.',
-              '',
-              `![screenshot](data:image/${screenshot.format === 'jpeg' ? 'jpeg' : 'png'};base64,${screenshot.base64})`,
+              'Passing screenshot directly to the model for vision-capable analysis.',
             )
             metadata.localVlm = { endpoint: args.vlmEndpoint || getDefaultLocalVlmEndpoint(), model: args.vlmModel || getDefaultLocalVlmModel(), ok: false, error: message }
+            images = [{ mimeType, base64: screenshot.base64 }]
           }
         } else {
-          outputParts.push(
-            '',
-            `![screenshot](data:image/${screenshot.format === 'jpeg' ? 'jpeg' : 'png'};base64,${screenshot.base64})`,
-          )
+          images = [{ mimeType, base64: screenshot.base64 }]
         }
 
         outputParts.push(
@@ -199,6 +203,7 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
         return new Result({
           title: `Visual Observation: ${screenshot.title || observation.page.title || observation.page.url}`,
           output: outputParts.join('\n'),
+          images,
           metadata,
         })
       }).pipe(Effect.orDie),

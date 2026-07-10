@@ -9,6 +9,8 @@ export type ModelConfig = {
   }
   /** Whether the model supports the `reasoning_effort` parameter (e.g. DeepSeek V4 Pro, OpenAI o-series). */
   reasoning?: boolean
+  /** Whether the model natively supports image/vision input. */
+  vision?: boolean
 }
 
 const DEFAULT_CONFIG: ModelConfig = {
@@ -30,69 +32,105 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     pricing: { input: 0.435, output: 0.87, cache_read: 0.003625 },
     reasoning: true,
   },
+  "gpt-5.5": {
+    contextLimit: 1_000_000,
+    pricing: { input: 2.5, output: 15 },
+    vision: true,
+  },
+  "gpt-5.5-mini": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.4, output: 1.6 },
+    vision: true,
+  },
+  "gpt-5.5-nano": {
+    contextLimit: 1_000_000,
+    pricing: { input: 0.1, output: 0.4 },
+    vision: true,
+  },
+  "gpt-5.5-codex": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+    vision: true,
+  },
   "gpt-5.4": {
     contextLimit: 1_000_000,
     pricing: { input: 2.5, output: 15 },
+    vision: true,
   },
   "gpt-5.4-mini": {
     contextLimit: 1_000_000,
     pricing: { input: 0.4, output: 1.6 },
+    vision: true,
   },
   "gpt-5.4-nano": {
     contextLimit: 1_000_000,
     pricing: { input: 0.1, output: 0.4 },
+    vision: true,
   },
   "gpt-5.4-codex": {
     contextLimit: 400_000,
     pricing: { input: 0, output: 0 },
+    vision: true,
   },
   "gpt-5.2": {
     contextLimit: 400_000,
     pricing: { input: 1.75, output: 14 },
+    vision: true,
   },
   "gpt-5.2-codex": {
     contextLimit: 400_000,
     pricing: { input: 1.75, output: 14 },
+    vision: true,
   },
   "gpt-5.2-chat-latest": {
     contextLimit: 400_000,
     pricing: { input: 1.75, output: 14 },
+    vision: true,
   },
   "gpt-5": {
     contextLimit: 400_000,
     pricing: { input: 1.25, output: 10 },
+    vision: true,
   },
   "gpt-5-mini": {
     contextLimit: 400_000,
     pricing: { input: 0.25, output: 2 },
+    vision: true,
   },
   "gpt-5-nano": {
     contextLimit: 400_000,
     pricing: { input: 0.05, output: 0.4 },
+    vision: true,
   },
   "gpt-4o": {
     contextLimit: 128_000,
     pricing: { input: 2.5, output: 10 },
+    vision: true,
   },
   "gpt-4o-mini": {
     contextLimit: 128_000,
     pricing: { input: 0.15, output: 0.6 },
+    vision: true,
   },
   "claude-sonnet-4-20250514": {
     contextLimit: 200_000,
     pricing: { input: 3, output: 15 },
+    vision: true,
   },
   "claude-sonnet-4-20250514-thinking": {
     contextLimit: 200_000,
     pricing: { input: 3, output: 15 },
+    vision: true,
   },
   "claude-3-5-sonnet-latest": {
     contextLimit: 200_000,
     pricing: { input: 3, output: 15 },
+    vision: true,
   },
   "claude-3-5-haiku-latest": {
     contextLimit: 200_000,
     pricing: { input: 0.8, output: 4 },
+    vision: true,
   },
   "inclusionai/ring-2.6-1t:free": {
     contextLimit: 262_144,
@@ -112,6 +150,44 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   },
   "openrouter/auto": {
     contextLimit: 2_000_000,
+  },
+  "grok-build-0.1": {
+    contextLimit: 256_000,
+    pricing: { input: 1, output: 2, cache_read: 0.2 },
+    vision: true,
+  },
+  "grok-composer-2.5-fast": {
+    contextLimit: 256_000,
+    pricing: { input: 0, output: 0 },
+  },
+  "grok-4.5": {
+    contextLimit: 500_000,
+    pricing: { input: 2, output: 6, cache_read: 0.5 },
+    reasoning: true,
+    vision: true,
+  },
+  "grok-4.3": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    reasoning: true,
+    vision: true,
+  },
+  "grok-4.20-0309-reasoning": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    reasoning: true,
+    vision: true,
+  },
+  "grok-4.20-0309-non-reasoning": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    vision: true,
+  },
+  "grok-4.20-multi-agent-0309": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    reasoning: true,
+    vision: true,
   },
 }
 
@@ -141,6 +217,18 @@ export function getModelConfig(model: string, fallback?: ModelInfo | ModelConfig
   }
 
   return DEFAULT_CONFIG
+}
+
+/** Check if a model natively supports vision/image input. */
+export function modelSupportsVision(model: string): boolean {
+  const cfg = MODEL_CONFIGS[normalizeModelConfigKey(model)]
+  if (cfg?.vision === true) return true
+
+  // Heuristic: unknown models with "vision", "vl", "omni" in name likely support images
+  const lower = model.toLowerCase()
+  if (/vision|vl[m]?[-_]|\bvl\b|omni/.test(lower)) return true
+
+  return false
 }
 
 export function estimateTokens(text: string): number {

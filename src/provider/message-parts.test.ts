@@ -96,4 +96,25 @@ describe("createToolMessage", () => {
       { type: "tool-result", id: undefined, tool: undefined, output: "result without id", error: undefined },
     ])
   })
+
+  it("keeps image contentParts in tool message content and parts", () => {
+    const msg = createToolMessage({
+      tool_call_id: "call_img",
+      tool: "analyze_image",
+      output: "analysis text",
+      contentParts: [
+        { type: "text", text: "analysis text" },
+        { type: "image_url", image_url: { url: "data:image/jpeg;base64,AAECAw==" } },
+      ],
+    })
+
+    assert.deepEqual(msg.content, [
+      { type: "text", text: "analysis text" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,AAECAw==" } },
+    ])
+    assert.deepEqual(msg.parts, [
+      { type: "tool-result", id: "call_img", tool: "analyze_image", output: "analysis text", error: undefined },
+      { type: "image", mimeType: "image/jpeg", base64: "AAECAw==" },
+    ])
+  })
 })

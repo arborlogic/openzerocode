@@ -1,10 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { runSession, streamSession } from "./session-runner"
 import { Provider } from "../provider/types"
 import { ToolRegistry } from "../tool/registry"
-import type { Message } from "../provider/types"
+import { Def, Result } from "../tool/types"
+import type { CompletionRequest, Message } from "../provider/types"
 
 const emptyToolsLayer = Layer.succeed(ToolRegistry, {
   all: () => Effect.succeed([]),
@@ -12,13 +13,23 @@ const emptyToolsLayer = Layer.succeed(ToolRegistry, {
   register: () => Effect.void,
 })
 
-function runtime(stream: ReadableStream<any>) {
+function runtime(stream: ReadableStream<any>, input?: { tools?: Def[]; onRequest?: (req: CompletionRequest) => void }) {
   const providerLayer = Layer.succeed(Provider, {
     complete: () => Effect.die("not implemented"),
-    stream: () => Effect.succeed(stream),
+    stream: (req) => Effect.sync(() => {
+      input?.onRequest?.(req)
+      return stream
+    }),
     models: () => Effect.succeed([]),
   })
-  const layer = Layer.merge(providerLayer, emptyToolsLayer)
+  const toolLayer = input?.tools
+    ? Layer.succeed(ToolRegistry, {
+        all: () => Effect.succeed(input.tools!),
+        get: (id: string) => Effect.succeed(input.tools!.find((tool) => tool.id === id)),
+        register: () => Effect.void,
+      })
+    : emptyToolsLayer
+  const layer = Layer.merge(providerLayer, toolLayer)
 
   return {
     runSync: <E, A>(effect: Effect.Effect<A, E, Provider | ToolRegistry>) => Effect.runPromise(effect.pipe(Effect.provide(layer))),
@@ -26,6 +37,15 @@ function runtime(stream: ReadableStream<any>) {
     parseJson: (raw: string) => JSON.parse(raw),
     ask: () => Promise.resolve(),
   }
+}
+
+function testTool(id: string): Def {
+  return new Def({
+    id,
+    description: `${id} test tool`,
+    parameters: Schema.Struct({}),
+    execute: () => Effect.succeed(new Result({ title: id, output: "ok" })),
+  })
 }
 
 function createUi(overrides: Partial<Parameters<typeof runSession>[2]> = {}): Parameters<typeof runSession>[2] {
@@ -162,4 +182,66 @@ test("streamSession treats abort-time stream cancellation as interruption", asyn
   abort.abort()
   const result = await pending
   assert.equal(result.done, true)
+})
+
+test("streamSession exposes only read/search/memory tools in learn mode", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "done" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("capture tools", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "learn",
+  }, runtime(stream, {
+    tools: [
+      testTool("read"),
+      testTool("grep"),
+      testTool("glob"),
+      testTool("learn_memory_apply"),
+      testTool("learn_project_memory_apply"),
+      testTool("write"),
+      testTool("bash"),
+      testTool("web_fetch"),
+    ],
+    onRequest: (req) => requests.push(req),
+  }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.deepEqual(
+    requests[0]?.tools?.map((tool) => tool.function.name),
+    ["read", "grep", "glob", "learn_memory_apply", "learn_project_memory_apply"],
+  )
+})
+
+test("streamSession sends no tool definitions in plan mode", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "plan" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("capture tools", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "plan",
+  }, runtime(stream, {
+    tools: [testTool("read"), testTool("learn_memory_apply")],
+    onRequest: (req) => requests.push(req),
+  }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.equal(requests[0]?.tools, undefined)
 })

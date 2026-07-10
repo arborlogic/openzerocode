@@ -19,7 +19,7 @@ describe("messageToBlocks", () => {
     assert.deepEqual(messageToBlocks(msg), [
       { kind: "reasoning", text: "thinking", title: "Thinking" },
       { kind: "assistant", text: "answer" },
-      { kind: "tool-call", text: '{"filePath":"a.ts"}', title: "read" },
+      { kind: "tool-call", text: '{"filePath":"a.ts"}', title: "read", meta: { filePath: "a.ts" } },
       { kind: "tool", text: "contents", title: "read" },
       { kind: "error", text: "boom", title: "bash" },
     ])

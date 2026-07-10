@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0 - 2026-07-10
+
+- Added `xai-oauth` provider with SuperGrok / X Premium+ device-code login (`/xai-login`), token refresh, and Responses API transport for Grok models.
+- Added multimodal image support across providers, including image budgeting and message part conversion tests.
+- Added `analyze_image` and `apply_patch` tools for visual file analysis and patch-style edits.
+- Added two-stage Learn mode with explicit global memory updates and project `DEVELOPMENT.md` extraction.
+- Added workspace memory loading and documentation for the memory architecture.
+- Added queued prompt handling during session compaction so input is preserved while compacting.
+- Improved markdown diff parsing and rendering, including contained diff row backgrounds and richer parser coverage.
+- Improved sidebar width handling and terminal layout constants.
+- Improved Zero API and Ollama provider handling with expanded tests.
+- Fixed GEASS/browser visual observation behavior and screenshot path handling.
+- Refined tool output/path handling and registry coverage.
+
 ## 0.5.0 - 2026-06-20
 
 - Added Ollama native API provider support.

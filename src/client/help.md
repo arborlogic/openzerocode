@@ -5,6 +5,7 @@
   /new                  Start a fresh session
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
+  /xai-login             Authorize xAI Grok (SuperGrok / X Premium+)
   /mode                  Toggle build / plan mode
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher

@@ -11,14 +11,17 @@ This document reflects the memory model implemented in the repo today.
 OpenZeroCode currently uses three memory layers:
 
 1. **Base system prompt** from source code
-2. **Workspace memory** loaded from `AGENTS.md` and `CONTEXT.md`
+2. **Durable user-global memory** loaded from `~/.openzerocode/AGENTS.md` and `~/.openzerocode/CONTEXT.md`
 3. **Per-session conversation state** stored in session JSON, including optional compaction summaries
 
 What it does today:
 
-- ✅ Loads `AGENTS.md` from the nearest workspace scope
-- ✅ Loads `CONTEXT.md` from the nearest workspace scope
-- ✅ Injects both files into the system prompt when present
+- ✅ Loads user-global `~/.openzerocode/AGENTS.md` for cross-project personal preferences, response style, and general safety rules
+- ✅ Loads user-global `~/.openzerocode/CONTEXT.md` for user background, common tools, project-family lessons, and long-term preferences
+- ✅ Creates missing empty user-global `AGENTS.md` and `CONTEXT.md` files on Learn-mode entry in the TUI; empty placeholders are ignored by prompt loading
+- ✅ Injects global memory files into the system prompt when present and non-empty
+- ✅ Treats project `AGENTS.md` / `CONTEXT.md` files as normal repository documentation, not automatic prompt memory
+- ✅ Lets Learn mode write confirmed project-local development reference to `<workspace>/DEVELOPMENT.md`
 - ✅ Stores session messages and compaction metadata in local session JSON
 - ✅ Uses compaction summaries as session-scoped memory when context gets too large
 - ✅ Keeps `SESSION_SUMMARY.md` as a manual handoff artifact, not automatic prompt input
@@ -26,8 +29,9 @@ What it does today:
 What it does not do automatically:
 
 - Auto-update `SESSION_SUMMARY.md`
-- Auto-write repo memory files during normal conversation
-- Maintain cross-session learned memory
+- Auto-write memory files during normal conversation
+- Infer and write cross-session learned memory without explicit user confirmation
+- Auto-inject conditional framework/project memories from `memory.d`
 - Sync memory to an external service
 - Create a dedicated `.zero/` memory hierarchy
 
@@ -35,20 +39,20 @@ What it does not do automatically:
 
 ## Prompt Assembly Model
 
-The system prompt is assembled in `src/client/system-prompt.ts` and consumed from `src/client/tui.tsx`.
+The system prompt is assembled in `src/client/system-prompt.ts` and consumed from `src/client/tui.tsx`, `src/client/session-runner.ts`, and server/headless entry points.
 
 Current high-level order:
 
 ```text
 Base system prompt
   ↓
-Mode reminder (Build or Plan)
+Mode reminder (Build, Plan, or Learn)
   ↓
 Task-list instructions (Build mode only)
   ↓
-AGENTS.md contents (if present)
+AGENTS.md memory contents (user-global only)
   ↓
-CONTEXT.md contents (if present)
+CONTEXT.md memory contents (user-global only)
 ```
 
 At runtime, the conversation payload then adds session-specific content such as:
@@ -63,153 +67,85 @@ Current user message
 
 So the important distinction is:
 
-- **`AGENTS.md` and `CONTEXT.md` are workspace-scoped prompt inputs**
+- **Global `~/.openzerocode/AGENTS.md` and `~/.openzerocode/CONTEXT.md` are user-scoped prompt inputs**
+- **Project `AGENTS.md`, `CONTEXT.md`, and `DEVELOPMENT.md` files are not automatic prompt inputs**
 - **Compaction summaries are session-scoped prompt inputs**
 - **`SESSION_SUMMARY.md` is not part of automatic prompt assembly**
 
 ---
 
-## Workspace Memory Files
+## Durable Memory Files
 
-### `AGENTS.md`
+OpenZeroCode loads durable prompt memory from exactly these user-global files:
 
-Purpose:
+1. `~/.openzerocode/AGENTS.md` — user personal cross-project preferences, response style, general safety rules
+2. `~/.openzerocode/CONTEXT.md` — user background, common tools, project-family lessons, long-term preferences
 
-- Stable repo-specific instructions
-- Workflow rules and constraints
-- High-signal operational guidance
+When entering Learn mode in the TUI, OpenZeroCode ensures both files exist, creating empty placeholders if needed. Empty files are treated as absent until the user confirms real content.
 
-Examples of good content:
-
-- Which commands to use for typecheck, tests, and local runs
-- Important architectural entrypoints
-- Known repo-specific gotchas
-- Boundaries the agent should preserve
-
-Should not contain:
-
-- Temporary task progress
-- Per-session notes
-- Frequently changing implementation details better represented in source
-
-### `CONTEXT.md`
-
-Purpose:
-
-- Project background and vocabulary
-- Repo-specific heuristics that help orientation
-- Known mismatches between docs and implementation
-- Short-term but reusable local context
-
-Examples of good content:
-
-- Definitions like Build mode / Plan mode
-- Product terminology used throughout the repo
-- Current known documentation mismatches
-- Workflow heuristics that are useful but not strict policy
-
-Should not contain:
-
-- Hard policy that overrides executable code truth
-- Long freeform design docs
-- Auto-generated session history
+Project `AGENTS.md`, `CONTEXT.md`, `.openzerocode/AGENTS.md`, `.openzerocode/CONTEXT.md`, and `DEVELOPMENT.md` are not loaded automatically. They can still be read by the model when relevant, just like any other repository documentation.
 
 ---
 
-## Workspace File Discovery
+## Project Development Reference
 
-Implemented in `src/client/workspace-memory.ts`.
+`DEVELOPMENT.md` is the explicit project-local place for guidance extracted from global experience and project discussion history. It is regular repository documentation, suitable for humans and future AI sessions to read when needed.
 
-Current behavior:
+Examples of good `DEVELOPMENT.md` content:
 
-- Establish a workspace boundary by walking upward until a directory containing `.git` or `package.json`
-- Search upward from the current working directory for the nearest matching file
-- Support nearest-file lookup independently for:
-  - `AGENTS.md`
-  - `CONTEXT.md`
-- Return trimmed file contents
-- Treat empty files as absent
+- Architecture constraints that are specific to this repository
+- Preferred verification commands for this project
+- Known workflow pitfalls and maintenance rules
+- Project-specific conventions learned during development
 
-This means nested workspaces can override parent memory files by placing a closer `AGENTS.md` or `CONTEXT.md` nearer to the current working directory.
+It is not automatically injected into every prompt because project guidance should be visible, reviewable, and intentionally read when relevant.
 
 ---
 
-## Session Memory
+## Learn Mode
 
-Session state is stored locally under:
+Learn mode is a constrained workflow for durable experience refinement:
 
-```text
-~/.openzerocode/sessions/<session-id>.json
-```
+- It can read/search files to understand context.
+- It cannot use general source-editing or shell tools.
+- It must discuss candidate memory updates first.
+- It must show the exact target file and text before applying.
+- It may call a Learn write tool only after explicit user confirmation.
 
-Session JSON contains the conversation transcript and, when compaction has occurred, a compaction payload similar to:
+Learn mode supports two explicit workflows:
 
-```json
-{
-  "id": "session-abc",
-  "messages": [],
-  "model": "...",
-  "provider": "...",
-  "mode": "build",
-  "compaction": {
-    "summary": "...",
-    "createdAt": "...",
-    "sourceMessageCount": 28
-  },
-  "createdAt": "...",
-  "updatedAt": "..."
-}
-```
+1. **Accumulate experience globally**
+   - The user asks the AI to distill lessons from the current project state and discussion context.
+   - After confirmation, `learn_memory_apply` writes to global `~/.openzerocode/AGENTS.md` or `~/.openzerocode/CONTEXT.md`.
+   - These writes are durable and cross-session because they update global memory.
 
-The `compaction` field is session-scoped. It is not shared across sessions unless exported or copied manually.
+2. **Extract experience into a project**
+   - The user asks the AI to read/search the current project plus global memory and select relevant reusable guidance.
+   - After confirmation, `learn_project_memory_apply` writes to `<workspace>/DEVELOPMENT.md`.
+   - These writes are project-local development reference, not automatic prompt memory.
 
----
+There is no automatic inference/writeback during normal conversation.
 
-## Compaction Behavior
+Recommended split:
 
-Relevant code paths include `src/client/session-compact.ts`, `src/client/session-runner.ts`, and session persistence helpers in `src/client/sessions.ts`.
-
-Current behavior:
-
-- Compaction is triggered when context needs to be reduced
-- A structured summary is generated and stored in session JSON
-- A recent message tail is retained alongside the summary
-- The summary is reused only for that session
-- No repo file is written as part of normal compaction flow
-
-This keeps long-running sessions usable without turning session state into workspace memory.
+| Target | Use for |
+|--------|---------|
+| `~/.openzerocode/AGENTS.md` | User-wide behavior instructions: language, response style, safety preferences |
+| `~/.openzerocode/CONTEXT.md` | User background, common tools, reusable lessons, project-family preferences |
+| `<workspace>/DEVELOPMENT.md` | Repository-specific architecture, workflow, verification, and maintenance guidance |
 
 ---
 
-## `SESSION_SUMMARY.md` Status
-
-`SESSION_SUMMARY.md` exists in the repo as a **manual continuation artifact**.
-
-Current behavior:
-
-- Not automatically injected into prompts
-- Not automatically updated by the runtime
-- Not the source of truth for stable workspace instructions
-
-Use it for:
-
-- Human handoff notes
-- Manual continuation breadcrumbs
-- Concise session-specific reminders
-
-Do not rely on it as automatic memory.
-
----
-
-## Lightweight Introspection Surface
+## Workspace Memory Inspection
 
 The command layer can expose memory state to the user without changing prompt behavior.
 
 A practical introspection command should answer questions like:
 
-- Is `AGENTS.md` loaded?
-- Is `CONTEXT.md` loaded?
-- What files were discovered from the current working directory?
+- Is global `AGENTS.md` loaded?
+- Is global `CONTEXT.md` loaded?
+- What user-global files were discovered?
+- Is `DEVELOPMENT.md` manual project reference?
 - Is `SESSION_SUMMARY.md` automatic or manual?
 
 This is useful for debugging memory behavior while keeping the architecture simple.
@@ -220,9 +156,11 @@ This is useful for debugging memory behavior while keeping the architecture simp
 
 Key implementation files:
 
-- `src/client/workspace-memory.ts` — workspace file lookup and loading
+- `src/client/workspace-memory.ts` — global memory file lookup/loading and memory status
+- `src/tool/learn-memory.ts` — confirmed Learn-mode global memory writes
+- `src/tool/learn-project-memory.ts` — confirmed Learn-mode project `DEVELOPMENT.md` writes
 - `src/client/system-prompt.ts` — base system prompt assembly and memory injection
-- `src/client/tui.tsx` — runtime loading of workspace memory and command wiring
+- `src/client/tui.tsx` — runtime loading of memory and command wiring
 - `src/client/sessions.ts` — session persistence
 - `src/client/session-compact.ts` — session compaction summary generation
 - `src/client/session-runner.ts` — session prompt/runtime flow
@@ -233,11 +171,13 @@ Key implementation files:
 
 | Problem | Current approach |
 |---------|------------------|
-| Need stable repo-specific instructions | Load `AGENTS.md` |
-| Need orientation/background without overloading policy | Load `CONTEXT.md` |
+| Need stable user-wide instructions | Load `~/.openzerocode/AGENTS.md` |
+| Need durable background without overloading policy | Load `~/.openzerocode/CONTEXT.md` |
+| Need project-specific learned guidance | Write confirmed reference to `DEVELOPMENT.md` |
 | Need long-session continuity | Store compaction summary in session JSON |
 | Avoid noisy repo writes during normal use | Do not auto-write memory files |
-| Avoid confusing session handoff with workspace memory | Keep `SESSION_SUMMARY.md` manual |
+| Avoid confusing session handoff with durable memory | Keep `SESSION_SUMMARY.md` manual |
+| Avoid hidden project-context injection | Treat project memory-looking files as normal docs |
 
 ---
 

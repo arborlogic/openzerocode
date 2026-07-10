@@ -42,6 +42,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     exportCompactSession: mock(() => {}),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
+    xaiLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     getAutoLoopInterval: mock(() => undefined),
     getAutoLoopConfirm: mock(() => false),
     setAutoLoop: mock(() => {}),
@@ -56,6 +57,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("clear"))
     assert.ok(names.includes("provider"))
     assert.ok(names.includes("codex-login"))
+    assert.ok(names.includes("xai-login"))
     assert.ok(names.includes("mode"))
     assert.ok(names.includes("memory"))
     assert.ok(names.includes("model"))
@@ -134,6 +136,13 @@ describe("executeCommand", () => {
       assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
+    it("switches to learn mode", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/mode learn", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "learn")
+    })
+
     it("toggles mode when no argument given", async () => {
       const ctx = stubCtx() // mode is "build"
       const result = await executeCommand("/mode", ctx)
@@ -190,6 +199,15 @@ describe("executeCommand", () => {
     })
   })
 
+  describe("/xai-login", () => {
+    it("authorizes xAI", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/xai-login", ctx)
+      assert.ok(result)
+      assert.ok((ctx.xaiLogin as any).mock.calls.length > 0)
+    })
+  })
+
   describe("/model", () => {
     it("shows current model without argument", async () => {
       const ctx = stubCtx()
@@ -222,7 +240,7 @@ describe("executeCommand", () => {
       const first = calls[0]
       const args = first.arguments ?? first
       assert.equal(args[0], "info")
-      assert.equal(args[1], "Workspace memory")
+      assert.equal(args[1], "Prompt memory")
     })
   })
 
@@ -373,7 +391,7 @@ describe("executeCommand", () => {
     const call = (ctx.showToast as any).mock.calls[0]
     const args = call.arguments ?? call
     assert.equal(args[0], "info")
-    assert.equal(args[1], "Workspace memory")
+    assert.equal(args[1], "Prompt memory")
   })
 
   it("returns false for unknown command", async () => {

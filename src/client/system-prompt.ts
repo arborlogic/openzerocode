@@ -30,6 +30,12 @@ const BASE_SYSTEM_PROMPT = [
   "When the user mentions a URL, reference to documentation, or a package/library/framework you are not familiar with, use the web_fetch tool to retrieve the content. You can also use web_fetch to search the web (e.g., fetch https://www.google.com/search?q=...) when you need up-to-date information.",
   "Be concise and helpful.",
   "",
+  "# Diff formatting",
+  "When showing code changes to the user, ALWAYS use ```diff fenced code blocks (not ```bash or other languages).",
+  "Format as unified diff with @@ -line,count +line,count @@ hunk headers.",
+  "Include at least 3 lines of context (space-prefixed) before and after each change hunk.",
+  "This renders as a side-by-side diff view for the user.",
+  "",
   "# Drive the task to completion",
   "Once you have understood the request, keep working until the task is finished or you hit a real blocker. Do not stop after listing what you will do next — listing steps is not progress; only tool calls that change the workspace are.",
   "Do not ask the user whether to continue, whether to proceed to the next step, or whether they want you to do the thing they already asked for. Phrases like \"if you want, I can also...\", \"shall I continue?\", \"want me to do X next?\" are forbidden when X is already implied by the original request. Just do it.",
@@ -55,6 +61,34 @@ const PLAN_MODE_REMINDER = [
   "You are currently in Plan mode.",
   "Do not write code, do not call tools, and do not make changes.",
   "Explain the approach, risks, and step-by-step plan only.",
+].join("\n")
+
+const VISION_SECTION = [
+  "# Vision",
+  "",
+  "If your model supports vision (GPT-4o, Claude, etc.), browser screenshots and image files are sent directly to you as images.",
+  "You can see and analyze them in detail without any intermediate step.",
+  "",
+  "Use the `analyze_image` tool when you need to analyze an arbitrary image file (PNG, JPEG, etc.).",
+  "When the current chat model supports vision natively, `analyze_image` attaches the image for direct provider vision analysis and does not call a local VLM first.",
+  "If your model does not support vision, images are automatically analyzed by a local VLM and you receive a textual description instead.",
+  "Configure the local VLM via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
+].join("\n")
+
+const LEARN_MODE_REMINDER = [
+  "You are currently in Learn mode.",
+  "Your job is to help the user refine durable development experience, not to implement code changes.",
+  "You may read/search files to understand current project state, existing DEVELOPMENT.md guidance, AGENTS.md, CONTEXT.md, and nearby project context.",
+  "On Learn-mode entry, OpenZeroCode creates empty ~/.openzerocode/AGENTS.md and ~/.openzerocode/CONTEXT.md files if missing; empty files are placeholders and are not loaded into the prompt until content is added.",
+  "Learn mode supports two explicit workflows: (1) distill project/discussion experience into global ~/.openzerocode memory, and (2) extract relevant global/project experience into this project's DEVELOPMENT.md as development reference.",
+  "Do not edit source files or run shell commands in Learn mode.",
+  "Discuss candidate memory updates first. Prefer concise, durable guidance over transient facts.",
+  "Before applying memory, present the exact target file and text to be written, then wait for explicit user confirmation.",
+  "Only after explicit confirmation may you call learn_memory_apply for global ~/.openzerocode memory or learn_project_memory_apply for project DEVELOPMENT.md guidance.",
+  "Use ~/.openzerocode/AGENTS.md for user-wide instructions such as language preference, response style, and general safety rules.",
+  "Use ~/.openzerocode/CONTEXT.md for user background, common tools, project-family lessons, and long-term development preferences.",
+  "Use <workspace>/DEVELOPMENT.md for project-specific architecture, workflow, verification, and maintenance guidance extracted for this repository.",
+  "Do not rely on conditional auto-injection; if a lesson should guide this project, explicitly extract it into DEVELOPMENT.md after confirmation.",
 ].join("\n")
 
 function buildEnvironmentSection(cwd: string): string {
@@ -92,21 +126,22 @@ export function buildSystemPrompt(
   contextInstruction?: string,
   cwd: string = process.cwd(),
 ) {
-  const parts = [BASE_SYSTEM_PROMPT, mode === "plan" ? PLAN_MODE_REMINDER : BUILD_MODE_REMINDER]
+  const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : mode === "learn" ? LEARN_MODE_REMINDER : BUILD_MODE_REMINDER
+  const parts = [BASE_SYSTEM_PROMPT, modeReminder]
 
   parts.push(buildEnvironmentSection(cwd))
 
-  // Plan mode disables tools entirely (toolDefs is emptied in session-runner),
-  // so tool-specific guidance (todo list, GEASS browser tools) only belongs in
-  // Build mode — describing tools the model cannot call wastes tokens and
-  // contradicts the "do not call tools" plan-mode instruction.
-  if (mode !== "plan") {
+  // Plan mode disables tools entirely, and Learn mode exposes only read/search
+  // plus confirmed Learn memory tools. General tool-specific guidance belongs in Build mode.
+  if (mode === "build") {
     parts.push(TODO_INSTRUCTIONS)
 
     const geassSection = buildGeassSection()
     if (geassSection) {
       parts.push(geassSection)
     }
+
+    parts.push(VISION_SECTION)
   }
 
   if (agentsInstruction) {

@@ -9,6 +9,7 @@ import { ReadTool } from "./read"
 import { WriteTool } from "./write"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
+import { ApplyPatchTool } from "./apply-patch"
 import { WebFetchTool } from "./web-fetch"
 import { GrepTool } from "./grep"
 import { ToolRegistry, layer } from "./registry"
@@ -196,6 +197,7 @@ describe("registry", () => {
     assert.ok(ids.includes("grep"))
     assert.ok(ids.includes("glob"))
     assert.ok(ids.includes("edit"))
+    assert.ok(ids.includes("apply_patch"))
     assert.ok(ids.includes("web_fetch"))
   })
 
@@ -249,6 +251,35 @@ describe("edit tool", () => {
     const result = await Effect.runPromise(edit.execute({ filePath, oldString: "zzz", newString: "x", replaceAll: false }, testCtx()))
     assert.equal(result.title, "Error")
     assert.ok(result.output.includes("not found"))
+  })
+})
+
+describe("apply_patch tool", () => {
+  it("applies patch-style updates", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    writeFileSync(filePath, "hello world\nunchanged\n")
+    const patch = await Effect.runPromise(ApplyPatchTool)
+    const result = await Effect.runPromise(patch.execute({ patchText: `*** Begin Patch
+*** Update File: test.txt
+@@
+-hello world
++hello there
+ unchanged
+*** End Patch` }, testCtx(dir)))
+    assert.equal(result.title, "Patch Applied")
+    assert.equal(readFileSync(filePath, "utf-8"), "hello there\nunchanged\n")
+  })
+
+  it("adds files with patch-style syntax", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const patch = await Effect.runPromise(ApplyPatchTool)
+    await Effect.runPromise(patch.execute({ patchText: `*** Begin Patch
+*** Add File: nested/new.txt
++alpha
++beta
+*** End Patch` }, testCtx(dir)))
+    assert.equal(readFileSync(join(dir, "nested", "new.txt"), "utf-8"), "alpha\nbeta\n")
   })
 })
 

@@ -8,6 +8,8 @@ export class Context {
   readonly root: string
   readonly ask: (input: Omit<PermissionRequest, "id">) => Effect.Effect<void>
   readonly metadata: (input: { title?: string; metadata?: Metadata }) => Effect.Effect<void>
+  /** Active chat model id, used by tools that branch on model capabilities (e.g. vision). */
+  readonly model?: string
 
   constructor(input: {
     abort: AbortSignal
@@ -15,23 +17,29 @@ export class Context {
     root: string
     ask: (input: Omit<PermissionRequest, "id">) => Effect.Effect<void>
     metadata: (input: { title?: string; metadata?: Metadata }) => Effect.Effect<void>
+    model?: string
   }) {
     this.abort = input.abort
     this.cwd = input.cwd
     this.root = input.root
     this.ask = input.ask
     this.metadata = input.metadata
+    this.model = input.model
   }
 }
+
+export type ResultImage = { mimeType: string; base64: string }
 
 export class Result {
   readonly title: string
   readonly output: string
+  readonly images?: ResultImage[]
   readonly metadata?: Metadata
 
-  constructor(input: { title: string; output: string; metadata?: Metadata }) {
+  constructor(input: { title: string; output: string; images?: ResultImage[]; metadata?: Metadata }) {
     this.title = input.title
     this.output = input.output
+    this.images = input.images
     this.metadata = input.metadata
   }
 }

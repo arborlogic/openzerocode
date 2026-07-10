@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 import type { Message, Part } from "../provider/types"
+import { contentToText } from "../provider/content"
 import { sanitizeMessages } from "./message-sanitize"
 
 export function getSessionDir(): string {
@@ -28,7 +29,8 @@ export function migrateMessage(msg: Message): Message {
   if (msg.role === "assistant") {
     const parts: Part[] = []
     if (msg.reasoning_content) parts.push({ type: "reasoning", text: msg.reasoning_content })
-    if (msg.content) parts.push({ type: "text", text: msg.content })
+    const text = contentToText(msg.content)
+    if (text) parts.push({ type: "text", text })
     if (msg.tool_calls) {
       for (const tc of msg.tool_calls) {
         parts.push({ type: "tool-call", id: tc.id, tool: tc.function.name ?? "unknown", input: tc.function.arguments ?? "{}" })
@@ -38,7 +40,7 @@ export function migrateMessage(msg: Message): Message {
   }
 
   if (msg.role === "tool") {
-    return { ...msg, parts: [{ type: "tool-result", id: msg.tool_call_id, output: msg.content ?? "" }] }
+    return { ...msg, parts: [{ type: "tool-result", id: msg.tool_call_id, output: contentToText(msg.content) }] }
   }
 
   return msg

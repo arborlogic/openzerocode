@@ -185,39 +185,60 @@ function pushMarkdownSegments(segments: MarkdownDiffSegment[], content: string) 
 }
 
 /**
+ * Check if code block content looks like a unified diff
+ * (has @@ hunk headers and +/- prefixed lines).
+ */
+function looksLikeUnifiedDiff(code: string): boolean {
+  const lines = code.split("\n")
+  let hasHunkHeader = false
+  let hasChangeLines = false
+  for (const line of lines) {
+    if (/^@@ -\d+/.test(line)) hasHunkHeader = true
+    if (line.startsWith("+") || line.startsWith("-")) hasChangeLines = true
+    if (hasHunkHeader && hasChangeLines) return true
+  }
+  return false
+}
+
+/**
  * Parse markdown content into segments: normal markdown vs ```diff/```patch blocks.
+ * Also detects ```bash/```sh blocks that contain unified diff content.
  */
 export function parseDiffBlocks(content: string, streaming = false): MarkdownDiffSegment[] {
   const segments: MarkdownDiffSegment[] = []
-  // Matches fenced code blocks with diff or patch language.
-  // Group 1: language (diff/patch)
-  // Group 2: optional filename hint on the same line
-  // Group 3: the content inside the block
-  const pattern = /```(diff|patch)\s*(\S*)\n([\s\S]*?)```/g
+  // Matches fenced code blocks. Group 1: language, Group 2: filename hint, Group 3: content
+  const pattern = /```(\w+)\s*(\S*)\n([\s\S]*?)```/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
   while ((match = pattern.exec(content)) !== null) {
-    // Text before this diff block
+    const lang = match[1]!.toLowerCase()
+    const filename = match[2] ?? ""
+    const codeContent = match[3]!
+
+    // Text before this code block
     const before = content.slice(lastIndex, match.index)
     if (before) {
       pushMarkdownSegments(segments, before)
     }
 
-    const filename = match[2] ?? ""
-    const diffContent = match[3]!
+    // Direct diff/patch blocks always treated as diff
+    const isDiffLang = lang === "diff" || lang === "patch"
+    // Bash/sh blocks may contain diff output — detect by content
+    const isBashWithDiff = (lang === "bash" || lang === "sh" || lang === "shell") && looksLikeUnifiedDiff(codeContent)
 
-    // Strip the leading/trailing diff header lines if present but keep the hunk
-    // The <diff> component expects unified diff format starting from ---/+++
-    const cleanDiff = normalizeUnifiedDiffHunks(diffContent.trimEnd())
-
-    // If the block has a leading diff --git line, keep it; otherwise
-    // the parser handles plain unified diff just fine.
-    segments.push({
-      type: "diff",
-      content: cleanDiff,
-      file: filename || undefined,
-    })
+    if (isDiffLang || isBashWithDiff) {
+      const cleanDiff = normalizeUnifiedDiffHunks(codeContent.trimEnd())
+      segments.push({
+        type: "diff",
+        content: cleanDiff,
+        file: filename || undefined,
+      })
+    } else {
+      // Regular code block — emit as markdown
+      const fenced = "```" + match[1] + (filename ? " " + filename : "") + "\n" + codeContent + "```"
+      segments.push({ type: "markdown", content: fenced })
+    }
 
     lastIndex = match.index + match[0].length
   }

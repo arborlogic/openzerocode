@@ -20,7 +20,7 @@ export function TurnEntry(props: {
   const canClick = () => !props.isRunning && props.turn.userMsgIndex !== undefined && !!props.onUserClick
 
   return (
-    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1}>
+    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1} backgroundColor={THEME.background}>
       <Show when={props.turn.user}>
         <box
           paddingLeft={2}

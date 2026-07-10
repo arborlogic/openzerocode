@@ -6,10 +6,34 @@ import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
 import { isEnabled, isConnected } from "../browser/geass-client"
 import { readGitSnapshot, type GitCommit, type GitFile } from "./git-snapshot"
+import stringWidth from "string-width"
 
-function truncatePath(path: string, maxLen: number): string {
-  if (path.length <= maxLen) return path
-  return "…" + path.slice(-(maxLen - 1))
+function truncateStart(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return ""
+  if (stringWidth(text) <= maxWidth) return text
+  let width = 1
+  let result = ""
+  for (const char of [...text].reverse()) {
+    const charWidth = stringWidth(char)
+    if (width + charWidth > maxWidth) break
+    width += charWidth
+    result = char + result
+  }
+  return "…" + result
+}
+
+function truncateEnd(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return ""
+  if (stringWidth(text) <= maxWidth) return text
+  let width = 1
+  let result = ""
+  for (const char of [...text]) {
+    const charWidth = stringWidth(char)
+    if (width + charWidth > maxWidth) break
+    width += charWidth
+    result += char
+  }
+  return result + "…"
 }
 
 function fmtTokens(n: number): string {
@@ -258,9 +282,7 @@ export function Sidebar(props: {
                   ? "#d29922"
                   : props.theme.muted
                 const maxTextWidth = Math.max(1, props.width - 5)
-                const text = todo.content.length > maxTextWidth
-                  ? todo.content.slice(0, maxTextWidth - 1) + "…"
-                  : todo.content
+                const text = truncateEnd(todo.content, maxTextWidth)
                 return (
                   <box flexDirection="row" gap={1}>
                     <text style={{ fg: color }}>[{icon}]</text>
@@ -303,7 +325,7 @@ export function Sidebar(props: {
           <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Branch</text>
             <text style={{ fg: props.theme.muted }} wrapMode="none">
-              {truncatePath(branch() ?? "", Math.max(1, props.width - 4))}
+              {truncateStart(branch() ?? "", Math.max(1, props.width - 4))}
             </text>
           </box>
         </Show>
@@ -312,7 +334,7 @@ export function Sidebar(props: {
           <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Directory</text>
             <text style={{ fg: props.theme.muted }} wrapMode="none">
-              {truncatePath(props.cwd ?? "", Math.max(1, props.width - 4))}
+              {truncateStart(props.cwd ?? "", Math.max(1, props.width - 4))}
             </text>
           </box>
         </Show>
@@ -333,7 +355,7 @@ export function Sidebar(props: {
                   <box flexDirection="row" gap={1}>
                     <text style={{ fg: "#d2a8ff" }}>{commit.hash}</text>
                     <text style={{ fg: props.theme.muted }} wrapMode="none">
-                      {commit.subject.slice(0, Math.max(1, props.width - 10))}
+                      {truncateEnd(commit.subject, Math.max(1, props.width - 10))}
                     </text>
                   </box>
                 )}
@@ -358,7 +380,7 @@ export function Sidebar(props: {
                   counts.added > 0 ? pluralize(counts.added, "added") : "",
                   counts.deleted > 0 ? pluralize(counts.deleted, "deleted") : "",
                 ].filter(Boolean)
-                return truncatePath(parts.join(", "), Math.max(1, props.width - 4))
+                return truncateEnd(parts.join(", "), Math.max(1, props.width - 4))
               })()}
             </text>
             <For each={fileItems()}>
@@ -376,7 +398,7 @@ export function Sidebar(props: {
                           <text style={{ fg: "#f85149" }}>-</text>
                         </Show>
                         <text style={{ fg: color }} wrapMode="none">
-                          {truncatePath(file.path, props.width - 8)}
+                          {truncateStart(file.path, props.width - 8)}
                         </text>
                       </box>
                       <box flexDirection="row" flexShrink={0} gap={1}>
@@ -400,7 +422,7 @@ export function Sidebar(props: {
                       <box flexDirection="row" gap={1} flexShrink={1}>
                         <text style={{ fg: folderColor }}>{isExpanded() ? "▼" : "▶"}</text>
                         <text style={{ fg: folderColor }} wrapMode="none">
-                          {truncatePath(item.name + "/", props.width - 8)}
+                          {truncateStart(item.name + "/", props.width - 8)}
                         </text>
                       </box>
                       <box flexDirection="row" flexShrink={0} gap={1}>
@@ -428,7 +450,7 @@ export function Sidebar(props: {
                                   <text style={{ fg: "#f85149" }}>-</text>
                                 </Show>
                                 <text style={{ fg: fileColor }} wrapMode="none">
-                                  {truncatePath(displayName, props.width - 10)}
+                                  {truncateStart(displayName, props.width - 10)}
                                 </text>
                               </box>
                               <box flexDirection="row" flexShrink={0} gap={1}>

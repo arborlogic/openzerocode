@@ -1,5 +1,6 @@
 import assert from "node:assert"
 import { describe, it } from "bun:test"
+import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { normalizeUnifiedDiffHunks, parseDiffBlocks, parseMarkdownTables } from "./markdown-diff-parser"
 
 describe("parseDiffBlocks", () => {
@@ -150,6 +151,39 @@ describe("parseDiffBlocks", () => {
     assert.equal(result[0]!.type, "markdown")
   })
 
+  it("detects diff content inside ```bash blocks", () => {
+    const md = [
+      "Changes:",
+      "```bash",
+      "--- a/README.md",
+      "+++ b/README.md",
+      "@@ -1,3 +1,4 @@",
+      " # Title",
+      "+New line",
+      " old line",
+      "```",
+    ].join("\n")
+
+    const result = parseDiffBlocks(md)
+    assert.equal(result.length, 2)
+    assert.equal(result[0]!.type, "markdown")
+    assert.equal(result[1]!.type, "diff")
+    assert.ok(result[1]!.content.includes("+New line"))
+  })
+
+  it("does not treat plain bash output as diff", () => {
+    const md = [
+      "```bash",
+      "$ ls -la",
+      "total 0",
+      "```",
+    ].join("\n")
+
+    const result = parseDiffBlocks(md)
+    assert.equal(result.length, 1)
+    assert.equal(result[0]!.type, "markdown")
+  })
+
   it("extracts markdown pipe tables as table segments", () => {
     const md = [
       "Before",
@@ -244,5 +278,14 @@ describe("parseDiffBlocks", () => {
     assert.equal(doneResult[0]!.type, "markdown")
     assert.equal(doneResult[1]!.type, "diff")
     assert.equal(doneResult[2]!.type, "markdown")
+  })
+
+  it("keeps diff row colors enabled while leaving context rows transparent", () => {
+    assert.equal(DIFF_RENDER_PROPS.contextBg, "transparent")
+    assert.equal(DIFF_RENDER_PROPS.lineNumberBg, "transparent")
+    assert.ok(DIFF_RENDER_PROPS.addedLineNumberBg)
+    assert.ok(DIFF_RENDER_PROPS.removedLineNumberBg)
+    assert.equal("addedContentBg" in DIFF_RENDER_PROPS, false)
+    assert.equal("removedContentBg" in DIFF_RENDER_PROPS, false)
   })
 })

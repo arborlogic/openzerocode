@@ -20,14 +20,20 @@ import { HELP_CONTENT } from "./help-content"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getModelConfig } from "../provider/models"
-import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey } from "./format-utils"
+import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError, isRateLimitError, delay } from "./errors"
-import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
+import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
-import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
+import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
+import { hasXaiAuth, startXaiDeviceAuthorization, deleteXaiAuth } from "../provider/xai-auth"
 import { buildSystemPrompt } from "./system-prompt"
+import { addDefaultParsers } from "@opentui/core"
+import parsers from "../../parsers-config"
+
+// Register tree-sitter WASM parsers for syntax highlighting
+addDefaultParsers(parsers.parsers)
 import { THEME, MARKDOWN_SYNTAX } from "./theme"
 import { ToastViewport } from "./toast-viewport"
 import type { ToastItem } from "./toast-viewport"
@@ -40,6 +46,7 @@ import { addPermissionRules, shouldAutoApprove, isDangerousBashCommand, type Per
 import { sanitizeMessages } from "./message-sanitize"
 import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
+import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { testConnection, isConnected, setEnabled, setRuntimeSessionId } from "../browser/geass-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
@@ -52,7 +59,7 @@ import { startPeerServer } from "../peer/server"
 import { setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
-import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, SIDEBAR_WIDTH } from "./tui-constants"
+import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -126,11 +133,12 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 }
 
 function systemPrompt(mode: RunMode) {
-  return buildSystemPrompt(mode, agentsInstruction, contextInstruction)
+  return buildSystemPrompt(mode, agentsInstruction, contextInstruction, process.cwd())
 }
 
 function refreshAgentsInstruction() {
   agentsInstruction = loadAgentsInstruction(process.cwd())
+  contextInstruction = loadContextInstruction(process.cwd())
 }
 
 function App() {
@@ -151,7 +159,7 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
-      if (loaded.mode === "plan") initialMode = "plan"
+      if (loaded.mode === "plan" || loaded.mode === "learn") initialMode = loaded.mode
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
@@ -182,7 +190,22 @@ function App() {
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
-  const [mode, setMode] = createSignal<RunMode>(initialMode)
+  const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
+  const bootstrapLearnMemory = () => {
+    const result = ensureGlobalMemoryFiles()
+    if (result.created.length > 0) {
+      const created = result.created.map((path) => displayPath(path)).join(", ")
+      showToast("info", "Learn memory initialized", `Created empty global memory files: ${created}`, 5000)
+      refreshAgentsInstruction()
+    }
+  }
+  const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
+    setModeRaw((prev) => {
+      const resolved = typeof next === "function" ? (next as (prev: RunMode) => RunMode)(prev) : next
+      if (resolved === "learn" && prev !== "learn") bootstrapLearnMemory()
+      return resolved
+    })
+  }
   const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
@@ -226,6 +249,7 @@ function App() {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
     }, duration)
   }
+  if (initialMode === "learn") bootstrapLearnMemory()
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = loadUIPrefs()
@@ -335,6 +359,25 @@ function App() {
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
+  let compactionWaiters: Array<() => void> = []
+  const notifyCompactionIdle = () => {
+    const waiters = compactionWaiters.splice(0)
+    for (const resolve of waiters) resolve()
+  }
+  const waitForCompactionToFinish = (abortSignal: AbortSignal) => {
+    if (!compacting() || abortSignal.aborted) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        abortSignal.removeEventListener("abort", finish)
+        resolve()
+      }
+      compactionWaiters.push(finish)
+      abortSignal.addEventListener("abort", finish, { once: true })
+    })
+  }
   const inputQueue = createInputQueue(
     async (item, signal) => {
       await runQueuedPrompt(item.text, signal)
@@ -423,7 +466,7 @@ function App() {
         ],
       })
     }))
-    return parseAutoLoopSupervisorDecision(result.message.content ?? "")
+    return parseAutoLoopSupervisorDecision(contentToText(result.message.content))
   }
 
   async function queueAutoLoopContinuation() {
@@ -780,6 +823,42 @@ function App() {
     }
   }
 
+  const completeXaiAuthAndSwitch = async () => {
+    setProviderConfigRevision((value) => value + 1)
+    setProviderModels((prev) => {
+      const next = { ...prev }
+      delete next["xai-oauth"]
+      return next
+    })
+    await ensureModelsForProvider("xai-oauth")
+    const model = defaultModelForCurrentProvider("xai-oauth")
+    const modelInfo = providerModels()["xai-oauth"]?.find((entry) => entry.id === model)
+    applyProviderModel("xai-oauth", model, true, modelInfo)
+    setStatus("xAI authorized — switched to xai-oauth")
+    setNotices((prev) => [...prev, {
+      kind: "system",
+      text: "xAI authorized! Using xai-oauth provider with SuperGrok / X Premium+.",
+    }])
+  }
+
+  const runXaiLogin = async () => {
+    try {
+      const device = await startXaiDeviceAuthorization()
+      setNotices((prev) => [...prev, {
+        kind: "system",
+        text: `Open ${device.url} and approve xAI access. If prompted, enter code: ${device.userCode}`,
+      }])
+      setStatus("waiting for xAI device authorization...")
+      openExternalUrl(device.url)
+      await device.waitForAuth()
+      await completeXaiAuthAndSwitch()
+      return { ok: true, message: "xAI authorization saved — switched to xai-oauth." }
+    } catch (error) {
+      setStatus("xAI authorization failed")
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   const timelineMsgs = createMemo(() => {
     return messages().filter((msg) => msg.role === "user" && msg.content);
   });
@@ -806,7 +885,7 @@ function App() {
     for (let vi = 0; vi < visible.length; vi++) {
       const msg = visible[vi];
       const i = total - 1 - vi  // original index (for display numbering)
-      const text = (msg.content ?? "").replace(/\n/g, " ").slice(0, 50);
+      const text = contentToText(msg.content).replace(/\n/g, " ").slice(0, 50);
       const isActive = i === timelineTargetMsgIdx();
       items.push({
         label: (isActive ? ">" : " ") + " " + text,
@@ -816,7 +895,7 @@ function App() {
           // Open unified message actions (Revert / Copy / Fork)
           const actualIdx = messages().indexOf(msg)
           if (actualIdx >= 0) {
-            setUserMsgActionTarget({ index: actualIdx, text: msg.content ?? "" })
+            setUserMsgActionTarget({ index: actualIdx, text: contentToText(msg.content) })
           }
           setPaletteMode("userMessageActions");
           setPaletteIndex(0);
@@ -1028,9 +1107,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch mode",
-        hint: mode() === "build" ? "build → plan" : "plan → build",
+        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → learn" : "learn → build",
         onSelect: () => {
-          setMode(m => m === "build" ? "plan" : "build")
+          setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
           setShowPalette(false)
         },
       },
@@ -1324,6 +1403,35 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }
 
+    if (providerId === "xai-oauth") {
+      if (detectedAuth || hasXaiAuth()) {
+        items.push({
+          label: `${currentProvider === "xai-oauth" ? ">" : " "} SuperGrok / X Premium+ OAuth`,
+          hint: "active",
+          sessionId: "xai-oauth",
+          onSelect: async () => {
+            await ensureModelsForProvider("xai-oauth")
+            const model = defaultModelForCurrentProvider("xai-oauth")
+            const modelInfo = providerModels()["xai-oauth"]?.find((entry) => entry.id === model)
+            if (!applyProviderModel("xai-oauth", model, true, modelInfo)) {
+              setStatus("Failed to activate xAI auth")
+              return
+            }
+            setStatus("xAI activated")
+            setShowPalette(false)
+            setPaletteMode("actions")
+          },
+        })
+      } else {
+        items.push({
+          label: "xAI auth missing",
+          hint: "run /xai-login",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+    }
+
     for (const key of keys) {
       const cfg = getStoredProviderConfig(providerId)
       const rawValue = cfg?.keys?.[key] ?? ""
@@ -1376,6 +1484,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       })
     }
+    if (providerId === "xai-oauth") {
+      items.push({
+        label: detectedAuth ? "Re-authorize xAI Grok (device)" : "Authorize SuperGrok / X Premium+ (device)",
+        hint: "oauth",
+        onSelect: async () => {
+          const result = await runXaiLogin()
+          showToast(result.ok ? "success" : "error", result.ok ? "xAI login completed" : "xAI login failed", result.message)
+        },
+      })
+    }
     items.push({
       label: "Continue to models",
       hint: keys.length > 0
@@ -1384,7 +1502,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           ? "using env"
           : detectedAuth
             ? "using oauth"
-            : providerId === "openai-codex"
+            : providerId === "openai-codex" || providerId === "xai-oauth"
               ? "authorize first"
               : provider?.authOptional
                 ? "no key"
@@ -1392,6 +1510,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       onSelect: () => {
         if (providerId === "openai-codex" && !detectedAuth) {
           setStatus("Authorize Codex before choosing a model")
+          return
+        }
+        if (providerId === "xai-oauth" && !detectedAuth) {
+          setStatus("Authorize xAI before choosing a model")
           return
         }
         if (!provider?.authOptional && keys.length === 0 && envKeys.length === 0 && !detectedAuth) {
@@ -1402,7 +1524,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
     })
     items.push({ label: "", onSelect: () => {} })
-    if (providerId !== "openai-codex") {
+    if (providerId !== "openai-codex" && providerId !== "xai-oauth") {
       items.push({
         label: "Add key...",
         onSelect: () => {
@@ -1790,7 +1912,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const msg = allMsgs[msgIdx]
       if (msg.role === "user" && msg.content) {
         result.push({
-          user: { kind: "user", text: msg.content },
+          user: { kind: "user", text: contentToText(msg.content) },
           entries: [],
           userMsgIndex: msgIdx,
           peerOrigin: msg.origin?.peer,
@@ -1850,6 +1972,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
+  const sidebarWidth = createMemo(() => sidebarWidthForTerminal(dimensions().width))
+  const overlaySidebarWidth = createMemo(() => Math.max(24, Math.min(sidebarWidth(), dimensions().width - 4)))
 
   const streamingEntries = createMemo<DisplayBlock[]>(() =>
     streamState.parts().map((part) => {
@@ -1862,8 +1986,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return { kind: "tool-call", text: part.input || "{}", title: part.tool, streaming: true } satisfies DisplayBlock
         case "tool-result":
           return { kind: part.error ? "error" : "tool", text: part.output, title: part.tool, streaming: true } satisfies DisplayBlock
+        case "image":
+          return { kind: "system", text: `[image: ${part.mimeType}]`, streaming: true } satisfies DisplayBlock
       }
-    }),
+    }).filter(Boolean) as DisplayBlock[],
   )
 
   const scrollBottom = () => {
@@ -1941,7 +2067,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setSelectionRevision((v) => v + 1)
     }
     setMessages(loaded?.messages ?? [])
-    setMode(loaded?.mode === "plan" ? "plan" : "build")
+    setMode(loaded?.mode === "plan" || loaded?.mode === "learn" ? loaded.mode : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
@@ -1984,8 +2110,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setMessages(msgsUpToTarget)
     setNotices([])
     setPermissionRules(permissionRules())
-    setComposerText(targetMsg.content ?? "")
-    setDraft(targetMsg.content ?? "")
+    setComposerText(contentToText(targetMsg.content))
+    setDraft(contentToText(targetMsg.content))
     setStatus("forked session from message")
   }
 
@@ -2140,7 +2266,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         })
       }))
 
-      const summary = result.message.content?.trim()
+      const summary = contentToText(result.message.content).trim()
       if (!summary) {
         setStatus("compaction failed")
         showToast("error", "Compaction failed", "The provider returned an empty summary.")
@@ -2165,10 +2291,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setNotices((prev) => [...prev, { kind: "error", text: errorText }])
     } finally {
       setCompacting(false)
+      notifyCompactionIdle()
     }
   }
 
   const runQueuedPrompt = async (rawInput: string, abortSignal: AbortSignal) => {
+    if (compacting()) {
+      setStatus(formatQueueStatus("waiting for compaction...", queuedInputs()))
+      await waitForCompactionToFinish(abortSignal)
+      if (abortSignal.aborted) return
+    }
+
     const { text: input, peerOrigin, peerHop } = decodePeerInput(rawInput)
     // Update peer context so call_peer tool knows our name and current hop depth
     setPeerContext(activePeerName, peerHop ?? 0)
@@ -2340,12 +2473,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     const rawInput = draft().trim()
     if (!rawInput) return
-    if (compacting()) {
-      setStatus("compaction running — please wait")
-      showToast("info", "Compaction running", "Please wait for compaction to finish before sending input.")
-      return
-    }
-
     let input = rawInput
     for (const [marker, content] of pastedContent) {
       if (input.includes(marker)) {
@@ -2452,6 +2579,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,
+        xaiLogin: runXaiLogin,
         getAutoLoopInterval: autoLoopWindowMs,
         getAutoLoopConfirm: autoLoopConfirm,
         setAutoLoop: configureAutoLoop,
@@ -2536,9 +2664,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const wasDraining = inputQueue?.isDraining() ?? false
     inputQueue?.enqueue(input)
     setComposerText("")
-    if (wasDraining) {
-      // Queue was already processing an earlier item; this one is queued
-      setStatus(formatQueueStatus("queued", queuedInputs()))
+    if (wasDraining || compacting()) {
+      // Queue was already processing an earlier item, or compaction is running;
+      // this item will run once the queue/compaction is ready.
+      setStatus(formatQueueStatus(compacting() ? "queued until compaction finishes" : "queued", queuedInputs()))
     }
     // Otherwise (was not draining): the item starts running immediately,
     // and runQueuedPrompt will set the status to "thinking...".
@@ -2933,6 +3062,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             const ok = deleteCodexAuth(keyName)
             setStatus(ok ? `removed Codex auth "${keyName}"` : `failed to remove Codex auth "${keyName}"`)
             if (ok) setProviderConfigRevision(v => v + 1)
+          } else if (paletteProviderKeyTarget() === "xai-oauth" && keyName === "xai-oauth") {
+            const ok = deleteXaiAuth()
+            setStatus(ok ? "removed xAI OAuth credentials" : "failed to remove xAI OAuth credentials")
+            if (ok) setProviderConfigRevision(v => v + 1)
           } else {
             const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
             setStatus(result.message)
@@ -2946,7 +3079,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setStatus(
           paletteProviderKeyTarget() === "openai-codex" && (keyName === "openai" || keyName.startsWith("openai@"))
             ? `press ctrl+d again to remove Codex auth "${keyName}"`
-            : `press ctrl+d again to remove key "${keyName}"`
+            : paletteProviderKeyTarget() === "xai-oauth" && keyName === "xai-oauth"
+              ? "press ctrl+d again to remove xAI OAuth credentials"
+              : `press ctrl+d again to remove key "${keyName}"`
         )
         event.preventDefault()
         return
@@ -3178,6 +3313,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         paddingTop={1}
         paddingBottom={1}
         scrollY={true}
+        backgroundColor={THEME.background}
       >
         <For each={turns()}>
           {(turn, index) => (
@@ -3195,7 +3331,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           )}
         </For>
         <Show when={running() && streamingEntries().length > 0}>
-          <box marginTop={1} flexDirection="column">
+          <box marginTop={1} flexDirection="column" backgroundColor={THEME.background}>
             <Index each={streamingEntries()}>
               {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
             </Index>
@@ -3295,10 +3431,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
               <text
-                style={{ fg: mode() === "build" ? "#58a6ff" : "#3fb950" }}
-                onMouseDown={() => { const next = mode() === "build" ? "plan" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#d29922" }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "learn" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
               >
-                {mode() === "build" ? "Build" : "Plan"}
+                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Learn"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
@@ -3353,7 +3489,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           messages={messages}
           todos={todos}
           theme={THEME}
-          width={SIDEBAR_WIDTH}
+          width={sidebarWidth()}
           provider={providerLabel()}
           model={modelLabel()}
           modelInfo={modelInfoLabel()}
@@ -3373,7 +3509,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           right={0}
           top={0}
           height="100%"
-          width={SIDEBAR_WIDTH + 1}
+          width={overlaySidebarWidth() + 1}
           zIndex={50}
           flexDirection="row"
         >
@@ -3382,7 +3518,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             messages={messages}
             todos={todos}
             theme={THEME}
-            width={SIDEBAR_WIDTH}
+            width={overlaySidebarWidth()}
             provider={providerLabel()}
             model={modelLabel()}
             modelInfo={modelInfoLabel()}
@@ -3402,17 +3538,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         draft={draft}
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
-          if (compacting()) {
-            setStatus("compaction running — please wait")
-            showToast("info", "Compaction running", "Please wait for compaction to finish before running commands.")
-            return
-          }
           // Commands that execute immediately with no arguments
           const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact"])
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")
-            setMode(m => m === "build" ? "plan" : "build")
+            setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
             setStatus(`Mode: ${mode()}`)
           } else if (noArgs.has(name)) {
             setComposerText("/" + name)
@@ -3640,16 +3771,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   onMouseDown={() => setDiffOverlay(null)}
                 >Esc / tap to close</text>
               </box>
-              <scrollbox flexGrow={1} scrollY={true} paddingLeft={1} paddingRight={1} paddingBottom={1}>
+              <scrollbox flexGrow={1} scrollY={true} paddingLeft={1} paddingRight={1} paddingBottom={1} backgroundColor={THEME.surface}>
                 <diff
                   diff={overlay.content}
                   view="unified"
                   showLineNumbers={true}
                   syntaxStyle={MARKDOWN_SYNTAX}
                   fg={THEME.text}
-                  addedBg="#1a4d1a"
-                  removedBg="#4d1a1a"
-                  contextBg="transparent"
+                  addedBg={THEME.diffAddedBg}
+                  removedBg={THEME.diffRemovedBg}
+                  {...DIFF_RENDER_PROPS}
                   addedSignColor="#22c55e"
                   removedSignColor="#ef4444"
                   lineNumberFg="#6b7280"

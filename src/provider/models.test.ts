@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { getKnownModelConfig, getModelConfig, estimateTokens, estimateCost } from "./models"
+import { getKnownModelConfig, getModelConfig, estimateTokens, estimateCost, modelSupportsVision } from "./models"
 import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
@@ -20,10 +20,52 @@ describe("getKnownModelConfig", () => {
     assert.equal(getKnownModelConfig("unknown-model"), undefined)
   })
 
+  it("returns config for gpt-5.5 provider-prefixed model ids", () => {
+    const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.equal(cfg?.vision, true)
+  })
+
   it("returns config for claude models with thinking suffix", () => {
     const cfg = getKnownModelConfig("claude-sonnet-4-20250514-thinking")
     assert.ok(cfg)
     assert.equal(cfg?.contextLimit, 200_000)
+  })
+
+  it("returns config for grok-4.5 from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-4.5")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 500_000)
+    assert.deepEqual(cfg?.pricing, { input: 2, output: 6, cache_read: 0.5 })
+    assert.equal(cfg?.reasoning, true)
+    assert.equal(cfg?.vision, true)
+  })
+
+  it("returns config for grok-4.3 from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-4.3")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.deepEqual(cfg?.pricing, { input: 1.25, output: 2.5, cache_read: 0.2 })
+    assert.equal(cfg?.reasoning, true)
+    assert.equal(cfg?.vision, true)
+  })
+
+  it("returns config for grok-build-0.1 from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-build-0.1")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 256_000)
+    assert.deepEqual(cfg?.pricing, { input: 1, output: 2, cache_read: 0.2 })
+    assert.equal(cfg?.vision, true)
+  })
+
+  it("returns config for grok-4.20-0309-reasoning from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-4.20-0309-reasoning")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.deepEqual(cfg?.pricing, { input: 1.25, output: 2.5, cache_read: 0.2 })
+    assert.equal(cfg?.reasoning, true)
+    assert.equal(cfg?.vision, true)
   })
 })
 
@@ -87,6 +129,17 @@ describe("getModelConfig", () => {
     assert.equal(cfg.contextLimit, 1_000_000)
     assert.equal(cfg.pricing?.input, 2.5)
     assert.equal(cfg.pricing?.output, 15)
+  })
+})
+
+describe("modelSupportsVision", () => {
+  it("treats gpt-5.5 and provider-prefixed gpt-5.5 as vision-capable", () => {
+    assert.equal(modelSupportsVision("gpt-5.5"), true)
+    assert.equal(modelSupportsVision("openaicodex/gpt-5.5"), true)
+  })
+
+  it("does not treat arbitrary unknown models as vision-capable", () => {
+    assert.equal(modelSupportsVision("some-text-model"), false)
   })
 })
 

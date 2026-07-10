@@ -75,20 +75,73 @@ describe("convertToolResult", () => {
   it("formats a result with title and output", () => {
     const result = new Result({ title: "Read", output: "file content here" })
     const formatted = convertToolResult(result)
-    assert.equal(formatted, "Read\n---\nfile content here")
+    assert.equal(formatted.text, "Read\n---\nfile content here")
   })
 
   it("includes truncated output if original is long", () => {
     const longOutput = "A".repeat(50_000)
     const result = new Result({ title: "Bash", output: longOutput })
     const formatted = convertToolResult(result)
-    assert.ok(formatted.startsWith("Bash\n---\n"))
-    assert.ok(formatted.includes("[truncated:"))
+    assert.ok(formatted.text.startsWith("Bash\n---\n"))
+    assert.ok(formatted.text.includes("[truncated:"))
   })
 
   it("handles empty output", () => {
     const result = new Result({ title: "Empty", output: "" })
     const formatted = convertToolResult(result)
-    assert.equal(formatted, "Empty\n---\n")
+    assert.equal(formatted.text, "Empty\n---\n")
+  })
+
+  it("converts image results to multimodal content parts with valid data URLs", () => {
+    const result = new Result({
+      title: "Image",
+      output: "analysis",
+      images: [{ mimeType: "image/jpeg", base64: "AAECAw==" }],
+    })
+
+    const formatted = convertToolResult(result)
+
+    assert.equal(formatted.text, "Image\n---\nanalysis")
+    assert.deepEqual(formatted.contentParts, [
+      { type: "text", text: "Image\n---\nanalysis" },
+      { type: "image_url", image_url: { url: "data:image/jpeg;base64,AAECAw==" } },
+    ])
+  })
+
+  it("normalizes legacy shorthand image mime types before building data URLs", () => {
+    const result = new Result({
+      title: "Image",
+      output: "analysis",
+      images: [{ mimeType: "jpeg", base64: "AAECAw==" }],
+    })
+
+    const formatted = convertToolResult(result)
+
+    assert.equal(formatted.contentParts?.[1]?.type, "image_url")
+    assert.deepEqual(formatted.contentParts?.[1], {
+      type: "image_url",
+      image_url: { url: "data:image/jpeg;base64,AAECAw==" },
+    })
+  })
+
+  it("skips oversized image attachments and leaves a text notice", () => {
+    const previous = process.env.OPENZEROCODE_MODEL_IMAGE_MAX_BYTES
+    process.env.OPENZEROCODE_MODEL_IMAGE_MAX_BYTES = "2"
+    try {
+      const result = new Result({
+        title: "Image",
+        output: "analysis",
+        images: [{ mimeType: "image/png", base64: "AAECAw==" }],
+      })
+
+      const formatted = convertToolResult(result)
+
+      assert.equal(formatted.contentParts, undefined)
+      assert.match(formatted.text, /Image attachment skipped to save bandwidth\/tokens/)
+      assert.match(formatted.text, /image #1 \(image\/png\)/)
+    } finally {
+      if (previous === undefined) delete process.env.OPENZEROCODE_MODEL_IMAGE_MAX_BYTES
+      else process.env.OPENZEROCODE_MODEL_IMAGE_MAX_BYTES = previous
+    }
   })
 })

@@ -53,8 +53,10 @@ export function runLoop(
       })
 
       const toolCalls = result.message.tool_calls
+      const rawContent = result.message.content
+      const textContent = typeof rawContent === "string" ? rawContent : undefined
       const reply: Message = createAssistantMessage({
-        content: result.message.content ?? undefined,
+        content: textContent,
         reasoning_content: result.message.reasoning_content ?? undefined,
         tool_calls: toolCalls,
       })
@@ -86,6 +88,7 @@ export function runLoop(
           abort: config.abort,
           cwd: config.cwd,
           root: config.root,
+          model: config.model,
           ask: (input) => config.ask(input),
           metadata: () => Effect.void,
         })
@@ -96,10 +99,12 @@ export function runLoop(
           ),
         )
 
+        const toolContent = convertToolResult(toolResult)
         const tm = createToolMessage({
           tool_call_id: call.id,
           tool: def.id,
-          output: convertToolResult(toolResult),
+          output: toolContent.text,
+          contentParts: toolContent.contentParts,
         })
         allMessages.push(tm)
         history.push(tm)

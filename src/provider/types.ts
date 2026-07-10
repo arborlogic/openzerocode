@@ -14,10 +14,16 @@ export type Part =
   | { type: "reasoning"; text: string }
   | { type: "tool-call"; id: string; tool: string; input: string }
   | { type: "tool-result"; id?: string; tool?: string; output: string; error?: boolean }
+  | { type: "image"; mimeType: string; base64: string }
+
+/** OpenAI-style content part for multimodal messages. */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
 
 export type Message = {
   role: Role
-  content?: string
+  content?: string | ContentPart[]
   reasoning_content?: string
   tool_calls?: ToolCall[]
   tool_call_id?: string

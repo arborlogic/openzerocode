@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import type { Message } from "../provider/types"
+import { contentToText } from "../provider/content"
 import type { CompactionInfo } from "./sessions"
 
 export type CompactTranscriptExport = {
@@ -18,7 +19,7 @@ function textFromMessage(msg: Message): string {
     .join("")
     .trim()
 
-  return (partText || msg.content || "").trim()
+  return (partText || contentToText(msg.content)).trim()
 }
 
 function mdSection(title: string, body: string): string {

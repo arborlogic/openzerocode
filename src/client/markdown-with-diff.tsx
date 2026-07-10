@@ -2,8 +2,8 @@
  * MarkdownWithDiff — renders markdown with proper diff visualization.
  *
  * Detects ```diff / ```patch fenced code blocks in markdown content and
- * renders them using a conservative inline text renderer with red/green
- * line colors, while the rest of the markdown is rendered normally.
+ * renders them using OpenTUI's native <diff> renderable with syntax
+ * highlighting, line numbers, and proper added/removed line colors.
  *
  * Rendering strategy:
  *  - While `streaming` is true we render the raw content through a single
@@ -14,16 +14,14 @@
  *    (positional keys) so segment identities stay stable across reactive
  *    re-evaluations of the parent — completing a turn never remounts
  *    already-rendered diff/markdown blocks.
- *
- * Note: we intentionally do not use OpenTUI's <diff> renderable here.
- * Its line background can stick to the top of the scroll viewport while
- * scrolling completed chat history. A plain <text> per line avoids that
- * scrollback artifact while preserving readable + / - coloring.
  */
 
-import { For, Index, Show, createMemo, type ComponentProps } from "solid-js"
+import { Index, Show, createMemo, type ComponentProps } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
 import { parseDiffBlocks } from "./markdown-diff-parser"
+import { DIFF_RENDER_PROPS } from "./diff-rendering"
+import { THEME } from "./theme"
+import stringWidth from "string-width"
 
 export { parseDiffBlocks } from "./markdown-diff-parser"
 
@@ -36,41 +34,18 @@ export interface MarkdownWithDiffProps extends ComponentProps<"div"> {
   class?: string
 }
 
-function DiffText(props: { content: string; fg?: string; bg?: string }) {
-  const lines = createMemo(() => props.content.split("\n"))
-
-  return (
-    <box flexDirection="column" width="100%" marginTop={1} marginBottom={1}>
-      <For each={lines()}>
-        {(line) => {
-          const color = line.startsWith("+") && !line.startsWith("+++")
-            ? "#7ee787"
-            : line.startsWith("-") && !line.startsWith("---")
-              ? "#ff7b72"
-              : line.startsWith("@@")
-                ? "#d2a8ff"
-                : props.fg
-
-          return (
-            <text
-              content={line.length > 0 ? line : " "}
-              fg={color}
-              bg={props.bg}
-              wrapMode="none"
-            />
-          )
-        }}
-      </For>
-    </box>
-  )
-}
-
 function visibleWidth(text: string): number {
-  return text.length
+  try {
+    return stringWidth(text)
+  } catch {
+    return text.length
+  }
 }
 
 function padCell(text: string, width: number): string {
-  return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`
+  const w = visibleWidth(text)
+  if (w >= width) return text
+  return text + " ".repeat(width - w)
 }
 
 function MarkdownTable(props: {
@@ -108,11 +83,11 @@ function MarkdownTable(props: {
   return (
     <box flexDirection="column" width="100%" marginTop={1} marginBottom={1}>
       <text content={top()} fg={props.fg} bg={props.bg} wrapMode="none" />
-      <text content={rowText(props.table.headers)} fg="#58a6ff" bg={props.bg} wrapMode="none" />
+      <text content={rowText(props.table.headers)} fg={props.fg} bg={props.bg} wrapMode="none" />
       <text content={separator()} fg={props.fg} bg={props.bg} wrapMode="none" />
-      <For each={props.table.rows}>
-        {(row) => <text content={rowText(row)} fg={props.fg} bg={props.bg} wrapMode="none" />}
-      </For>
+      {props.table.rows.map((row) => (
+        <text content={rowText(row)} fg={props.fg} bg={props.bg} wrapMode="none" />
+      ))}
       <text content={bottom()} fg={props.fg} bg={props.bg} wrapMode="none" />
     </box>
   )
@@ -120,11 +95,9 @@ function MarkdownTable(props: {
 
 /**
  * Renders markdown content, replacing ```diff / ```patch blocks with
- * a unified diff-like text view.
+ * a native diff visualization.
  */
 export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
-  // Memoize so segment objects are referentially stable for the lifetime
-  // of this content — keeps <Index> happy and avoids spurious work.
   const segments = createMemo(() =>
     props.streaming ? [] : parseDiffBlocks(props.content, false),
   )
@@ -134,15 +107,29 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
       <Show
         when={props.streaming}
         fallback={
-          // Completed content: parse once and render segments. <Index> keys
-          // by position, so unchanged segments keep their renderable across
-          // re-evaluations — a streaming → completion transition won't
-          // remount the existing <markdown>/<diff> blocks.
           <Index each={segments()}>
             {(segment) => {
               const seg = segment()
               if (seg.type === "diff") {
-                return <DiffText content={seg.content} fg={props.fg} bg={props.bg} />
+                return (
+                  <diff
+                    diff={seg.content}
+                    syntaxStyle={props.syntaxStyle}
+                    fg={props.fg}
+                    filetype="diff"
+                    view="split"
+                    showLineNumbers={true}
+                    lineNumberFg={THEME.diffLineNumberFg}
+                    addedBg={THEME.diffAddedBg}
+                    removedBg={THEME.diffRemovedBg}
+                    {...DIFF_RENDER_PROPS}
+                    addedSignColor={THEME.diffAddedSign}
+                    removedSignColor={THEME.diffRemovedSign}
+                    marginTop={1}
+                    marginBottom={1}
+                    wrapMode="none"
+                  />
+                )
               }
               if (seg.type === "table") {
                 return <MarkdownTable table={seg.table} fg={props.fg} bg={props.bg} />
@@ -160,13 +147,6 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
           </Index>
         }
       >
-        {
-          // While streaming we deliberately skip parseDiffBlocks. The fenced
-          // ```diff / ```patch blocks stay as fenced code blocks inside the
-          // <markdown> renderable, which is updated in place by opentui as
-          // the content grows. No <For>/<Index> remount happens, so the
-          // visible output is stable across chunk flushes.
-        }
         <markdown
           content={props.content}
           syntaxStyle={props.syntaxStyle}
