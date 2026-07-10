@@ -88,6 +88,7 @@ export function runLoop(
           abort: config.abort,
           cwd: config.cwd,
           root: config.root,
+          model: config.model,
           ask: (input) => config.ask(input),
           metadata: () => Effect.void,
         })

@@ -262,6 +262,7 @@ Shape:
 | `opencode-zen` | OpenCode Zen | `OPENCODE_API`, `OPENCODE_API_KEY` (optional; anonymous free models are available) |
 | `openai` | OpenAI | `OPENAI_API_KEY` |
 | `openai-codex` | OpenAI Codex | ChatGPT OAuth via `/codex-login` |
+| `xai-oauth` | xAI Grok OAuth | SuperGrok / X Premium+ OAuth via `/xai-login` |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |

@@ -42,6 +42,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     exportCompactSession: mock(() => {}),
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
+    xaiLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     getAutoLoopInterval: mock(() => undefined),
     getAutoLoopConfirm: mock(() => false),
     setAutoLoop: mock(() => {}),
@@ -56,6 +57,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("clear"))
     assert.ok(names.includes("provider"))
     assert.ok(names.includes("codex-login"))
+    assert.ok(names.includes("xai-login"))
     assert.ok(names.includes("mode"))
     assert.ok(names.includes("memory"))
     assert.ok(names.includes("model"))
@@ -194,6 +196,15 @@ describe("executeCommand", () => {
       assert.ok(result)
       assert.equal((ctx.codexLogin as any).mock.calls[0][0], "code")
       assert.equal((ctx.codexLogin as any).mock.calls[0][1], "http://localhost:1455/auth/callback?code=abc")
+    })
+  })
+
+  describe("/xai-login", () => {
+    it("authorizes xAI", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/xai-login", ctx)
+      assert.ok(result)
+      assert.ok((ctx.xaiLogin as any).mock.calls.length > 0)
     })
   })
 

@@ -32,6 +32,41 @@ describe("getKnownModelConfig", () => {
     assert.ok(cfg)
     assert.equal(cfg?.contextLimit, 200_000)
   })
+
+  it("returns config for grok-4.5 from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-4.5")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 500_000)
+    assert.deepEqual(cfg?.pricing, { input: 2, output: 6, cache_read: 0.5 })
+    assert.equal(cfg?.reasoning, true)
+    assert.equal(cfg?.vision, true)
+  })
+
+  it("returns config for grok-4.3 from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-4.3")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.deepEqual(cfg?.pricing, { input: 1.25, output: 2.5, cache_read: 0.2 })
+    assert.equal(cfg?.reasoning, true)
+    assert.equal(cfg?.vision, true)
+  })
+
+  it("returns config for grok-build-0.1 from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-build-0.1")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 256_000)
+    assert.deepEqual(cfg?.pricing, { input: 1, output: 2, cache_read: 0.2 })
+    assert.equal(cfg?.vision, true)
+  })
+
+  it("returns config for grok-4.20-0309-reasoning from xAI docs", () => {
+    const cfg = getKnownModelConfig("grok-4.20-0309-reasoning")
+    assert.ok(cfg)
+    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.deepEqual(cfg?.pricing, { input: 1.25, output: 2.5, cache_read: 0.2 })
+    assert.equal(cfg?.reasoning, true)
+    assert.equal(cfg?.vision, true)
+  })
 })
 
 describe("getModelConfig", () => {

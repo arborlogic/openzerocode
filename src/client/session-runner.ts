@@ -340,6 +340,7 @@ export async function* streamSession(
           abort: options.abort,
           cwd: workdir,
           root: workdir,
+          model: options.model,
           ask: (req) => Effect.tryPromise({
             try: () => serializedAsk(req),
             catch: (e) => new Error(String(e)),

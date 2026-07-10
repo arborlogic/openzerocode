@@ -4,6 +4,7 @@ import { resolve } from "path"
 import { Def, Result } from "./types"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel, type LocalVlmRequest } from "../browser/local-vlm-client"
 import { normalizeImageMimeType } from "../provider/content"
+import { modelSupportsVision } from "../provider/models"
 
 const Parameters = Schema.Struct({
   path: Schema.String,
@@ -45,17 +46,23 @@ function toLocalVlmImageFormat(mimeType: string | undefined): LocalVlmImageForma
   return undefined
 }
 
+function prefersNativeVision(ctxModel: string | undefined, args: Args): boolean {
+  // Explicit local VLM overrides always force the local path.
+  if (args.endpoint?.trim() || args.model?.trim()) return false
+  if (!ctxModel) return false
+  return modelSupportsVision(ctxModel)
+}
+
 export const AnalyzeImageTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "analyze_image",
     description: [
-      "Analyze an image file using a local vision language model (VLM).",
-      "Returns a textual description of the image content.",
-      "Use when you need to understand the content of an image, screenshot, diagram, chart, or any visual file.",
-      "Supports PNG, JPEG, and other common image formats.",
-      "Requires a local VLM server (e.g., llava via llama.cpp or OpenAI-compatible endpoint).",
-      "Configure via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
+      "Analyze an image file (PNG, JPEG, and other common formats).",
+      "If the current chat model supports vision natively, the image is attached directly for provider vision analysis (no local VLM hop).",
+      "If the model does not support vision, falls back to a local VLM and returns a textual description.",
+      "Optional endpoint/model override force the local VLM path even when the chat model supports vision.",
+      "Configure the local VLM via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
     ].join("\n"),
     parameters: Parameters,
     execute: (raw, ctx) =>
@@ -88,6 +95,31 @@ export const AnalyzeImageTool = Effect.gen(function* () {
         }
 
         const base64 = buffer.toString("base64")
+        const image = { mimeType, base64 }
+
+        // Prefer the chat model's native vision when available. Local VLM is only
+        // used as a fallback (or when endpoint/model are explicitly overridden).
+        if (prefersNativeVision(ctx.model, args)) {
+          return new Result({
+            title: `Image: ${args.path}`,
+            output: [
+              "Image attached for native model vision analysis.",
+              args.prompt?.trim() ? `Requested focus: ${args.prompt.trim()}` : undefined,
+              `Source: ${resolvedPath} (${buffer.length} bytes)`,
+              `Mime: ${mimeType}`,
+              `Chat model: ${ctx.model}`,
+            ].filter(Boolean).join("\n"),
+            images: [image],
+            metadata: {
+              path: resolvedPath,
+              mimeType,
+              bytes: buffer.length,
+              analysisPath: "native",
+              model: ctx.model,
+            },
+          })
+        }
+
         const endpoint = args.endpoint || getDefaultLocalVlmEndpoint()
         const model = args.model || getDefaultLocalVlmModel()
 
@@ -108,8 +140,16 @@ export const AnalyzeImageTool = Effect.gen(function* () {
               `VLM: ${analysis.endpoint} (${analysis.api}${analysis.model ? `, model=${analysis.model}` : ""})`,
               `Source: ${resolvedPath} (${buffer.length} bytes)`,
             ].join("\n"),
-            images: [{ mimeType, base64 }],
-            metadata: { path: resolvedPath, mimeType, bytes: buffer.length },
+            // Always attach the original image so vision-capable providers can
+            // re-analyze it natively after the local VLM summary (e.g. when
+            // model capability was unknown at tool time).
+            images: [image],
+            metadata: {
+              path: resolvedPath,
+              mimeType,
+              bytes: buffer.length,
+              analysisPath: "local_vlm",
+            },
           })
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error)
@@ -123,7 +163,19 @@ export const AnalyzeImageTool = Effect.gen(function* () {
               `Model: ${model}`,
               "",
               "Configure via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
+              "",
+              "The original image is still attached below for vision-capable models.",
+              `Source: ${resolvedPath} (${buffer.length} bytes)`,
             ].join("\n"),
+            // Keep the image even when the local VLM is down/slow so Grok/GPT/etc
+            // can still inspect it through the provider vision path.
+            images: [image],
+            metadata: {
+              path: resolvedPath,
+              mimeType,
+              bytes: buffer.length,
+              analysisPath: "local_vlm_error",
+            },
           })
         }
       }).pipe(Effect.orDie),

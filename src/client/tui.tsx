@@ -26,7 +26,8 @@ import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMes
 import { formatProviderError, isRateLimitError, delay } from "./errors"
 import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
-import { hasCodexAuth, startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
+import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
+import { hasXaiAuth, startXaiDeviceAuthorization, deleteXaiAuth } from "../provider/xai-auth"
 import { buildSystemPrompt } from "./system-prompt"
 import { addDefaultParsers } from "@opentui/core"
 import parsers from "../../parsers-config"
@@ -822,6 +823,42 @@ function App() {
     }
   }
 
+  const completeXaiAuthAndSwitch = async () => {
+    setProviderConfigRevision((value) => value + 1)
+    setProviderModels((prev) => {
+      const next = { ...prev }
+      delete next["xai-oauth"]
+      return next
+    })
+    await ensureModelsForProvider("xai-oauth")
+    const model = defaultModelForCurrentProvider("xai-oauth")
+    const modelInfo = providerModels()["xai-oauth"]?.find((entry) => entry.id === model)
+    applyProviderModel("xai-oauth", model, true, modelInfo)
+    setStatus("xAI authorized — switched to xai-oauth")
+    setNotices((prev) => [...prev, {
+      kind: "system",
+      text: "xAI authorized! Using xai-oauth provider with SuperGrok / X Premium+.",
+    }])
+  }
+
+  const runXaiLogin = async () => {
+    try {
+      const device = await startXaiDeviceAuthorization()
+      setNotices((prev) => [...prev, {
+        kind: "system",
+        text: `Open ${device.url} and approve xAI access. If prompted, enter code: ${device.userCode}`,
+      }])
+      setStatus("waiting for xAI device authorization...")
+      openExternalUrl(device.url)
+      await device.waitForAuth()
+      await completeXaiAuthAndSwitch()
+      return { ok: true, message: "xAI authorization saved — switched to xai-oauth." }
+    } catch (error) {
+      setStatus("xAI authorization failed")
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   const timelineMsgs = createMemo(() => {
     return messages().filter((msg) => msg.role === "user" && msg.content);
   });
@@ -1366,6 +1403,35 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }
 
+    if (providerId === "xai-oauth") {
+      if (detectedAuth || hasXaiAuth()) {
+        items.push({
+          label: `${currentProvider === "xai-oauth" ? ">" : " "} SuperGrok / X Premium+ OAuth`,
+          hint: "active",
+          sessionId: "xai-oauth",
+          onSelect: async () => {
+            await ensureModelsForProvider("xai-oauth")
+            const model = defaultModelForCurrentProvider("xai-oauth")
+            const modelInfo = providerModels()["xai-oauth"]?.find((entry) => entry.id === model)
+            if (!applyProviderModel("xai-oauth", model, true, modelInfo)) {
+              setStatus("Failed to activate xAI auth")
+              return
+            }
+            setStatus("xAI activated")
+            setShowPalette(false)
+            setPaletteMode("actions")
+          },
+        })
+      } else {
+        items.push({
+          label: "xAI auth missing",
+          hint: "run /xai-login",
+          kind: "section",
+          onSelect: () => {},
+        })
+      }
+    }
+
     for (const key of keys) {
       const cfg = getStoredProviderConfig(providerId)
       const rawValue = cfg?.keys?.[key] ?? ""
@@ -1418,6 +1484,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       })
     }
+    if (providerId === "xai-oauth") {
+      items.push({
+        label: detectedAuth ? "Re-authorize xAI Grok (device)" : "Authorize SuperGrok / X Premium+ (device)",
+        hint: "oauth",
+        onSelect: async () => {
+          const result = await runXaiLogin()
+          showToast(result.ok ? "success" : "error", result.ok ? "xAI login completed" : "xAI login failed", result.message)
+        },
+      })
+    }
     items.push({
       label: "Continue to models",
       hint: keys.length > 0
@@ -1426,7 +1502,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           ? "using env"
           : detectedAuth
             ? "using oauth"
-            : providerId === "openai-codex"
+            : providerId === "openai-codex" || providerId === "xai-oauth"
               ? "authorize first"
               : provider?.authOptional
                 ? "no key"
@@ -1434,6 +1510,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       onSelect: () => {
         if (providerId === "openai-codex" && !detectedAuth) {
           setStatus("Authorize Codex before choosing a model")
+          return
+        }
+        if (providerId === "xai-oauth" && !detectedAuth) {
+          setStatus("Authorize xAI before choosing a model")
           return
         }
         if (!provider?.authOptional && keys.length === 0 && envKeys.length === 0 && !detectedAuth) {
@@ -1444,7 +1524,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
     })
     items.push({ label: "", onSelect: () => {} })
-    if (providerId !== "openai-codex") {
+    if (providerId !== "openai-codex" && providerId !== "xai-oauth") {
       items.push({
         label: "Add key...",
         onSelect: () => {
@@ -2499,6 +2579,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         exportCompactSession,
         refreshSessions,
         codexLogin: runCodexLogin,
+        xaiLogin: runXaiLogin,
         getAutoLoopInterval: autoLoopWindowMs,
         getAutoLoopConfirm: autoLoopConfirm,
         setAutoLoop: configureAutoLoop,
@@ -2981,6 +3062,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             const ok = deleteCodexAuth(keyName)
             setStatus(ok ? `removed Codex auth "${keyName}"` : `failed to remove Codex auth "${keyName}"`)
             if (ok) setProviderConfigRevision(v => v + 1)
+          } else if (paletteProviderKeyTarget() === "xai-oauth" && keyName === "xai-oauth") {
+            const ok = deleteXaiAuth()
+            setStatus(ok ? "removed xAI OAuth credentials" : "failed to remove xAI OAuth credentials")
+            if (ok) setProviderConfigRevision(v => v + 1)
           } else {
             const result = removeConfiguredProviderKey(paletteProviderKeyTarget(), keyName)
             setStatus(result.message)
@@ -2994,7 +3079,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setStatus(
           paletteProviderKeyTarget() === "openai-codex" && (keyName === "openai" || keyName.startsWith("openai@"))
             ? `press ctrl+d again to remove Codex auth "${keyName}"`
-            : `press ctrl+d again to remove key "${keyName}"`
+            : paletteProviderKeyTarget() === "xai-oauth" && keyName === "xai-oauth"
+              ? "press ctrl+d again to remove xAI OAuth credentials"
+              : `press ctrl+d again to remove key "${keyName}"`
         )
         event.preventDefault()
         return

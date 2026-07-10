@@ -45,6 +45,7 @@ export type CommandContext = {
   exportCompactSession: () => void
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
+  xaiLogin: () => Promise<{ ok: boolean; message: string }>
   getAutoLoopInterval: () => number | undefined
   getAutoLoopConfirm: () => boolean
   setAutoLoop: (windowMs: number | undefined, confirm?: boolean) => void
@@ -59,6 +60,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "new", description: "Start a fresh session" },
   { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
+  { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
   { name: "mode", description: "Switch mode: /mode build|plan|learn (no arg toggles build/plan)" },
   { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off" },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
@@ -107,6 +109,12 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     const value = method === "code" ? rest.join(" ") : undefined
     const result = await ctx.codexLogin(method, value)
     notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "Codex login started" : "Codex login failed", result.message)
+    return true
+  }
+
+  if (cmd === "xai-login") {
+    const result = await ctx.xaiLogin()
+    notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "xAI login started" : "xAI login failed", result.message)
     return true
   }
 

@@ -104,7 +104,7 @@ This should remain supported.
 
 ### `browser_observe_visual`
 
-The additive `browser_observe_visual` tool calls GEASS `POST /observe-visual` and returns structured page context and viewport metadata. By default it also returns a screenshot data URL. If `analyzeWithLocalVlm` is true, it sends the screenshot to the configured local VLM and returns the VLM's text analysis first; if VLM analysis fails, it falls back to the screenshot data URL. Provider-native image-block transport and model capability routing can be added later without changing GEASS' local API contract.
+The additive `browser_observe_visual` tool calls GEASS `POST /observe-visual` and returns structured page context and viewport metadata. By default it also returns a screenshot attachment for provider-native vision. If `analyzeWithLocalVlm` is true, it sends the screenshot to the configured local VLM and returns the VLM's text analysis first; if VLM analysis fails, it falls back to the screenshot attachment. `analyze_image` prefers native provider vision when `modelSupportsVision(chatModel)` is true, and only uses the local VLM as a fallback (or when endpoint/model overrides are provided).
 
 Target contract:
 
@@ -217,8 +217,9 @@ OpenZeroCode side:
 - [x] Tools are registered in `src/tool/registry.ts`.
 - [x] Add `browser_observe_visual` tool for combined screenshot + DOM context.
 - [x] Add optional local VLM analysis for `browser_observe_visual`.
-- [ ] Add provider-level image message support if missing.
-- [ ] Add model capability detection for vision.
+- [x] Add provider-level image message support if missing.
+- [x] Add model capability detection for vision (`modelSupportsVision` + tool Context.model).
+- [x] Prefer native provider vision for `analyze_image` when the chat model supports vision; local VLM is fallback only.
 - [ ] Add tests around screenshot result formatting and GEASS offline fallback.
 - [ ] Add prompt guidance for when to use DOM vs screenshot.
 

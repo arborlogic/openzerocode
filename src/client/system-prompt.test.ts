@@ -76,4 +76,13 @@ describe("buildSystemPrompt", () => {
     assert.match(buildPrompt, /# Task List \(todowrite tool\)/)
     assert.doesNotMatch(planPrompt, /# Task List \(todowrite tool\)/)
   })
+
+  it("documents native vision priority for analyze_image in build mode", () => {
+    const buildPrompt = buildSystemPrompt("build")
+    const planPrompt = buildSystemPrompt("plan")
+
+    assert.match(buildPrompt, /# Vision/)
+    assert.match(buildPrompt, /attaches the image for direct provider vision analysis/)
+    assert.doesNotMatch(planPrompt, /# Vision/)
+  })
 })

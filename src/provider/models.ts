@@ -151,6 +151,44 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "openrouter/auto": {
     contextLimit: 2_000_000,
   },
+  "grok-build-0.1": {
+    contextLimit: 256_000,
+    pricing: { input: 1, output: 2, cache_read: 0.2 },
+    vision: true,
+  },
+  "grok-composer-2.5-fast": {
+    contextLimit: 256_000,
+    pricing: { input: 0, output: 0 },
+  },
+  "grok-4.5": {
+    contextLimit: 500_000,
+    pricing: { input: 2, output: 6, cache_read: 0.5 },
+    reasoning: true,
+    vision: true,
+  },
+  "grok-4.3": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    reasoning: true,
+    vision: true,
+  },
+  "grok-4.20-0309-reasoning": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    reasoning: true,
+    vision: true,
+  },
+  "grok-4.20-0309-non-reasoning": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    vision: true,
+  },
+  "grok-4.20-multi-agent-0309": {
+    contextLimit: 1_000_000,
+    pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
+    reasoning: true,
+    vision: true,
+  },
 }
 
 function normalizeModelConfigKey(model: string): string {

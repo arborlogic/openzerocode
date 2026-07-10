@@ -70,6 +70,7 @@ const VISION_SECTION = [
   "You can see and analyze them in detail without any intermediate step.",
   "",
   "Use the `analyze_image` tool when you need to analyze an arbitrary image file (PNG, JPEG, etc.).",
+  "When the current chat model supports vision natively, `analyze_image` attaches the image for direct provider vision analysis and does not call a local VLM first.",
   "If your model does not support vision, images are automatically analyzed by a local VLM and you receive a textual description instead.",
   "Configure the local VLM via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
 ].join("\n")

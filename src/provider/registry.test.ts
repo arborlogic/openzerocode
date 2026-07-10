@@ -24,6 +24,15 @@ describe("provider registry", () => {
     assert.equal(def.authOptional, true)
   })
 
+  it("includes xai oauth", () => {
+    const def = PROVIDERS["xai-oauth"]
+    assert.ok(def)
+    assert.equal(def.id, "xai-oauth")
+    assert.equal(def.name, "xAI Grok OAuth")
+    assert.equal(def.defaultModel, "grok-build-0.1")
+    assert.equal(def.authOptional, true)
+  })
+
   it("includes openrouter", () => {
     const def = PROVIDERS.openrouter
     assert.ok(def)

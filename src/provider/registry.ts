@@ -7,6 +7,7 @@ import { def as openrouter } from "./openrouter"
 import { def as zeroApi } from "./zero-api"
 import { def as deepseek } from "./deepseek"
 import { def as ollama } from "./ollama"
+import { def as xaiOauth } from "./xai-oauth"
 import { resolveConfiguredProviderApiKey, resolveConfiguredProviderBaseURL } from "./config"
 
 export type ProviderDef = {
@@ -27,6 +28,7 @@ export const PROVIDERS: Record<string, ProviderDef> = {
   "zero-api": zeroApi,
   deepseek,
   ollama,
+  "xai-oauth": xaiOauth,
 }
 
 export function resolveProviderApiKey(providerId: string): string | undefined {

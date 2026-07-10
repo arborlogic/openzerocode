@@ -10,6 +10,7 @@ Commands
   /new                  Start a fresh session
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
+  /xai-login             Authorize xAI Grok (SuperGrok / X Premium+)
   /mode [build|plan|learn]
                          Switch mode; no arg cycles build / plan / learn
   /memory                Show loaded global memory files
