@@ -9,6 +9,13 @@ type UIPrefs = {
   autoCompressionEnabled: boolean
   maxSteps: number
   /**
+   * Force visual image/screenshot analysis through a configured local VLM even
+   * when the active chat model supports native vision.
+   */
+  forceLocalVlm: boolean
+  localVlmEndpoint: string
+  localVlmModel: string
+  /**
    * Selectable tool groups the user has turned off (denylist; core tools always
    * on). The "browser" group also acts as the single on/off control for GEASS.
    */
@@ -27,6 +34,9 @@ const DEFAULTS: UIPrefs = {
   layoutMode: "horizontal",
   autoCompressionEnabled: false,
   maxSteps: 50,
+  forceLocalVlm: false,
+  localVlmEndpoint: "",
+  localVlmModel: "",
   disabledToolGroups: [],
   enabledMcpServers: [],
 }

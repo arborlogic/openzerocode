@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect"
 import { readFileSync } from "fs"
 import { resolve } from "path"
 import { Def, Result } from "./types"
-import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel, type LocalVlmRequest } from "../browser/local-vlm-client"
+import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel, shouldForceLocalVlm, type LocalVlmRequest } from "../browser/local-vlm-client"
 import { normalizeImageMimeType } from "../provider/content"
 import { modelSupportsVision } from "../provider/models"
 
@@ -47,8 +47,9 @@ function toLocalVlmImageFormat(mimeType: string | undefined): LocalVlmImageForma
 }
 
 function prefersNativeVision(ctxModel: string | undefined, args: Args): boolean {
-  // Explicit local VLM overrides always force the local path.
-  if (args.endpoint?.trim() || args.model?.trim()) return false
+  // Explicit local VLM overrides, or the command-palette preference, always
+  // force the local path without changing the active chat LLM provider/model.
+  if (args.endpoint?.trim() || args.model?.trim() || shouldForceLocalVlm()) return false
   if (!ctxModel) return false
   return modelSupportsVision(ctxModel)
 }

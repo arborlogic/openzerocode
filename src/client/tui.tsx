@@ -48,6 +48,7 @@ import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { testConnection, isConnected, setEnabled, setRuntimeSessionId } from "../browser/geass-client"
+import { getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel, normalizeLocalVlmEndpoint, setProcessLocalVlmConfig } from "../browser/local-vlm-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
@@ -107,8 +108,17 @@ const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number }> 
   }
 }
 
+const initialUIPrefs = loadUIPrefs()
+setProcessLocalVlmConfig({
+  endpoint: initialUIPrefs.localVlmEndpoint,
+  model: initialUIPrefs.localVlmModel,
+  force: initialUIPrefs.forceLocalVlm,
+})
+
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
-let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
+let currentModel = currentProvider === "opencode-zen"
+  ? normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
+  : (process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider, currentModel)
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
@@ -218,7 +228,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -252,7 +262,7 @@ function App() {
   if (initialMode === "learn") bootstrapLearnMemory()
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
-  const _uiPrefs = loadUIPrefs()
+  const _uiPrefs = initialUIPrefs
   // The Browser tool group is the single control for GEASS: if it is enabled,
   // turn the GEASS client on and probe the connection at startup.
   const _browserEnabled = !_uiPrefs.disabledToolGroups.includes("browser")
@@ -264,6 +274,9 @@ function App() {
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
   const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
+  const [forceLocalVlm, setForceLocalVlm] = createSignal(_uiPrefs.forceLocalVlm)
+  const [localVlmEndpoint, setLocalVlmEndpoint] = createSignal(_uiPrefs.localVlmEndpoint)
+  const [localVlmModel, setLocalVlmModel] = createSignal(_uiPrefs.localVlmModel)
   const [disabledToolGroups, setDisabledToolGroups] = createSignal<string[]>(_uiPrefs.disabledToolGroups)
   const [registeredTools, setRegisteredTools] = createSignal<readonly Def[]>([])
   const refreshRegisteredTools = () =>
@@ -329,6 +342,13 @@ function App() {
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
   createEffect(() => { saveUIPrefs({ autoCompressionEnabled: autoCompressionEnabled() }) })
+  createEffect(() => {
+    const endpoint = localVlmEndpoint()
+    const model = localVlmModel()
+    const force = forceLocalVlm()
+    saveUIPrefs({ localVlmEndpoint: endpoint, localVlmModel: model, forceLocalVlm: force })
+    setProcessLocalVlmConfig({ endpoint, model, force })
+  })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -602,6 +622,9 @@ function App() {
   }
 
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
+  const PALETTE_INPUT_WIDTH = createMemo(() => Math.min(128, Math.max(PALETTE_WIDTH(), dimensions().width - 8)))
+  const isPaletteTextEntryMode = () => paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL"
+  const activePaletteWidth = () => isPaletteTextEntryMode() ? PALETTE_INPUT_WIDTH() : PALETTE_WIDTH()
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
@@ -1670,6 +1693,33 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       },
       {
+        label: "Force local VLM for vision",
+        hint: forceLocalVlm() ? "ON · image tools use local VLM" : "OFF · native vision when available",
+        onSelect: () => {
+          const nextEnabled = !forceLocalVlm()
+          setForceLocalVlm(nextEnabled)
+          setStatus(nextEnabled ? "local VLM forced for image analysis" : "local VLM force disabled")
+        },
+      },
+      {
+        label: "Local VLM endpoint",
+        hint: localVlmEndpoint() || getDefaultLocalVlmEndpoint(),
+        onSelect: () => {
+          setPaletteInput(localVlmEndpoint() || getDefaultLocalVlmEndpoint())
+          setPaletteMode("localVlmEndpoint")
+          setPaletteIndex(0)
+        },
+      },
+      {
+        label: "Local VLM model",
+        hint: localVlmModel() || getDefaultLocalVlmModel(),
+        onSelect: () => {
+          setPaletteInput(localVlmModel() || getDefaultLocalVlmModel())
+          setPaletteMode("localVlmModel")
+          setPaletteIndex(0)
+        },
+      },
+      {
         label: "TOOLS",
         kind: "section",
         onSelect: () => {},
@@ -1793,6 +1843,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
           { label: "Press Enter to save · Esc to cancel · leave blank for default", kind: "section" as const, onSelect: () => {} },
         ]
+      : paletteMode() === "localVlmEndpoint"
+      ? [
+          { label: `Current: ${localVlmEndpoint() || getDefaultLocalVlmEndpoint()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
+      : paletteMode() === "localVlmModel"
+      ? [
+          { label: `Current: ${localVlmModel() || getDefaultLocalVlmModel()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
       : paletteMode() === "sessions"
       ? sessionPaletteItems()
       : paletteMode() === "directories"
@@ -1821,7 +1881,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
     // queuedMessages is intentionally unfiltered; the queue is small and simpler without search input
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1835,14 +1895,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "localVlmEndpoint" && mode !== "localVlmModel" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -2863,6 +2923,45 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           return
         }
       }
+      if (paletteMode() === "localVlmEndpoint") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = paletteInput().trim()
+          const normalized = value ? normalizeLocalVlmEndpoint(value) : ""
+          setLocalVlmEndpoint(normalized)
+          setStatus(normalized ? `local VLM endpoint set to ${normalized}` : "local VLM endpoint reset to default")
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "localVlmModel") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = paletteInput().trim()
+          setLocalVlmModel(value)
+          setStatus(value ? `local VLM model set to ${value}` : "local VLM model reset to default")
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+      }
       if (paletteMode() === "addProviderKeyName") {
         if (event.name === "escape") {
           setPaletteInput("")
@@ -3563,8 +3662,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         <box
           position="absolute"
           top={2}
-          left={layoutMode() === "horizontal" ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2) : 2}
-          width={PALETTE_WIDTH()}
+          left={layoutMode() === "horizontal" ? Math.floor((dimensions().width - 2 - activePaletteWidth()) / 2) : 2}
+          width={activePaletteWidth()}
           height={dimensions().height - 4}
           zIndex={100}
           backgroundColor={THEME.surface}
@@ -3588,12 +3687,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "help"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
-            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
+            ? Math.floor((dimensions().width - 2 - activePaletteWidth()) / 2)
             : 2
           }
-          width={PALETTE_WIDTH()}
+          width={activePaletteWidth()}
           zIndex={100}
           backgroundColor={THEME.surface}
           border={["top", "left", "right", "bottom"]}
@@ -3622,6 +3721,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Key name · ${paletteCodexKeynameTarget()}`
                         : paletteMode() === "editProviderBaseURL"
                           ? `Base URL · ${paletteProviderKeyTarget()}`
+                        : paletteMode() === "localVlmEndpoint"
+                          ? "Local VLM Endpoint"
+                        : paletteMode() === "localVlmModel"
+                          ? "Local VLM Model"
                         : paletteMode() === "timeline"
                           ? "Timeline"
                         : paletteMode() === "queuedMessages"
@@ -3639,7 +3742,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <Show when={paletteMode() !== "queuedMessages"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                   <text style={{ fg: THEME.muted }}>
-                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                   </text>
                   <box
                     backgroundColor={THEME.background}
@@ -3649,12 +3752,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     paddingRight={1}
                     flexDirection="row"
                   >
-                    <text style={{ fg: THEME.text }}>{paletteInput()}</text>
+                    <text style={{ fg: THEME.text }} wrapMode="none">{paletteInput()}</text>
                     <text style={{ fg: THEME.accent }}>▌</text>
                   </box>
                 </box>
             </Show>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "localVlmEndpoint" && paletteMode() !== "localVlmModel" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3709,7 +3812,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
-                : paletteMode() === "maxSteps"
+                : paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel"
                   ? "Enter save  •  Esc cancel"
                   : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
                   ? "Enter confirm  •  Esc back"
