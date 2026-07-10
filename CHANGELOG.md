@@ -1,12 +1,8 @@
 # Changelog
 
-## Unreleased
-
-- Added `xai-oauth` provider with SuperGrok / X Premium+ device-code login (`/xai-login`), token refresh, and Responses API transport for Grok models.
-
 ## 0.6.0 - 2026-07-10
 
-- Add Grok (XAI) provider support with OAuth authentication
+- Added `xai-oauth` provider with SuperGrok / X Premium+ device-code login (`/xai-login`), token refresh, and Responses API transport for Grok models.
 - Added multimodal image support across providers, including image budgeting and message part conversion tests.
 - Added `analyze_image` and `apply_patch` tools for visual file analysis and patch-style edits.
 - Added two-stage Learn mode with explicit global memory updates and project `DEVELOPMENT.md` extraction.
