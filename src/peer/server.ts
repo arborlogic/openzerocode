@@ -1,4 +1,9 @@
-export type PeerEnqueueFn = (text: string, fromPeer: string, hop: number) => void
+export type PeerEnqueueFn = (
+  text: string,
+  fromPeer: string,
+  hop: number,
+  options?: { samePairRoundtrips?: number; oneWay?: boolean; remainingPeerCalls?: number },
+) => void
 
 export async function startPeerServer(
   token: string,
@@ -27,14 +32,25 @@ export async function startPeerServer(
         }
 
         return req.json().then((body: unknown) => {
-          const b = body as { text?: string; from?: string; hop?: number } | null
+          const b = body as {
+            text?: string
+            from?: string
+            hop?: number
+            samePairRoundtrips?: number
+            oneWay?: boolean
+            remainingPeerCalls?: number
+          } | null
           if (!b?.text) {
             return new Response(JSON.stringify({ error: "text required" }), {
               status: 400,
               headers: { "Content-Type": "application/json" },
             })
           }
-          enqueue(b.text, b.from ?? "unknown", b.hop ?? 0)
+          enqueue(b.text, b.from ?? "unknown", b.hop ?? 0, {
+            samePairRoundtrips: b.samePairRoundtrips,
+            oneWay: b.oneWay,
+            remainingPeerCalls: b.remainingPeerCalls,
+          })
           return new Response(JSON.stringify({ ok: true }), {
             headers: { "Content-Type": "application/json" },
           })
