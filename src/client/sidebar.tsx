@@ -113,6 +113,7 @@ export function Sidebar(props: {
   sessionTitle?: string
   sessionId?: string
   cwd?: string
+  version?: string
   /** Increment to force a git snapshot refresh from outside the component. */
   gitRefreshKey?: number
   /** Increment to trigger GEASS status re-read. */
@@ -248,20 +249,23 @@ export function Sidebar(props: {
   }
 
   return (
-    <scrollbox
-      ref={(node) => { scrollboxRef = node }}
+    <box
       width={props.width}
-      verticalScrollbarOptions={{ height: 1 }}
       border={["left"]}
       borderColor={props.theme.border}
       backgroundColor={props.theme.surface}
-      paddingLeft={1}
-      paddingRight={1}
-      paddingTop={1}
-      scrollY={true}
       flexDirection="column"
     >
-      <box flexDirection="column" gap={1}>
+      {/* Scrollable upper content */}
+      <scrollbox
+        ref={(node) => { scrollboxRef = node }}
+        flexGrow={1}
+        paddingLeft={1}
+        paddingRight={1}
+        paddingTop={1}
+        scrollY={true}
+      >
+        <box flexDirection="column" gap={1}>
         <box flexDirection="column">
           <Show when={props.sessionTitle}>
             <box flexDirection="row" gap={1}>
@@ -348,15 +352,6 @@ export function Sidebar(props: {
             <text style={{ fg: props.theme.accent }}>Branch</text>
             <text style={{ fg: props.theme.muted }} wrapMode="none">
               {truncateStart(branch() ?? "", Math.max(1, props.width - 4))}
-            </text>
-          </box>
-        </Show>
-
-        <Show when={props.cwd}>
-          <box flexDirection="column">
-            <text style={{ fg: props.theme.accent }}>Directory</text>
-            <text style={{ fg: props.theme.muted }} wrapMode="none">
-              {truncateStart(props.cwd ?? "", Math.max(1, props.width - 4))}
             </text>
           </box>
         </Show>
@@ -495,7 +490,26 @@ export function Sidebar(props: {
           </box>
         </Show>
       </box>
-      <box height={1} />
-    </scrollbox>
+      </scrollbox>
+
+      {/* Fixed bottom: Directory + Version */}
+      <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
+        <Show when={props.cwd}>
+          <box flexDirection="column">
+            <text style={{ fg: props.theme.accent }}>Directory</text>
+            <text style={{ fg: props.theme.muted }} wrapMode="none">
+              {truncateStart(props.cwd ?? "", Math.max(1, props.width - 4))}
+            </text>
+          </box>
+        </Show>
+        <Show when={props.version}>
+          <box flexDirection="row" gap={1}>
+            <text style={{ fg: props.theme.accent }}>●</text>
+            <text style={{ fg: "#ffffff" }}>Zero</text>
+            <text style={{ fg: props.theme.muted }}>{props.version}</text>
+          </box>
+        </Show>
+      </box>
+    </box>
   )
 }

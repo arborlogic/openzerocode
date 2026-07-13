@@ -3610,6 +3610,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           modelInfo={modelInfoLabel()}
           sessionTitle={sessionMeta()?.title}
           cwd={currentCwd()}
+          version={VERSION}
           sessionId={sessionId()}
           gitRefreshKey={gitRefreshRevision()}
           geassRevision={geassRevision()}
@@ -3639,6 +3640,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             modelInfo={modelInfoLabel()}
             sessionTitle={sessionMeta()?.title}
             cwd={currentCwd()}
+            version={VERSION}
             sessionId={sessionId()}
             gitRefreshKey={gitRefreshRevision()}
             geassRevision={geassRevision()}
