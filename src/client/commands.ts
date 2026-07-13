@@ -203,7 +203,7 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
       "success",
       mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
       mode === "proactive"
-        ? "AI will plan and continue with the next appropriate repo-local task."
+        ? "AI will ask for a next-step proposal when needed, then continue safe repo-local work."
         : "AI will answer routine continuation questions when the next step is clear and safe.",
     )
     return true

@@ -20,7 +20,7 @@ Commands
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
   /autopilot [standard|proactive|off]
-                         Continue routine prompts or plan the next task
+                         Continue routine prompts or propose the next task
   /usage                 Open token usage dashboard
   /compact               Summarize and compress earlier session history
   /commit                Generate a commit message from current changes

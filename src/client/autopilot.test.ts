@@ -23,14 +23,16 @@ describe("autopilot helpers", () => {
     const prompt = buildAutopilotSupervisorPrompt("proactive")
     assert.ok(prompt.includes("Autopilot mode: PROACTIVE"))
     assert.ok(prompt.includes("Completing one implementation request is not the same as completing the overall project objective"))
-    assert.ok(prompt.includes("no user action is required"))
-    assert.ok(prompt.includes("choose the highest-priority unfinished repo-local task"))
+    assert.ok(prompt.includes("Ask the current AI to propose the next step first"))
+    assert.ok(prompt.includes("start implementing it only if the proposal is clearly safe"))
+    assert.ok(prompt.includes("latest assistant response is already a next-step proposal"))
     assert.ok(prompt.includes("Do not invent speculative features"))
   })
 
   it("keeps proactive planning out of standard mode", () => {
     const prompt = buildAutopilotSupervisorPrompt("standard")
-    assert.ok(!prompt.includes("choose the highest-priority unfinished repo-local task"))
+    assert.ok(!prompt.includes("Ask the current AI to propose the next step first"))
+    assert.ok(!prompt.includes("latest assistant response is already a next-step proposal"))
   })
 
   it("parses a high-confidence next prompt", () => {

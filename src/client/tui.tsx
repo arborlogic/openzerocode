@@ -1753,7 +1753,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         mode === "off"
           ? "AI will wait for your next message."
           : mode === "proactive"
-            ? "AI will plan and continue with the next appropriate repo-local task."
+            ? "AI will ask for a next-step proposal when needed, then continue safe repo-local work."
             : "AI will answer routine continuation questions when the next step is clear and safe.",
       )
     }
@@ -1770,7 +1770,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Proactive",
-        hint: "plan the next task",
+        hint: "propose then continue",
         onSelect: () => selectMode("proactive"),
       },
       ...(current !== "off"
@@ -2304,6 +2304,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
   }
 
+  const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
+    const cfg = getModelConfig(currentModel, currentModelInfo)
+    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit)
+    if (nearContextLimit && autoCompressionEnabled()) {
+      await compactCurrentSession({ automatic: true })
+    } else if (nearContextLimit && opts.warnWhenDisabled) {
+      setNotices((prev) => {
+        const text = "Context is getting full — you can run /compact now if you want to reduce session history."
+        const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
+        if (!alreadyPresent) showToast("warning", "Context getting full", "You can run /compact now to reduce session history.", 4500)
+        return alreadyPresent ? prev : [...prev, { kind: "system", text }]
+      })
+    }
+  }
+
   const runQueuedPrompt = async (rawInput: string, abortSignal: AbortSignal) => {
     if (compacting()) {
       setStatus(formatQueueStatus("waiting for compaction...", queuedInputs()))
@@ -2333,20 +2348,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    {
-      const cfg = getModelConfig(currentModel, currentModelInfo)
-      const nearContextLimit = shouldAutoCompactContext(messages(), input, cfg.contextLimit)
-      if (nearContextLimit && autoCompressionEnabled()) {
-        await compactCurrentSession({ automatic: true })
-      } else if (nearContextLimit) {
-        setNotices((prev) => {
-          const text = "Context is getting full — you can run /compact now if you want to reduce session history."
-          const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
-          if (!alreadyPresent) showToast("warning", "Context getting full", "You can run /compact now to reduce session history.", 4500)
-          return alreadyPresent ? prev : [...prev, { kind: "system", text }]
-        })
-      }
-    }
+    await maybeAutoCompactContext(input, { warnWhenDisabled: true })
 
     if (abortSignal.aborted) return
 
@@ -2360,6 +2362,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     const activeSessionId = sessionId()
     markSessionActive(activeSessionId)
+    let completedResponse = false
 
     let noticesCleared = false
     const clearNoticesOnce = () => {
@@ -2455,6 +2458,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
       setStatus(formatQueueStatus(autopilotEnabled() ? "autopilot enabled" : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
+      completedResponse = true
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
       if (!isAbort) {
@@ -2468,6 +2472,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       unmarkSessionActive(activeSessionId)
       runAbort = undefined
       setRunning(false)
+    }
+    if (completedResponse && !abortSignal.aborted) {
+      await maybeAutoCompactContext("")
     }
   }
 

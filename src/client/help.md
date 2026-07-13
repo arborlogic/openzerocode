@@ -13,7 +13,7 @@
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
   /autopilot [standard|proactive|off]
-                         Continue routine prompts or plan the next task
+                         Continue routine prompts or propose the next task
   /commit                Generate a commit message from current changes
   /exit  [/quit]         Exit the app
   exit  quit             Also work without the slash
