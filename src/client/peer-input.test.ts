@@ -27,11 +27,10 @@ describe("peer input encoding", () => {
     })
   })
 
-  it("round-trips one-way, same-pair, and deep collaboration budget metadata", () => {
+  it("round-trips one-way and same-pair metadata", () => {
     const encoded = encodePeerInput("planner", 4, "decision log", {
       samePairRoundtrips: 2,
       oneWay: true,
-      remainingPeerCalls: 7,
     })
 
     assert.deepEqual(decodePeerInput(encoded), {
@@ -40,7 +39,6 @@ describe("peer input encoding", () => {
       peerHop: 4,
       samePairRoundtrips: 2,
       oneWay: true,
-      remainingPeerCalls: 7,
     })
   })
 

@@ -34,7 +34,7 @@ A peer call is not a background job or a separate API call. It enters the callee
 ~/.openzerocode/peers.json          ← shared registry file
 src/peer/registry.ts                ← read/write registry, liveness check
 src/peer/server.ts                  ← lightweight HTTP server (per named instance)
-src/peer/context.ts                 ← runtime state: selfName, currentHop, bounded collaboration budget
+src/peer/context.ts                 ← runtime state: selfName, currentHop, peer guard configuration
 src/tool/call-peer.ts               ← call_peer tool (AI-callable)
 src/client/tui.tsx                  ← --name parsing, wiring, display
 src/client/commands.ts              ← /peers, /call slash commands
@@ -111,7 +111,7 @@ Terminal B (geass) — AI run
     ├─ call_peer("myapp", "Done. Updated UserPayload.id to string. ...")
     │   │
     │   ├─ Check selfName is set (peer mode active)
-    │   ├─ Check collaboration budget (shallow hops or bounded deep budget)
+    │   ├─ Check hop and same-pair guards
     │   ├─ Look up myapp in peers.json
     │   ├─ ctx.ask → TUI permission prompt: "→ myapp: Done. Updated..."
     │   └─ POST /prompt { text, from: "geass", hop: 1 }
@@ -125,41 +125,28 @@ Terminal B (geass) — AI run
 
 ## Collaboration Bounds
 
-OpenZeroCode supports two peer-collaboration budget modes.
+OpenZeroCode uses a configurable hop guard, plus a same-pair roundtrip guard for direct ping-pong loops.
 
-### Shallow hop guard (default)
+### Hop guard
 
-Calls carry a `hop` counter that increments at each crossing:
+Calls carry a `hop` counter that increments at each non-one-way crossing:
 
 | Source | hop value |
 |--------|-----------|
-| Human `/call` | 0 |
-| First AI callback | 1 |
-| Second AI callback | 2 |
-| Third AI callback | 3 = MAX_HOP_DEPTH → rejected |
+| Human `/call` or first AI peer call | 1 |
+| First AI callback to that call | 2 |
+| Second AI callback | 3 |
+| Next callback attempt | 4 > default max → rejected |
 
-`MAX_HOP_DEPTH = 3` is defined in `src/peer/context.ts`. When the limit is reached, `call_peer` returns an error to the AI explaining why, and the chain stops. The AI can inform the user instead of silently failing.
+The default max hop depth is `3` and is defined in `src/peer/context.ts`. Users can raise or lower it with `--max-peer-hops <N>` or `OPENZEROCODE_MAX_PEER_HOPS=<N>`. When the limit is reached, `call_peer` returns an error to the AI explaining why, and the chain stops. The AI can inform the user instead of silently failing.
 
-This remains the default because it is conservative and prevents accidental agent ping-pong.
+This remains conservative by default, but lets a user explicitly allow deeper peer work without switching to a separate collaboration mode.
 
-### Bounded deep collaboration mode
+### One-way messages and same-pair guard
 
-For more useful multi-agent workflows, start each participating instance with:
+`call_peer` supports `oneWay: true`; intents `notify` and `handoff_summary` are also treated as one-way messages. One-way messages do not increment the hop count and receive a `[Peer Notice]` prompt that tells the callee not to call back unless the user starts a new collaboration thread.
 
-```sh
-openzerocode --name myapp --deep-collaboration
-```
-
-In this mode, OpenZeroCode stops using depth as the primary bound and instead carries a total remaining peer-call budget through the chain:
-
-- Default total budget: `12` non-one-way peer calls per chain
-- CLI override: `--deep-collaboration-peer-calls N`
-- Env override: `OPENZEROCODE_DEEP_COLLABORATION_PEER_CALLS=N`
-- Mode env flag: `OPENZEROCODE_DEEP_COLLABORATION=1`
-- `oneWay=true`, `intent=notify`, and `intent=handoff_summary` do not consume budget
-- The same-pair roundtrip guard still applies to prevent unproductive two-agent loops
-
-Each peer request also receives a `[Bounded Deep Collaboration]` system prompt. The prompt asks the callee to use phase labels (`[question]`, `[plan-review]`, `[work-result]`, `[critique]`, `[final-summary]`), avoid vague status bounces, and converge to a final summary when budget is low.
+Direct same-pair ping-pong is guarded independently with a default maximum of `4` same-pair roundtrips. It can be overridden with `--max-same-pair-roundtrips <N>` or `OPENZEROCODE_MAX_SAME_PAIR_ROUNDTRIPS=<N>`.
 
 ---
 
@@ -203,7 +190,7 @@ The `origin` field is stripped from messages before they are sent to the LLM API
 
 ## Callback Instruction Injection
 
-When a run is triggered by a peer request in shallow mode, the system prompt is extended with:
+When a run is triggered by a peer request, the system prompt is extended with:
 
 ```
 [Peer Request]
@@ -218,9 +205,7 @@ This ensures the callee AI always knows:
 2. It is expected to report back
 3. The caller's name (for the `call_peer` invocation)
 
-The instruction is in the system prompt, not the user message, so it is invisible in the TUI.
-
-In bounded deep collaboration mode, the injected prompt also includes the remaining peer-call budget and phase guidance so the agents can collaborate for longer without becoming unbounded.
+The instruction is in the system prompt, not the user message, so it is invisible in the TUI. One-way peer notices receive a separate no-reply prompt instead.
 
 ---
 
@@ -280,29 +265,23 @@ The `call_peer` tool gives the AI explicit control over what crosses the process
 
 ### Peer Collaboration Budget
 
-Peer collaboration uses a conservative hop budget by default, but the user can
-explicitly opt in to bounded deep collaboration when the task needs multi-agent
-planning, product discussion, or architecture review.
+Peer collaboration uses a conservative hop budget by default. When a task needs
+more multi-agent back-and-forth, the user can raise the same max-hop guard rather
+than enabling a separate collaboration mode.
 
 Implemented controls:
 
-- Default shallow max peer hop depth remains **3**.
-- Users can override the shallow hop budget with `--max-peer-hops <N>` or
+- Default max peer hop depth remains **3**.
+- Users can override the hop budget with `--max-peer-hops <N>` or
   `OPENZEROCODE_MAX_PEER_HOPS=<N>`.
-- Users can enable bounded deep collaboration with `--deep-collaboration` or
-  `OPENZEROCODE_DEEP_COLLABORATION=1`.
-- Deep collaboration uses a carried total non-one-way peer-call budget instead
-  of hop depth. The default is **12**, overrideable with
-  `--deep-collaboration-peer-calls <N>` or
-  `OPENZEROCODE_DEEP_COLLABORATION_PEER_CALLS=<N>`.
 - Same-pair ping-pong is guarded independently with a default maximum of **4**
   same-pair roundtrips. It can be overridden with
   `--max-same-pair-roundtrips <N>` or
   `OPENZEROCODE_MAX_SAME_PAIR_ROUNDTRIPS=<N>`.
 - `call_peer` supports `oneWay: true`; intents `notify` and `handoff_summary`
   are also treated as one-way messages.
-- One-way messages do not consume deep budget and inject a no-reply peer notice
-  instead of the normal callback instruction.
+- One-way messages do not increment the hop count and inject a no-reply peer
+  notice instead of the normal callback instruction.
 
 This keeps the safe default while allowing user-authorized deeper peer work
 without changing source constants.

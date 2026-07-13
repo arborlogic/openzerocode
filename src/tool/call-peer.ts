@@ -1,13 +1,7 @@
 import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
 import { findPeer, listLivePeers } from "../peer/registry"
-import {
-  getDeepCollaborationPeerCallBudget,
-  getMaxHopDepth,
-  getMaxSamePairRoundtrips,
-  getPeerContext,
-  isDeepCollaborationEnabled,
-} from "../peer/context"
+import { getMaxHopDepth, getMaxSamePairRoundtrips, getPeerContext } from "../peer/context"
 
 const Parameters = Schema.Struct({
   name: Schema.String.pipe(
@@ -17,7 +11,7 @@ const Parameters = Schema.Struct({
     Schema.annotate({ description: "The message or request to send to the peer" }),
   ),
   oneWay: Schema.optional(Schema.Boolean.pipe(
-    Schema.annotate({ description: "When true, send a no-reply notification that does not advance the collaboration budget" }),
+    Schema.annotate({ description: "When true, send a no-reply notification that does not advance the hop count" }),
   )),
   intent: Schema.optional(Schema.Literals([
     "notify",
@@ -53,21 +47,17 @@ export const CallPeerTool = Effect.gen(function* () {
       "Send a message or request to another named openzerocode peer process working on a different project. " +
       "Use this when you need the other AI agent to take action or when you want to share results. " +
       "Only works when this process was started with --name. " +
-      "By default, peer calls use a shallow 3-hop guard. For sustained collaboration, start peers with " +
-      "--deep-collaboration to switch to a bounded total peer-call budget. " +
-      "Use oneWay=true or intent notify/handoff_summary for no-reply updates that do not consume the collaboration budget.",
+      "Peer calls use a configurable max-hop guard. " +
+      "Use oneWay=true or intent notify/handoff_summary for no-reply updates that do not advance the hop count.",
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
-        const { selfName, currentHop, fromPeer, samePairRoundtrips, remainingPeerCalls } = getPeerContext()
-        const deepCollaboration = isDeepCollaborationEnabled()
+        const { selfName, currentHop, fromPeer, samePairRoundtrips } = getPeerContext()
         const maxHops = getMaxHopDepth()
         const maxSamePairRoundtrips = getMaxSamePairRoundtrips()
         const oneWay = isOneWay(args)
-        const startingDeepBudget = remainingPeerCalls ?? getDeepCollaborationPeerCallBudget()
-        const nextHop = deepCollaboration ? currentHop : oneWay ? currentHop : currentHop + 1
-        const nextRemainingPeerCalls = oneWay ? startingDeepBudget : startingDeepBudget - 1
+        const nextHop = oneWay ? currentHop : currentHop + 1
         const nextSamePairRoundtrips = fromPeer === args.name ? samePairRoundtrips + 1 : 0
 
         if (!selfName) {
@@ -77,17 +67,10 @@ export const CallPeerTool = Effect.gen(function* () {
           })
         }
 
-        if (!oneWay && deepCollaboration && nextRemainingPeerCalls < 0) {
+        if (!oneWay && nextHop > maxHops) {
           return new Result({
             title: "call_peer failed",
-            output: `Deep collaboration budget exhausted (max ${getDeepCollaborationPeerCallBudget()} peer calls for this chain). Stop the loop, summarize the current state for the user, or restart peers with --deep-collaboration-peer-calls / OPENZEROCODE_DEEP_COLLABORATION_PEER_CALLS if the user explicitly approved a larger bounded collaboration.`,
-          })
-        }
-
-        if (!oneWay && !deepCollaboration && nextHop > maxHops) {
-          return new Result({
-            title: "call_peer failed",
-            output: `Hop limit reached (max ${maxHops}). Cannot make further peer calls in this chain. Use oneWay=true for no-reply summaries, or restart with --deep-collaboration for a bounded deep collaboration budget.`,
+            output: `Hop limit reached (max ${maxHops}). Cannot make further peer calls in this chain. Use oneWay=true for no-reply summaries, or restart with --max-peer-hops / OPENZEROCODE_MAX_PEER_HOPS if the user explicitly approved a deeper collaboration.`,
           })
         }
 
@@ -127,7 +110,6 @@ export const CallPeerTool = Effect.gen(function* () {
                 from: selfName,
                 hop: nextHop,
                 samePairRoundtrips: nextSamePairRoundtrips,
-                remainingPeerCalls: deepCollaboration ? nextRemainingPeerCalls : undefined,
                 oneWay,
               }),
             }),
@@ -145,9 +127,7 @@ export const CallPeerTool = Effect.gen(function* () {
             title: oneWay ? `Sent one-way message to ${args.name}` : `Called ${args.name}`,
             output: oneWay
               ? `One-way message queued in ${args.name}. No callback is expected.`
-              : deepCollaboration
-                ? `Message queued in ${args.name}. Deep collaboration budget remaining after this call: ${nextRemainingPeerCalls}.`
-                : `Message queued in ${args.name}. The peer will process it in turn.`,
+              : `Message queued in ${args.name}. The peer will process it in turn.`,
           })
         } catch (err) {
           return new Result({

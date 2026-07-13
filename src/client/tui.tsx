@@ -57,7 +57,7 @@ import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type Su
 import { writeCompactTranscriptExport } from "./session-export"
 import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
 import { startPeerServer } from "../peer/server"
-import { configurePeerBudget, getDeepCollaborationPeerCallBudget, isDeepCollaborationEnabled, setPeerContext } from "../peer/context"
+import { configurePeerBudget, setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
@@ -79,8 +79,8 @@ await handleCli(args, VERSION)
 // Module-level state shared between peer server (started before render) and
 // the SolidJS component (which wires up the enqueue callback after mount).
 let activePeerName: string | undefined
-let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number, options?: { samePairRoundtrips?: number; oneWay?: boolean; remainingPeerCalls?: number }) => void) | undefined
-const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number; samePairRoundtrips?: number; oneWay?: boolean; remainingPeerCalls?: number }> = []
+let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number, options?: { samePairRoundtrips?: number; oneWay?: boolean }) => void) | undefined
+const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number; samePairRoundtrips?: number; oneWay?: boolean }> = []
 
 {
   const numericFlag = (name: string): number | undefined => {
@@ -93,8 +93,6 @@ const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number; sa
   configurePeerBudget({
     maxHops: numericFlag("--max-peer-hops"),
     maxSamePairRoundtrips: numericFlag("--max-same-pair-roundtrips"),
-    deepCollaboration: args.includes("--deep-collaboration") ? true : undefined,
-    deepCollaborationPeerCalls: numericFlag("--deep-collaboration-peer-calls"),
   })
 
   const nameIdx = args.indexOf("--name")
@@ -160,26 +158,14 @@ function systemPrompt(mode: RunMode) {
   return buildSystemPrompt(mode, agentsInstruction, contextInstruction, process.cwd())
 }
 
-function peerRequestSystemPrompt(peerOrigin: string, oneWay: boolean | undefined, remainingPeerCalls: number | undefined): string {
+function peerRequestSystemPrompt(peerOrigin: string, oneWay: boolean | undefined): string {
   if (oneWay) {
     return `\n\n[Peer Notice]\nThis one-way message was sent by peer process "${peerOrigin}" for notification or handoff-summary purposes. Do not call_peer back unless the user explicitly asks you to start a new collaboration thread.`
   }
 
-  if (!isDeepCollaborationEnabled()) {
-    return `\n\n[Peer Request]\nThis task was sent by peer process "${peerOrigin}". ` +
-      `After completing the task, use the call_peer tool to send a concise summary of what you did and any relevant results back to "${peerOrigin}". ` +
-      `If the task cannot be completed or requires clarification, call_peer back with that information instead.`
-  }
-
-  const remaining = remainingPeerCalls ?? getDeepCollaborationPeerCallBudget()
-  return `\n\n[Bounded Deep Collaboration]\n` +
-    `This task was sent by peer process "${peerOrigin}" as part of a bounded deep collaboration chain. ` +
-    `The chain has ${remaining} peer-call budget item(s) remaining before any callback you make. ` +
-    `Use the budget deliberately: first clarify only blocking ambiguity, then delegate/review concrete work, then converge. ` +
-    `Before calling call_peer back, include one of these phase labels in your message: [question], [plan-review], [work-result], [critique], or [final-summary]. ` +
-    `Prefer a final-summary when the remaining budget is low or the answer is actionable. ` +
-    `Do not bounce vague status messages; each callback should contain new evidence, a concrete decision, or a specific request. ` +
-    `If the task cannot be completed, call_peer back with a concise blocker summary and recommended next step.`
+  return `\n\n[Peer Request]\nThis task was sent by peer process "${peerOrigin}". ` +
+    `After completing the task, use the call_peer tool to send a concise summary of what you did and any relevant results back to "${peerOrigin}". ` +
+    `If the task cannot be completed or requires clarification, call_peer back with that information instead.`
 }
 
 function refreshAgentsInstruction() {
@@ -469,7 +455,6 @@ function App() {
       _peerEnqueueFn(pending.text, pending.fromPeer, pending.hop, {
         samePairRoundtrips: pending.samePairRoundtrips,
         oneWay: pending.oneWay,
-        remainingPeerCalls: pending.remainingPeerCalls,
       })
     }
   }
@@ -2402,9 +2387,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (abortSignal.aborted) return
     }
 
-    const { text: input, peerOrigin, peerHop, samePairRoundtrips, oneWay, remainingPeerCalls } = decodePeerInput(rawInput)
-    // Update peer context so call_peer tool knows our name, peer origin, and current budget state.
-    setPeerContext(activePeerName, peerHop ?? 0, peerOrigin, samePairRoundtrips ?? 0, remainingPeerCalls)
+    const { text: input, peerOrigin, peerHop, samePairRoundtrips, oneWay } = decodePeerInput(rawInput)
+    // Update peer context so call_peer tool knows our name, peer origin, and current hop state.
+    setPeerContext(activePeerName, peerHop ?? 0, peerOrigin, samePairRoundtrips ?? 0)
 
     history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
     historyIndex = -1
@@ -2504,7 +2489,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }, {
         runSync,
         systemPrompt: peerOrigin
-          ? (mode: RunMode) => systemPrompt(mode) + peerRequestSystemPrompt(peerOrigin, oneWay, remainingPeerCalls)
+          ? (mode: RunMode) => systemPrompt(mode) + peerRequestSystemPrompt(peerOrigin, oneWay)
           : systemPrompt,
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
@@ -2697,9 +2682,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 body: JSON.stringify({
                   text: prompt,
                   from: activePeerName,
-                  hop: isDeepCollaborationEnabled() ? 0 : 1,
+                  hop: 1,
                   samePairRoundtrips: 0,
-                  remainingPeerCalls: isDeepCollaborationEnabled() ? getDeepCollaborationPeerCallBudget() : undefined,
                 }),
               })
               if (!res.ok) {
