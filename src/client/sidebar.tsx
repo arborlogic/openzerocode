@@ -130,10 +130,13 @@ export function Sidebar(props: {
 
   // Force scrollbox to recalculate its scroll range after content changes.
   // The opentui render loop drops requestRender() calls made mid-frame.
-  // Using setTimeout(0) ensures we request a render after the current frame
-  // and any pending render cycle have fully completed.
+  // We directly call the private recalculateBarProps to update scrollSize/viewportSize.
   const scheduleScrollRecalc = () => {
-    setTimeout(() => { scrollboxRef?.requestRender() }, 0)
+    setTimeout(() => {
+      if (scrollboxRef) {
+        ;(scrollboxRef as any).recalculateBarProps?.()
+      }
+    }, 50)
   }
 
   const toggleFolder = (name: string) => {
@@ -248,6 +251,7 @@ export function Sidebar(props: {
     <scrollbox
       ref={(node) => { scrollboxRef = node }}
       width={props.width}
+      verticalScrollbarOptions={{ height: 1 }}
       border={["left"]}
       borderColor={props.theme.border}
       backgroundColor={props.theme.surface}
