@@ -6,7 +6,7 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
-import { selectEnabledTools } from "../tool/selection"
+import { selectEnabledTools, selectPlanModeTools } from "../tool/selection"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
 import { estimateTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
@@ -196,8 +196,9 @@ export async function* streamSession(
   }))
   // Hide user-disabled tool groups (e.g. the GEASS browser tools) from the model
   // so it never tries them; core tools have no group and always pass.
-  const tools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
-  const toolDefs = options.mode === "plan" ? [] : convertToolsToDefs(tools)
+  const enabledTools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
+  const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
+  const toolDefs = convertToolsToDefs(tools)
 
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
   const currentTurnStart = allMessages.length

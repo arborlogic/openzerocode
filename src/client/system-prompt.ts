@@ -61,8 +61,9 @@ const BUILD_MODE_REMINDER = [
 
 const PLAN_MODE_REMINDER = [
   "You are currently in Plan mode.",
-  "Do not write code, do not call tools, and do not make changes.",
-  "Explain the approach, risks, and step-by-step plan only.",
+  "You may inspect the project with read-only tools such as reading files, searching files, listing matching files, fetching referenced documentation, and analyzing images.",
+  "Do not write code, edit files, apply patches, run shell commands, commit changes, or perform browser/app actions.",
+  "Use inspection results to explain the current state, approach, risks, and step-by-step plan.",
 ].join("\n")
 
 const VISION_SECTION = [
@@ -267,8 +268,8 @@ export function buildSystemPrompt(
 
   parts.push(buildEnvironmentSection(cwd))
 
-  // Plan mode disables tools entirely, Learn mode exposes only read/search,
-  // and Compose mode loads compose skills. General tool-specific guidance belongs in Build mode.
+  // Plan mode exposes only narrow read-only inspection tools, and Compose mode
+  // loads compose skills. General tool-specific guidance belongs in Build mode.
   if (mode === "build") {
     parts.push(TODO_INSTRUCTIONS)
 

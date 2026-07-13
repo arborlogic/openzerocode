@@ -56,7 +56,8 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt("plan")
 
     assert.match(prompt, /You are currently in Plan mode\./)
-    assert.match(prompt, /Do not write code, do not call tools, and do not make changes\./)
+    assert.match(prompt, /You may inspect the project with read-only tools/)
+    assert.match(prompt, /Do not write code, edit files, apply patches, run shell commands, commit changes/)
   })
 
   it("includes compose-mode structured workflow guidance", () => {

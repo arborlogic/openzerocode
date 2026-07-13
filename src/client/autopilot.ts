@@ -42,6 +42,11 @@ export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): strin
     `"Review the current project state and conversation, propose the next highest-priority repo-local task, explain why it follows from the roadmap, and start implementing it only if the proposal is clearly safe, reasonable, and does not require a human product decision. Otherwise, stop with the proposal."`,
     ``,
     `When the latest assistant response is already a next-step proposal, use "high" only if it names one clearly recommended repo-local implementation, explains why it is reasonable, and explicitly does not require human intervention. Then write a concrete implementation prompt for that recommended task.`,
+    `When continuing from a proposed next task, refine the next prompt before sending it. Preserve the proposal's intent, but add obvious engineering guardrails: keep scope small, preserve existing API/client contracts unless explicitly changing them, add or update tests, run relevant verification, update docs only when genuinely completed, and commit only if verification passes when the conversation expects committed work.`,
+    `Do not pause merely because the proposed prompt would benefit from routine implementation safeguards. Add those safeguards yourself.`,
+    ``,
+    `Do not choose verification, review, testing, formatting, or committing as the next proactive task when the working tree appears clean and the previous task was already verified. Those are completion steps, not product progress. In that case, choose the next concrete roadmap, TODO, product, or API implementation item, then include verification and commit as final safeguards.`,
+    `Use a verification-first prompt only when the latest response or repository state indicates unfinished local changes, failing tests, uncommitted work, or an interrupted implementation.`,
   ]
   const safety = [
     `Use "low" and an empty instruction when any of these apply:`,

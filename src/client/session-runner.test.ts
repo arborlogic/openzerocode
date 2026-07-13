@@ -391,7 +391,7 @@ test("streamSession exposes all tools in build mode", async () => {
   )
 })
 
-test("streamSession sends no tool definitions in plan mode", async () => {
+test("streamSession exposes only read-only inspection tools in plan mode", async () => {
   const requests: CompletionRequest[] = []
   const stream = new ReadableStream({
     start(controller) {
@@ -407,11 +407,23 @@ test("streamSession sends no tool definitions in plan mode", async () => {
     keyName: "test-key",
     mode: "plan",
   }, runtime(stream, {
-    tools: [testTool("read"), testTool("learn_memory_apply")],
+    tools: [
+      testTool("read"),
+      testTool("grep"),
+      testTool("glob"),
+      testTool("web_fetch"),
+      testTool("analyze_image"),
+      testTool("write"),
+      testTool("bash"),
+      testTool("todowrite"),
+    ],
     onRequest: (req) => requests.push(req),
   }))
 
   while (!(await gen.next()).done) {}
 
-  assert.equal(requests[0]?.tools, undefined)
+  assert.deepEqual(
+    requests[0]?.tools?.map((tool) => tool.function.name),
+    ["read", "grep", "glob", "web_fetch", "analyze_image"],
+  )
 })

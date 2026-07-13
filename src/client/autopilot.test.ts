@@ -26,6 +26,11 @@ describe("autopilot helpers", () => {
     assert.ok(prompt.includes("Ask the current AI to propose the next step first"))
     assert.ok(prompt.includes("start implementing it only if the proposal is clearly safe"))
     assert.ok(prompt.includes("latest assistant response is already a next-step proposal"))
+    assert.ok(prompt.includes("refine the next prompt before sending it"))
+    assert.ok(prompt.includes("preserve existing API/client contracts"))
+    assert.ok(prompt.includes("Do not pause merely because the proposed prompt would benefit from routine implementation safeguards"))
+    assert.ok(prompt.includes("Those are completion steps, not product progress"))
+    assert.ok(prompt.includes("Use a verification-first prompt only when"))
     assert.ok(prompt.includes("Do not invent speculative features"))
   })
 
@@ -33,6 +38,8 @@ describe("autopilot helpers", () => {
     const prompt = buildAutopilotSupervisorPrompt("standard")
     assert.ok(!prompt.includes("Ask the current AI to propose the next step first"))
     assert.ok(!prompt.includes("latest assistant response is already a next-step proposal"))
+    assert.ok(!prompt.includes("refine the next prompt before sending it"))
+    assert.ok(!prompt.includes("Those are completion steps, not product progress"))
   })
 
   it("parses a high-confidence next prompt", () => {
