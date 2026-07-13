@@ -19,8 +19,9 @@ import { BrowserScreenshotTool } from "./browser-screenshot"
 import { BrowserObserveVisualTool } from "./browser-observe-visual"
 import { AnalyzeImageTool } from "./analyze-image"
 import { CallPeerTool } from "./call-peer"
-import { LearnMemoryApplyTool } from "./learn-memory"
-import { LearnProjectMemoryApplyTool } from "./learn-project-memory"
+// DEPRECATED: learn-memory and learn-project-memory replaced by compose:learn skill
+// import { LearnMemoryApplyTool } from "./learn-memory"
+// import { LearnProjectMemoryApplyTool } from "./learn-project-memory"
 import { getMcpTools } from "../mcp/store"
 
 export interface Interface {
@@ -54,8 +55,9 @@ export const layer = Layer.effect(
       yield* BrowserObserveVisualTool,
       yield* AnalyzeImageTool,
       yield* CallPeerTool,
-      yield* LearnMemoryApplyTool,
-      yield* LearnProjectMemoryApplyTool,
+      // DEPRECATED: learn-memory and learn-project-memory replaced by compose:learn skill
+      // yield* LearnMemoryApplyTool,
+      // yield* LearnProjectMemoryApplyTool,
     ]
     const custom: Def[] = []
 

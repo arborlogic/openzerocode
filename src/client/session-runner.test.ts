@@ -184,7 +184,7 @@ test("streamSession treats abort-time stream cancellation as interruption", asyn
   assert.equal(result.done, true)
 })
 
-test("streamSession exposes only read/search/memory tools in learn mode", async () => {
+test("streamSession exposes all tools in build mode", async () => {
   const requests: CompletionRequest[] = []
   const stream = new ReadableStream({
     start(controller) {
@@ -198,14 +198,12 @@ test("streamSession exposes only read/search/memory tools in learn mode", async 
     model: "test-model",
     provider: "test-provider",
     keyName: "test-key",
-    mode: "learn",
+    mode: "build",
   }, runtime(stream, {
     tools: [
       testTool("read"),
       testTool("grep"),
       testTool("glob"),
-      testTool("learn_memory_apply"),
-      testTool("learn_project_memory_apply"),
       testTool("write"),
       testTool("bash"),
       testTool("web_fetch"),
@@ -217,7 +215,7 @@ test("streamSession exposes only read/search/memory tools in learn mode", async 
 
   assert.deepEqual(
     requests[0]?.tools?.map((tool) => tool.function.name),
-    ["read", "grep", "glob", "learn_memory_apply", "learn_project_memory_apply"],
+    ["read", "grep", "glob", "write", "bash", "web_fetch"],
   )
 })
 

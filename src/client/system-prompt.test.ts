@@ -30,18 +30,15 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /Do not write code, do not call tools, and do not make changes\./)
   })
 
-  it("includes learn-mode memory workflow guidance", () => {
-    const prompt = buildSystemPrompt("learn")
+  it("includes compose-mode structured workflow guidance", () => {
+    const prompt = buildSystemPrompt("compose")
 
-    assert.match(prompt, /You are currently in Learn mode\./)
-    assert.match(prompt, /help the user refine durable development experience/)
-    assert.match(prompt, /wait for explicit user confirmation/)
-    assert.match(prompt, /learn_memory_apply/)
-    assert.match(prompt, /learn_project_memory_apply/)
-    assert.match(prompt, /DEVELOPMENT\.md/)
-    assert.match(prompt, /~\/\.openzerocode\/AGENTS\.md/)
-    assert.match(prompt, /~\/\.openzerocode\/CONTEXT\.md/)
-    assert.doesNotMatch(prompt, /<project>\/\.openzerocode\/CONTEXT\.md/)
+    assert.match(prompt, /You are currently in Compose mode\./)
+    assert.match(prompt, /specs-driven development/)
+    assert.match(prompt, /compose:brainstorm/)
+    assert.match(prompt, /compose:plan/)
+    assert.match(prompt, /compose:tdd/)
+    assert.match(prompt, /compose:verify/)
     assert.doesNotMatch(prompt, /# Task List \(todowrite tool\)/)
   })
 

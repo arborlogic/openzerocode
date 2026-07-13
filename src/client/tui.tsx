@@ -191,7 +191,7 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
-      if (loaded.mode === "plan" || loaded.mode === "learn") initialMode = loaded.mode
+      if (loaded.mode === "plan" || loaded.mode === "compose") initialMode = loaded.mode
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
@@ -223,18 +223,9 @@ function App() {
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
   const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
-  const bootstrapLearnMemory = () => {
-    const result = ensureGlobalMemoryFiles()
-    if (result.created.length > 0) {
-      const created = result.created.map((path) => displayPath(path)).join(", ")
-      showToast("info", "Learn memory initialized", `Created empty global memory files: ${created}`, 5000)
-      refreshAgentsInstruction()
-    }
-  }
   const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
     setModeRaw((prev) => {
       const resolved = typeof next === "function" ? (next as (prev: RunMode) => RunMode)(prev) : next
-      if (resolved === "learn" && prev !== "learn") bootstrapLearnMemory()
       return resolved
     })
   }
@@ -281,7 +272,6 @@ function App() {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
     }, duration)
   }
-  if (initialMode === "learn") bootstrapLearnMemory()
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
   const _uiPrefs = initialUIPrefs
@@ -1155,9 +1145,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch mode",
-        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → learn" : "learn → build",
+        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → compose" : "compose → build",
         onSelect: () => {
-          setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
+          setMode(m => m === "build" ? "plan" : m === "plan" ? "compose" : "build")
           setShowPalette(false)
         },
       },
@@ -2152,7 +2142,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setSelectionRevision((v) => v + 1)
     }
     setMessages(loaded?.messages ?? [])
-    setMode(loaded?.mode === "plan" || loaded?.mode === "learn" ? loaded.mode : "build")
+    setMode(loaded?.mode === "plan" || loaded?.mode === "compose" ? loaded.mode : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
@@ -3556,10 +3546,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
               <text
-                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#d29922" }}
-                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "learn" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#bc8cff" }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "compose" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
               >
-                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Learn"}
+                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Compose"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
@@ -3664,12 +3654,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact"])
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact", "learn"])
           if (name === "mode") {
             // Toggle immediately — no text input needed
             setComposerText("")
-            setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
+            setMode(m => m === "build" ? "plan" : m === "plan" ? "compose" : "build")
             setStatus(`Mode: ${mode()}`)
+          } else if (name === "learn") {
+            // Send a learn prompt to the agent
+            setComposerText("Analyze this session and extract non-obvious learnings. For each learning, determine if it's project-specific (save to docs/compose/learnings/PROJECT.md) or global (save to ~/.openzerocode/LEARNINGS.md). Follow the compose:learn skill format with Observation, Evidence, and Implication sections.")
+            queueMicrotask(() => { void submit() })
           } else if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })

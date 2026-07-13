@@ -136,11 +136,11 @@ describe("executeCommand", () => {
       assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
-    it("switches to learn mode", async () => {
+    it("switches to compose mode", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/mode learn", ctx)
+      const result = await executeCommand("/mode compose", ctx)
       assert.ok(result)
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "learn")
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "compose")
     })
 
     it("toggles mode when no argument given", async () => {
