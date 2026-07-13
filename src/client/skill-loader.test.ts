@@ -1,0 +1,81 @@
+import { describe, it } from "node:test"
+import assert from "node:assert"
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
+import { matchSkillByUrl, resolveSkillDirs } from "./skill-loader"
+
+function makeTempWorkspace() {
+  return mkdtempSync(join(tmpdir(), "ozc-skill-loader-"))
+}
+
+function withHome<T>(home: string, fn: () => T): T {
+  const previousHome = process.env.HOME
+  const previousSkillsDir = process.env.GEASS_SKILLS_DIR
+  process.env.HOME = home
+  delete process.env.GEASS_SKILLS_DIR
+  try {
+    return fn()
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    if (previousSkillsDir === undefined) delete process.env.GEASS_SKILLS_DIR
+    else process.env.GEASS_SKILLS_DIR = previousSkillsDir
+  }
+}
+
+function writeSkill(root: string, name: string, match: string, body: string) {
+  const dir = join(root, "skills", name)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, "SKILL.md"),
+    ["---", `name: ${name}`, "description: test skill", "match:", match, "---", "", body, ""].join("\n"),
+  )
+  return dir
+}
+
+describe("resolveSkillDirs", () => {
+  it("returns project skills before user-global skills", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(root, "skills"), { recursive: true })
+    mkdirSync(join(home, ".openzerocode", "skills"), { recursive: true })
+
+    const dirs = withHome(home, () => resolveSkillDirs(root))
+
+    assert.equal(dirs[0], join(root, "skills"))
+    assert.equal(dirs[1], join(home, ".openzerocode", "skills"))
+  })
+})
+
+describe("matchSkillByUrl", () => {
+  it("matches skills across multiple directories", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    const projectSkills = join(root, "skills")
+    const globalSkills = join(home, ".openzerocode", "skills")
+    mkdirSync(projectSkills, { recursive: true })
+    writeSkill(join(home, ".openzerocode"), "global-docs", "  domains: [docs.example.com]", "GLOBAL DOCS BODY")
+
+    const skill = matchSkillByUrl("https://docs.example.com/reference", [projectSkills, globalSkills])
+
+    assert.equal(skill?.name, "global-docs")
+    assert.equal(skill?.matchedBy, "domains")
+    assert.match(skill?.body ?? "", /GLOBAL DOCS BODY/)
+  })
+
+  it("prefers project matches when project and user-global skills both match", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    writeSkill(root, "project-docs", "  domains: [docs.example.com]", "PROJECT DOCS BODY")
+    writeSkill(join(home, ".openzerocode"), "global-docs", "  domains: [docs.example.com]", "GLOBAL DOCS BODY")
+
+    const skill = matchSkillByUrl("https://docs.example.com/reference", [
+      join(root, "skills"),
+      join(home, ".openzerocode", "skills"),
+    ])
+
+    assert.equal(skill?.name, "project-docs")
+    assert.match(skill?.body ?? "", /PROJECT DOCS BODY/)
+  })
+})

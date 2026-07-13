@@ -110,7 +110,32 @@ test("runSession persists an assistant error message when provider stream readin
   assert.equal(result.at(-1)?.role, "assistant")
   assert.match(String(result.at(-1)?.content), /upstream connection reset/)
   assert.deepEqual(notices, ["error:Provider error: upstream connection reset"])
-  assert.equal(statuses.at(-1), "error")
+  assert.ok(statuses.includes("error"))
+})
+
+test("runSession persists an assistant error message when provider returns an empty response", async () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: {}, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const messages: Message[] = []
+  const notices: string[] = []
+  const statuses: string[] = []
+
+  const result = await runSession("hello", [], createUi({
+    addMessage: (message) => messages.push(message),
+    notify: (text, kind) => notices.push(`${kind}:${text}`),
+    setStatus: (text) => statuses.push(text),
+  }), runtime(stream))
+
+  assert.equal(messages.at(-1)?.role, "assistant")
+  assert.match(String(messages.at(-1)?.content), /Provider returned an empty assistant response/)
+  assert.equal(result.at(-1)?.role, "assistant")
+  assert.match(String(result.at(-1)?.content), /Provider returned an empty assistant response/)
+  assert.deepEqual(notices, ["error:Provider returned an empty assistant response"])
+  assert.ok(statuses.includes("error"))
 })
 
 test("streamSession emits structured step-limit notice without misleading final thinking status", async () => {

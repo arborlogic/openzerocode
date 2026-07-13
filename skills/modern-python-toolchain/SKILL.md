@@ -1,0 +1,200 @@
+---
+name: modern-python-toolchain
+description: "Modern Python project setup with uv, ruff, and pyright. Use when initializing a new Python project, configuring the Python environment, setting up linting/formatting, or when a project needs uv (the fast Python package manager). Trigger on: 'set up Python', 'new Python project', 'configure uv', 'install uv', 'ruff', 'pyright', 'Python linting', 'Python formatting', or when a task requires Python and no pyproject.toml exists yet."
+---
+
+# Modern Python Toolchain
+
+A guide for setting up Python projects with modern, fast tooling: **uv** (package/project manager), **ruff** (linter/formatter), and **pyright** (type checker).
+
+## Installing uv
+
+uv is an extremely fast Python package and project manager. It replaces pip, pip-tools, pipx, pyenv, virtualenv, poetry, etc.
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# Homebrew (macOS)
+brew install uv
+```
+
+After installation, restart your shell or run `source $HOME/.local/bin/env` (the installer prints the exact command).
+
+For detailed information: https://docs.astral.sh/uv/
+
+---
+
+## uv basics
+
+### Python version
+
+Pin a single Python minor version. As of 2025 the recommended version is 3.12:
+
+```toml
+# pyproject.toml
+requires-python = "==3.12.*"
+```
+
+Install Python via uv (no system Python needed):
+
+```bash
+uv python install 3.12
+```
+
+### Creating a new project
+
+```bash
+uv init                       # Create new project with pyproject.toml
+uv init -p 3.12               # Specify Python version
+```
+
+### Common commands
+
+```bash
+uv add requests               # Add dependency
+uv add --dev ruff pyright     # Add dev dependency
+uv remove requests            # Remove dependency
+uv sync                       # Install from lockfile
+uv run COMMAND                # Run command in project environment
+uv run script.py              # Run a script
+uv run python -c "..."        # Run Python one-liner
+uvx TOOL ARGS                 # Run a tool without installing it
+```
+
+### Rules
+
+- **Never use `pip`** in uv projects — always `uv add` for packages.
+- **Never run `python script.py` directly** — always `uv run script.py` to ensure the correct environment. For one-liners use `uv run python -c "..."`.
+- **Don't manually manage environments** with `python -m venv` or `source .venv/bin/activate` — uv handles this automatically.
+- `uvx` runs tools from PyPI by package name without installing them permanently.
+
+### Project types
+
+For **library** projects, use the standard src layout with `uv_build`:
+
+```toml
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
+```
+
+For **application** projects with an entry point:
+
+```toml
+[project.scripts]
+myapp = "myapp.__main__:main"
+```
+
+If the project does not use src layout, just run `uv run main.py`.
+
+---
+
+## ruff
+
+Ruff is an extremely fast Python linter and code formatter. It replaces Flake8, isort, Black, pyupgrade, autoflake, and more.
+
+For detailed information: https://docs.astral.sh/ruff/
+
+### When to use
+
+Always use ruff for Python linting and formatting. Prefer `uv run ruff` when ruff is a dev dependency; otherwise fall back to `uvx ruff`.
+
+### Configuration
+
+Add to `pyproject.toml`:
+
+```toml
+[tool.ruff.lint]
+extend-select = [
+    "UP",  # pyupgrade — modernize syntax
+    "I",   # isort — sort imports
+]
+```
+
+### Post-edit workflow
+
+After modifying Python code:
+
+```bash
+# Format
+uv run ruff format path/to/changed_file.py
+
+# Lint + auto-fix (imports, style)
+uv run ruff check --fix path/to/changed_file.py
+```
+
+Use `--diff` to preview changes without applying.
+
+---
+
+## pyright
+
+Pyright is a fast type checker for Python. Only use it when the project lists it as a dev dependency or explicitly uses type checking.
+
+```bash
+uv run pyright path/to/changed_file.py    # check specific files
+uv run pyright src/                        # check all code
+```
+
+Usually only check the files you modified. For broad changes (base classes, shared types), check the full tree.
+
+**Prerequisite:** Pyright requires a `node` binary. If not available, skip and note it to the user.
+
+---
+
+## Coding style
+
+### Type annotations
+
+Use modern Python 3.12+ syntax:
+
+```python
+# Good — builtin generics, union syntax
+def fetch(url: str, timeout: float = 30.0) -> list[dict[str, str | None]]:
+    ...
+
+# Bad — legacy typing imports
+from typing import List, Dict, Optional
+def fetch(url: str, timeout: float = 30.0) -> List[Dict[str, Optional[str]]]:
+    ...
+```
+
+Always annotate function parameters. Local variables can rely on inference unless the type is ambiguous:
+
+```python
+items: list[tuple[str, int]] = []    # annotate — empty literal
+config: dict[str, Any] = {}          # annotate — empty literal
+result = some_api()                  # inference is fine
+```
+
+### String formatting
+
+Always use f-strings. Do not use `.format()` or `%` formatting.
+
+### pydantic v2
+
+Use the modern class-based API:
+- `model_config = ConfigDict(...)` at class body level, not `class Config`.
+- `RootModel` with `root: SomeType` for single-root schemas.
+
+### typer (CLI)
+
+Recommended for CLI entry points over `argparse`:
+
+```python
+import typer
+from typing import Annotated
+
+cli = typer.Typer(add_completion=False)
+
+@cli.command()
+def main(name: Annotated[str, typer.Argument(help="Your name")]) -> None:
+    typer.echo(f"Hello {name}")
+
+if __name__ == "__main__":
+    cli()
+```

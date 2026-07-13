@@ -27,21 +27,33 @@ export interface LoadedSkill {
 }
 
 /**
- * Resolve the directory that holds skills/<name>/SKILL.md.
- * Order: GEASS_SKILLS_DIR env → <cwd>/skills → ~/Dev/ai-util/geass-agent/skills.
+ * Resolve ALL directories that hold skills/<name>/SKILL.md.
+ * Search order: GEASS_SKILLS_DIR env → <cwd>/skills → ~/.openzerocode/skills → ~/Dev/ai-util/geass-agent/skills
+ * Returns only directories that actually exist.
  */
-export function resolveSkillsDir(cwd: string = process.cwd()): string | undefined {
+export function resolveSkillDirs(cwd: string = process.cwd()): string[] {
   const candidates = [
     process.env.GEASS_SKILLS_DIR,
     join(cwd, "skills"),
+    join(homedir(), ".openzerocode", "skills"),
     join(homedir(), "Dev", "ai-util", "geass-agent", "skills"),
   ].filter((c): c is string => Boolean(c))
 
+  const dirs: string[] = []
   for (const c of candidates) {
     const abs = isAbsolute(c) ? c : join(cwd, c)
-    if (existsSync(abs) && statSync(abs).isDirectory()) return abs
+    if (existsSync(abs) && statSync(abs).isDirectory()) dirs.push(abs)
   }
-  return undefined
+  return dirs
+}
+
+/**
+ * Resolve the first directory that holds skills/<name>/SKILL.md.
+ * Prefer project-level skills over user-level skills.
+ */
+export function resolveSkillsDir(cwd: string = process.cwd()): string | undefined {
+  const dirs = resolveSkillDirs(cwd)
+  return dirs[0]
 }
 
 function splitFrontmatter(raw: string): { frontmatter: SkillFrontmatter; body: string } {
@@ -124,9 +136,13 @@ function domainMatches(host: string, domain: string): boolean {
  * Resolution order per architecture doc: url_patterns → domains → description.
  * description matching is intentionally NOT fuzzy here — it's a no-op fallback
  * left to the LLM. We only return structured (url_patterns/domains) matches.
+ *
+ * skillsDir can be a single directory string or an array of directories.
+ * When an array is given, all directories are searched in order; the first match wins.
  */
-export function matchSkillByUrl(url: string, skillsDir: string): LoadedSkill | undefined {
-  const skills = parseAllSkills(skillsDir)
+export function matchSkillByUrl(url: string, skillsDir: string | string[]): LoadedSkill | undefined {
+  const dirs = Array.isArray(skillsDir) ? skillsDir : [skillsDir]
+  const skills = dirs.flatMap((d) => parseAllSkills(d))
   const host = hostnameOf(url)
 
   // 1. url_patterns (most specific)

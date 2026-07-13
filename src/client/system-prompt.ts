@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "fs"
 import { resolve, join } from "path"
+import { homedir } from "os"
 import type { RunMode } from "./session-runner"
 import { isConnected } from "../browser/geass-client"
 import { parse as parseYaml } from "yaml"
@@ -92,6 +93,12 @@ const COMPOSE_MODE_REMINDER = [
   "- **compose:merge** — Complete development work (merge/PR/discard).",
   "- **compose:debug** — Debugging guidance for bugs, test failures, or unexpected behavior.",
   "- **compose:learn** — Extract non-obvious learnings from sessions into structured knowledge artifacts.",
+  "- **compose:ask** — Route decisions through the question tool. Use whenever you need user input.",
+  "- **compose:parallel** — Dispatch parallel agents for independent tasks.",
+  "- **compose:feedback** — Handle code review feedback with technical rigor.",
+  "- **compose:report** — Write final reports after implementation is verified.",
+  "- **compose:subagent** — Execute plans with fresh subagent per task and two-stage review.",
+  "- **compose:worktree** — Set up isolated workspaces via git worktrees.",
   "",
   "## Workflow",
   "",
@@ -146,31 +153,43 @@ function buildGeassSection(): string | null {
 
 interface ComposeSkill {
   name: string
-  body: string
+  description?: string
+  source: string
 }
 
 function loadComposeSkills(cwd: string): ComposeSkill[] {
-  const skillsDir = resolve(cwd, "skills", "compose")
-  if (!existsSync(skillsDir)) return []
+  const dirs = [
+    resolve(cwd, "skills", "compose"),
+    join(homedir(), ".openzerocode", "skills", "compose"),
+  ]
 
+  const seen = new Set<string>()
   const skills: ComposeSkill[] = []
-  let entries: string[]
-  try {
-    entries = readdirSync(skillsDir)
-  } catch {
-    return skills
-  }
 
-  for (const entry of entries) {
-    const skillPath = join(skillsDir, entry, "SKILL.md")
-    if (!existsSync(skillPath)) continue
+  for (const skillsDir of dirs) {
+    if (!existsSync(skillsDir)) continue
+    let entries: string[]
     try {
-      const raw = readFileSync(skillPath, "utf8")
-      const { body } = splitFrontmatter(raw)
-      const name = entry
-      skills.push({ name, body })
+      entries = readdirSync(skillsDir)
     } catch {
       continue
+    }
+
+    for (const entry of entries) {
+      if (seen.has(entry)) continue
+      const skillPath = join(skillsDir, entry, "SKILL.md")
+      if (!existsSync(skillPath)) continue
+      try {
+        const raw = readFileSync(skillPath, "utf8")
+        const { frontmatter } = splitFrontmatter(raw)
+        const frontmatterName = typeof frontmatter.name === "string" ? frontmatter.name : undefined
+        const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined
+        const name = frontmatterName ?? `compose:${entry}`
+        seen.add(entry)
+        skills.push({ name, description, source: skillPath })
+      } catch {
+        continue
+      }
     }
   }
   return skills
@@ -195,11 +214,17 @@ function buildComposeSkillsSection(cwd: string): string {
   const skills = loadComposeSkills(cwd)
   if (skills.length === 0) return ""
 
-  const parts = ["# Compose Skills (loaded from project)", ""]
+  const parts = [
+    "# Compose Skills (available from project + ~/.openzerocode/skills)",
+    "",
+    "The following compose skills are available. Do not inline all skill bodies into context. When a skill is relevant, read its SKILL.md file first, then follow it.",
+    "",
+  ]
   for (const skill of skills) {
-    parts.push(`## ${skill.name}`)
-    parts.push(skill.body.trim())
-    parts.push("")
+    const line = skill.description
+      ? `- **${skill.name}** — ${skill.description} (${skill.source})`
+      : `- **${skill.name}** (${skill.source})`
+    parts.push(line)
   }
   return parts.join("\n")
 }

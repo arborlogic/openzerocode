@@ -284,6 +284,16 @@ export async function* streamSession(
         }))
       : undefined
 
+    if (!content && !hasReasoning && !toolCalls) {
+      const errorText = "Provider returned an empty assistant response"
+      yield { type: "notice", kind: "error", text: errorText }
+      const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
+      resultHistory.push(errorMsg)
+      yield { type: "message", message: errorMsg }
+      yield { type: "error", message: errorText }
+      return resultHistory
+    }
+
     const assistantMessage: Message = createAssistantMessage({
       content: content || undefined,
       reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
