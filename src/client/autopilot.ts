@@ -7,6 +7,32 @@ export type AutopilotDecision = {
 export type AutopilotMode = "off" | "standard" | "proactive"
 export type ActiveAutopilotMode = Exclude<AutopilotMode, "off">
 
+export const AUTOPILOT_RATE_LIMIT_BACKOFF_MS = [
+  5 * 60_000,
+  20 * 60_000,
+  60 * 60_000,
+  80 * 60_000,
+  120 * 60_000,
+  240 * 60_000,
+]
+
+export const AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS = AUTOPILOT_RATE_LIMIT_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0)
+
+export function autopilotRateLimitDelayMs(attemptIndex: number, random = Math.random): number | undefined {
+  const base = AUTOPILOT_RATE_LIMIT_BACKOFF_MS[attemptIndex]
+  if (base === undefined) return undefined
+  const jitter = Math.min(base * 0.1, 2 * 60_000)
+  return Math.max(0, Math.round(base + ((random() * 2) - 1) * jitter))
+}
+
+export function formatAutopilotRetryDelay(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remainder = minutes % 60
+  return remainder === 0 ? `${hours}h` : `${hours}h${remainder}m`
+}
+
 export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): string {
   const common = [
     `You are the Autopilot supervisor for this OpenZeroCode session.`,

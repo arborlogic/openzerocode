@@ -1,6 +1,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { buildAutopilotSupervisorPrompt, parseAutopilotDecision } from "./autopilot"
+import {
+  AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
+  AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
+  autopilotRateLimitDelayMs,
+  buildAutopilotSupervisorPrompt,
+  formatAutopilotRetryDelay,
+  parseAutopilotDecision,
+} from "./autopilot"
 
 describe("autopilot helpers", () => {
   it("describes an event-driven continuation check", () => {
@@ -74,5 +81,27 @@ describe("autopilot helpers", () => {
     const result = parseAutopilotDecision("not json")
     assert.equal(result.confidence, "low")
     assert.ok(result.reason.includes("not valid JSON"))
+  })
+
+  it("defines proactive rate-limit backoff delays up to 8h45m total", () => {
+    assert.deepEqual(
+      AUTOPILOT_RATE_LIMIT_BACKOFF_MS.map((ms) => ms / 60_000),
+      [5, 20, 60, 80, 120, 240],
+    )
+    assert.equal(AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS / 60_000, 525)
+  })
+
+  it("adds bounded jitter to proactive rate-limit retry delays", () => {
+    assert.equal(autopilotRateLimitDelayMs(0, () => 0), 4.5 * 60_000)
+    assert.equal(autopilotRateLimitDelayMs(0, () => 1), 5.5 * 60_000)
+    assert.equal(autopilotRateLimitDelayMs(5, () => 0), 238 * 60_000)
+    assert.equal(autopilotRateLimitDelayMs(5, () => 1), 242 * 60_000)
+    assert.equal(autopilotRateLimitDelayMs(6, () => 0.5), undefined)
+  })
+
+  it("formats proactive rate-limit retry delays for status text", () => {
+    assert.equal(formatAutopilotRetryDelay(5 * 60_000), "5m")
+    assert.equal(formatAutopilotRetryDelay(80 * 60_000), "1h20m")
+    assert.equal(formatAutopilotRetryDelay(240 * 60_000), "4h")
   })
 })

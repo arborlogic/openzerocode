@@ -23,7 +23,7 @@ import { getModelConfig } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
-import { formatProviderError } from "./errors"
+import { formatProviderError, isRateLimitError } from "./errors"
 import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
@@ -53,7 +53,16 @@ import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue, type QueueItem } from "./input-queue"
-import { buildAutopilotSupervisorPrompt, parseAutopilotDecision, type AutopilotDecision, type AutopilotMode } from "./autopilot"
+import {
+  AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
+  AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
+  autopilotRateLimitDelayMs,
+  buildAutopilotSupervisorPrompt,
+  formatAutopilotRetryDelay,
+  parseAutopilotDecision,
+  type AutopilotDecision,
+  type AutopilotMode,
+} from "./autopilot"
 import { writeCompactTranscriptExport } from "./session-export"
 import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
 import { startPeerServer } from "../peer/server"
@@ -386,6 +395,8 @@ function App() {
   let runAbort: AbortController | undefined
   let autopilotAbort: AbortController | undefined
   let autopilotSupervisorRunning = false
+  let autopilotRateLimitTimer: ReturnType<typeof setTimeout> | undefined
+  let autopilotRateLimitRetryCount = 0
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
@@ -474,6 +485,49 @@ function App() {
     return parseAutopilotDecision(contentToText(result.message.content))
   }
 
+  function clearAutopilotRateLimitRetry(resetCount = true) {
+    if (autopilotRateLimitTimer) {
+      clearTimeout(autopilotRateLimitTimer)
+      autopilotRateLimitTimer = undefined
+    }
+    if (resetCount) autopilotRateLimitRetryCount = 0
+  }
+
+  function scheduleAutopilotRateLimitRetry() {
+    if (autopilotRateLimitTimer || autopilotMode() !== "proactive") return
+    const delayMs = autopilotRateLimitDelayMs(autopilotRateLimitRetryCount)
+    if (delayMs === undefined) {
+      const total = formatAutopilotRetryDelay(AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS)
+      const attempts = AUTOPILOT_RATE_LIMIT_BACKOFF_MS.length
+      configureAutopilot("off")
+      setStatus("autopilot paused after repeated rate limits")
+      setNotices((prev) => [
+        ...prev,
+        { kind: "system", text: `⟳ Autopilot paused after ${attempts} rate-limit retries over about ${total}.` },
+      ])
+      showToast("warning", "Autopilot paused", `Rate limited after ${attempts} retries over about ${total}.`, 8000)
+      queueMicrotask(scrollBottom)
+      return
+    }
+
+    autopilotRateLimitRetryCount++
+    const attempt = autopilotRateLimitRetryCount
+    const maxAttempts = AUTOPILOT_RATE_LIMIT_BACKOFF_MS.length
+    const delayText = formatAutopilotRetryDelay(delayMs)
+    setStatus(`autopilot rate-limited — retrying in ${delayText}`)
+    setNotices((prev) => [
+      ...prev,
+      { kind: "system", text: `⟳ Proactive Autopilot rate-limited; retry ${attempt}/${maxAttempts} in ${delayText}.` },
+    ])
+    showToast("warning", "Autopilot rate-limited", `Retry ${attempt}/${maxAttempts} in ${delayText}.`, 6000)
+    queueMicrotask(scrollBottom)
+    autopilotRateLimitTimer = setTimeout(() => {
+      autopilotRateLimitTimer = undefined
+      if (autopilotMode() !== "proactive") return
+      void queueAutopilotContinuation()
+    }, delayMs)
+  }
+
   async function queueAutopilotContinuation() {
     if (!autopilotEnabled() || autopilotSupervisorRunning) return
     autopilotSupervisorRunning = true
@@ -481,6 +535,7 @@ function App() {
     try {
       const decision = await runAutopilotSupervisor()
       if (!autopilotEnabled()) return
+      clearAutopilotRateLimitRetry()
       if (decision.confidence === "low") {
         setStatus("autopilot ready — waiting for your input")
         if (decision.reason) {
@@ -496,6 +551,10 @@ function App() {
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
       if (!isAbort && autopilotEnabled()) {
+        if (autopilotMode() === "proactive" && isRateLimitError(err)) {
+          scheduleAutopilotRateLimitRetry()
+          return
+        }
         setStatus("autopilot ready — supervisor unavailable")
         setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autopilot could not evaluate this response and is waiting for you." }])
         queueMicrotask(scrollBottom)
@@ -507,6 +566,7 @@ function App() {
 
   function scheduleAutopilotCheck() {
     if (!autopilotEnabled() || autopilotSupervisorRunning) return
+    if (autopilotRateLimitTimer) return
     if (running() || compacting() || pendingApproval() || (inputQueue?.depth() ?? 0) > 0 || (inputQueue?.isDraining() ?? false)) return
     queueMicrotask(() => { void queueAutopilotContinuation() })
   }
@@ -514,6 +574,7 @@ function App() {
   function configureAutopilot(mode: AutopilotMode) {
     autopilotAbort?.abort()
     autopilotAbort = undefined
+    clearAutopilotRateLimitRetry()
     setAutopilotMode(mode)
     if (mode !== "off") {
       if (messages().length > 0) scheduleAutopilotCheck()
@@ -1753,7 +1814,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         mode === "off"
           ? "AI will wait for your next message."
           : mode === "proactive"
-            ? "AI will ask for a next-step proposal when needed, then continue safe repo-local work."
+            ? "AI will propose, continue safe repo-local work, and retry rate limits."
             : "AI will answer routine continuation questions when the next step is clear and safe.",
       )
     }
@@ -1770,7 +1831,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Proactive",
-        hint: "propose then continue",
+        hint: "long-running continuation",
         onSelect: () => selectMode("proactive"),
       },
       ...(current !== "off"
