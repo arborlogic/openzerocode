@@ -982,6 +982,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           void compactCurrentSession()
         },
       },
+      {
+        label: "Auto compression",
+        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        onSelect: () => {
+          const nextEnabled = !autoCompressionEnabled()
+          setAutoCompressionEnabled(nextEnabled)
+          saveUIPrefs({ autoCompressionEnabled: nextEnabled })
+          setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
+          setShowPalette(false)
+        },
+      },
       ...(compaction()?.summary
         ? [{
             label: "View compaction summary",
@@ -1026,7 +1037,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Experiment",
-        hint: `auto compression ${autoCompressionEnabled() ? "ON" : "OFF"}, GEASS …`,
+        hint: "VLM, GEASS, tools …",
         onSelect: () => {
           setPalettePendingDelete(null)
           setPaletteMode("experiments")
@@ -1590,17 +1601,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "EXPERIMENTS",
         kind: "section",
         onSelect: () => {},
-      },
-      {
-        label: "Auto compression",
-        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
-        onSelect: () => {
-          const nextEnabled = !autoCompressionEnabled()
-          setAutoCompressionEnabled(nextEnabled)
-          saveUIPrefs({ autoCompressionEnabled: nextEnabled })
-          setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
-          setShowPalette(false)
-        },
       },
       {
         label: "Force local VLM for vision",

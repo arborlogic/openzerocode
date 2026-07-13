@@ -13,12 +13,12 @@ const emptyToolsLayer = Layer.succeed(ToolRegistry, {
   register: () => Effect.void,
 })
 
-function runtime(stream: ReadableStream<any>, input?: { tools?: Def[]; onRequest?: (req: CompletionRequest) => void }) {
+function runtime(stream: ReadableStream<any> | (() => ReadableStream<any>), input?: { tools?: Def[]; onRequest?: (req: CompletionRequest) => void }) {
   const providerLayer = Layer.succeed(Provider, {
     complete: () => Effect.die("not implemented"),
     stream: (req) => Effect.sync(() => {
       input?.onRequest?.(req)
-      return stream
+      return typeof stream === "function" ? stream() : stream
     }),
     models: () => Effect.succeed([]),
   })
@@ -45,6 +45,15 @@ function testTool(id: string): Def {
     description: `${id} test tool`,
     parameters: Schema.Struct({}),
     execute: () => Effect.succeed(new Result({ title: id, output: "ok" })),
+  })
+}
+
+function testToolWithOutput(id: string, output: string): Def {
+  return new Def({
+    id,
+    description: `${id} test tool`,
+    parameters: Schema.Struct({}),
+    execute: () => Effect.succeed(new Result({ title: id, output })),
   })
 }
 
@@ -136,6 +145,144 @@ test("runSession persists an assistant error message when provider returns an em
   assert.match(String(result.at(-1)?.content), /Provider returned an empty assistant response/)
   assert.deepEqual(notices, ["error:Provider returned an empty assistant response"])
   assert.ok(statuses.includes("error"))
+})
+
+test("streamSession treats empty stop after tool results as clean completion", async () => {
+  let requestCount = 0
+  const makeStream = () => new ReadableStream({
+    start(controller) {
+      requestCount++
+      if (requestCount === 1) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: "call_1",
+            function: { name: "read", arguments: "{}" },
+          }],
+        })
+      } else {
+        controller.enqueue({ delta: {}, finish_reason: "stop" })
+      }
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { tools: [testTool("read")] }))
+
+  const chunks: any[] = []
+  let done: IteratorResult<any, Message[]>
+  do {
+    done = await gen.next()
+    if (!done.done) chunks.push(done.value)
+  } while (!done.done)
+
+  assert.equal(requestCount, 2)
+  assert.equal(chunks.some((chunk) => chunk.type === "error"), false)
+  assert.equal(chunks.some((chunk) => chunk.type === "notice" && chunk.kind === "error"), false)
+  assert.equal(chunks.at(-1)?.type, "done")
+  assert.deepEqual(
+    done.value.map((message) => message.role),
+    ["user", "assistant", "tool"],
+  )
+})
+
+test("streamSession treats empty EOF after tool results as clean completion", async () => {
+  let requestCount = 0
+  const makeStream = () => new ReadableStream({
+    start(controller) {
+      requestCount++
+      if (requestCount === 1) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: "call_1",
+            function: { name: "read", arguments: "{}" },
+          }],
+        })
+      }
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { tools: [testTool("read")] }))
+
+  const chunks: any[] = []
+  let done: IteratorResult<any, Message[]>
+  do {
+    done = await gen.next()
+    if (!done.done) chunks.push(done.value)
+  } while (!done.done)
+
+  assert.equal(requestCount, 2)
+  assert.equal(chunks.some((chunk) => chunk.type === "error"), false)
+  assert.equal(chunks.some((chunk) => chunk.type === "notice" && chunk.kind === "error"), false)
+  assert.equal(chunks.at(-1)?.type, "done")
+  assert.deepEqual(
+    done.value.map((message) => message.role),
+    ["user", "assistant", "tool"],
+  )
+})
+
+test("streamSession compacts large current-turn tool history before provider requests", async () => {
+  let requestCount = 0
+  const requests: CompletionRequest[] = []
+  const makeStream = () => new ReadableStream({
+    start(controller) {
+      requestCount++
+      if (requestCount <= 5) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: `call_${requestCount}`,
+            function: { name: "read", arguments: "{}" },
+          }],
+        })
+      } else {
+        controller.enqueue({ delta: { content: "done" }, finish_reason: "stop" })
+      }
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    modelInfo: { id: "test-model", contextLimit: 4_000 },
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, {
+    tools: [testToolWithOutput("read", "x".repeat(12_000))],
+    onRequest: (req) => requests.push(req),
+  }))
+
+  while (!(await gen.next()).done) {}
+
+  const compactedRequest = requests.find((req) =>
+    req.messages.some((message) =>
+      message.role === "system"
+      && typeof message.content === "string"
+      && message.content.includes("[Current Turn Compacted]"),
+    ),
+  )
+
+  assert.ok(compactedRequest, "expected at least one provider request to compact current-turn tool history")
+  assert.ok((compactedRequest?.messages.length ?? 0) < 14)
 })
 
 test("streamSession emits structured step-limit notice without misleading final thinking status", async () => {

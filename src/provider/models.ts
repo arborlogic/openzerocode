@@ -32,39 +32,9 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     pricing: { input: 0.435, output: 0.87, cache_read: 0.003625 },
     reasoning: true,
   },
-  "gpt-5.5": {
-    contextLimit: 1_000_000,
-    pricing: { input: 2.5, output: 15 },
-    vision: true,
-  },
-  "gpt-5.5-mini": {
-    contextLimit: 1_000_000,
-    pricing: { input: 0.4, output: 1.6 },
-    vision: true,
-  },
-  "gpt-5.5-nano": {
-    contextLimit: 1_000_000,
-    pricing: { input: 0.1, output: 0.4 },
-    vision: true,
-  },
   "gpt-5.5-codex": {
     contextLimit: 400_000,
     pricing: { input: 0, output: 0 },
-    vision: true,
-  },
-  "gpt-5.4": {
-    contextLimit: 1_000_000,
-    pricing: { input: 2.5, output: 15 },
-    vision: true,
-  },
-  "gpt-5.4-mini": {
-    contextLimit: 1_000_000,
-    pricing: { input: 0.4, output: 1.6 },
-    vision: true,
-  },
-  "gpt-5.4-nano": {
-    contextLimit: 1_000_000,
-    pricing: { input: 0.1, output: 0.4 },
     vision: true,
   },
   "gpt-5.4-codex": {

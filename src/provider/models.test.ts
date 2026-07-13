@@ -10,21 +10,19 @@ describe("getKnownModelConfig", () => {
     assert.equal(cfg?.contextLimit, 128_000)
   })
 
-  it("normalizes provider-prefixed model ids", () => {
-    const cfg = getKnownModelConfig("openaicodex/gpt-5.4")
+  it("normalizes provider-prefixed known model ids", () => {
+    const cfg = getKnownModelConfig("openaicodex/gpt-5.4-codex")
     assert.ok(cfg)
-    assert.equal(cfg?.contextLimit, 1_000_000)
+    assert.equal(cfg?.contextLimit, 400_000)
   })
 
   it("returns undefined for unknown models", () => {
     assert.equal(getKnownModelConfig("unknown-model"), undefined)
   })
 
-  it("returns config for gpt-5.5 provider-prefixed model ids", () => {
+  it("does not hardcode provider-prefixed gpt-5.5 context", () => {
     const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
-    assert.ok(cfg)
-    assert.equal(cfg?.contextLimit, 1_000_000)
-    assert.equal(cfg?.vision, true)
+    assert.equal(cfg, undefined)
   })
 
   it("returns config for claude models with thinking suffix", () => {
@@ -124,18 +122,22 @@ describe("getModelConfig", () => {
     assert.equal(cfg.pricing?.output, 10)
   })
 
-  it("uses normalized config for provider-prefixed model ids", () => {
-    const cfg = getModelConfig("openaicodex/gpt-5.4")
-    assert.equal(cfg.contextLimit, 1_000_000)
-    assert.equal(cfg.pricing?.input, 2.5)
-    assert.equal(cfg.pricing?.output, 15)
+  it("uses fallback metadata for provider-prefixed models without known config", () => {
+    const cfg = getModelConfig("openaicodex/gpt-5.4", {
+      id: "openaicodex/gpt-5.4",
+      contextLimit: 400_000,
+      pricing: { input: 0, output: 0 },
+    })
+    assert.equal(cfg.contextLimit, 400_000)
+    assert.equal(cfg.pricing?.input, 0)
+    assert.equal(cfg.pricing?.output, 0)
   })
 })
 
 describe("modelSupportsVision", () => {
-  it("treats gpt-5.5 and provider-prefixed gpt-5.5 as vision-capable", () => {
-    assert.equal(modelSupportsVision("gpt-5.5"), true)
-    assert.equal(modelSupportsVision("openaicodex/gpt-5.5"), true)
+  it("treats known gpt codex models as vision-capable", () => {
+    assert.equal(modelSupportsVision("gpt-5.5-codex"), true)
+    assert.equal(modelSupportsVision("openaicodex/gpt-5.5-codex"), true)
   })
 
   it("does not treat arbitrary unknown models as vision-capable", () => {
