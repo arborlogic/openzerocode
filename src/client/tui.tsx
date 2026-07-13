@@ -23,7 +23,7 @@ import { getModelConfig } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
-import { formatProviderError, isRateLimitError, delay } from "./errors"
+import { formatProviderError } from "./errors"
 import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
@@ -53,7 +53,7 @@ import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue, type QueueItem } from "./input-queue"
-import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
+import { buildAutopilotSupervisorPrompt, parseAutopilotDecision, type AutopilotDecision, type AutopilotMode } from "./autopilot"
 import { writeCompactTranscriptExport } from "./session-export"
 import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
 import { startPeerServer } from "../peer/server"
@@ -241,7 +241,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -308,9 +308,8 @@ function App() {
       .catch((e) => setStatus(`MCP ${server.id} failed: ${e instanceof Error ? e.message : String(e)}`))
   }
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
-  const [autoLoopWindowMs, setAutoLoopWindowMs] = createSignal<number | undefined>(undefined)
-  const [autoLoopEndsAt, setAutoLoopEndsAt] = createSignal<number | undefined>(undefined)
-  const [autoLoopConfirm, setAutoLoopConfirm] = createSignal(false)
+  const [autopilotMode, setAutopilotMode] = createSignal<AutopilotMode>("off")
+  const autopilotEnabled = () => autopilotMode() !== "off"
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -385,9 +384,8 @@ function App() {
   let autocompleteApi: AutocompleteApi | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
-  let autoLoopAbort: AbortController | undefined
-  let autoLoopTimer: ReturnType<typeof setTimeout> | undefined
-  let autoLoopPendingTimer: ReturnType<typeof setTimeout> | undefined
+  let autopilotAbort: AbortController | undefined
+  let autopilotSupervisorRunning = false
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
@@ -420,8 +418,8 @@ function App() {
         setQueuedInputItems(inputQueue.pendingItems())
       },
       onDrainEnd: () => {
-        scheduleAutoLoop()
-        setStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input")
+        if (autopilotEnabled()) scheduleAutopilotCheck()
+        else setStatus("waiting for input")
       },
     },
   )
@@ -449,41 +447,13 @@ function App() {
     }
   }
 
-  function clearAutoLoopTimer(options?: { clearWindow?: boolean }) {
-    if (autoLoopTimer) clearTimeout(autoLoopTimer)
-    autoLoopTimer = undefined
-    // Always cancel a pending-wait timer so it never fires after a reschedule
-    if (autoLoopPendingTimer) clearTimeout(autoLoopPendingTimer)
-    autoLoopPendingTimer = undefined
-    if (options?.clearWindow) {
-      autoLoopAbort?.abort()
-      autoLoopAbort = undefined
-      setAutoLoopWindowMs(undefined)
-      setAutoLoopEndsAt(undefined)
-    }
-  }
-
-  function disableAutoLoop(reason?: string) {
-    clearAutoLoopTimer({ clearWindow: true })
-    setStatus("autoloop stopped — waiting for human")
-    const noticeText = reason ? `⟳ Autoloop stopped: ${reason}` : "⟳ Autoloop stopped — waiting for human input."
-    setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
-    queueMicrotask(scrollBottom)
-  }
-
-  function stopAutoLoopWindow() {
-    clearAutoLoopTimer({ clearWindow: true })
-    setStatus("waiting for input")
-    setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autoloop ended — delegated time window expired." }])
-    queueMicrotask(scrollBottom)
-  }
-
-  async function runAutoLoopSupervisor(remainingMs: number): Promise<SupervisorDecision> {
-    autoLoopAbort?.abort()
-    autoLoopAbort = new AbortController()
-    // Capture signal locally — autoLoopAbort may be reassigned by a concurrent call
-    const signal = autoLoopAbort.signal
-    const supervisorPrompt = buildAutoLoopSupervisorPrompt(formatAutoLoopDuration(remainingMs))
+  async function runAutopilotSupervisor(): Promise<AutopilotDecision> {
+    autopilotAbort?.abort()
+    autopilotAbort = new AbortController()
+    const signal = autopilotAbort.signal
+    const mode = autopilotMode()
+    if (mode === "off") return { confidence: "low", instruction: "", reason: "autopilot is off" }
+    const supervisorPrompt = buildAutopilotSupervisorPrompt(mode)
     const msgHistory = sanitizeMessages(messages())
     const result = await runSync(Effect.gen(function* () {
       const provider = yield* Provider
@@ -501,138 +471,55 @@ function App() {
         ],
       })
     }))
-    return parseAutoLoopSupervisorDecision(contentToText(result.message.content))
+    return parseAutopilotDecision(contentToText(result.message.content))
   }
 
-  async function queueAutoLoopContinuation() {
-    const endsAt = autoLoopEndsAt()
-    if (!endsAt || Date.now() >= endsAt) {
-      stopAutoLoopWindow()
-      return
-    }
-    const remainingMs = Math.max(1_000, endsAt - Date.now())
-    setStatus(`autoloop: deciding next step...`)
-
-    let decision: SupervisorDecision | undefined
-    let supervisorError: unknown
-    let retried = false
-    while (true) {
-      if (!autoLoopEndsAt()) return
-      try {
-        decision = await runAutoLoopSupervisor(Math.max(1_000, autoLoopEndsAt()! - Date.now()))
-        supervisorError = undefined
-        break
-      } catch (err) {
-        supervisorError = err
-        // Detect abort via the error type, not by re-reading autoLoopAbort
-        // (which may have been reassigned by a concurrent call)
-        if (err instanceof Error && (err.name === "AbortError" || err.message === "aborted")) return
-        if (!isRateLimitError(err) || retried) break
-        retried = true
-        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: rate limited — waiting 3 minutes before retry` }])
-        setStatus("autoloop: rate limited, waiting 3m...")
-        // Make the delay interruptible: resolve early if the abort signal fires
-        const rateSignal = autoLoopAbort?.signal
-        await Promise.race([
-          delay(3 * 60_000),
-          new Promise<void>(resolve => rateSignal?.addEventListener("abort", () => resolve(), { once: true })),
-        ])
-        if (rateSignal?.aborted || !autoLoopEndsAt()) return
+  async function queueAutopilotContinuation() {
+    if (!autopilotEnabled() || autopilotSupervisorRunning) return
+    autopilotSupervisorRunning = true
+    setStatus(`autopilot: deciding next step...`)
+    try {
+      const decision = await runAutopilotSupervisor()
+      if (!autopilotEnabled()) return
+      if (decision.confidence === "low") {
+        setStatus("autopilot ready — waiting for your input")
+        if (decision.reason) {
+          setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autopilot paused: ${decision.reason}` }])
+          queueMicrotask(scrollBottom)
+        }
+        return
       }
-    }
-    if (supervisorError !== undefined || decision === undefined) {
-      const msg = isRateLimitError(supervisorError) ? "rate limit persists — stopping autoloop" : "supervisor error"
-      disableAutoLoop(msg)
-      return
-    }
-
-    if (decision.confidence === "low") {
-      disableAutoLoop(decision.reason || "low confidence")
-      return
-    }
-
-    // Re-check after async gap — window may have expired or been cancelled
-    if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
-      stopAutoLoopWindow()
-      return
-    }
-
-    if (decision.confidence === "pending") {
-      // AI gave multiple options with a recommendation — wait 3min for human, then proceed
-      const PENDING_WAIT_MS = 3 * 60_000
-      // Count only user-role messages so that tool-result messages appended by an
-      // in-flight worker do not falsely register as "human responded"
-      const userCountAtDecision = messages().filter(m => m.role === "user").length
-      const noticeText = `⟳ Autoloop: AI gave a recommendation — proceeding in 3 minutes unless you respond.\n  → ${decision.instruction}`
-      setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
-      setStatus(`autoloop: waiting 3m for your response...`)
-      queueMicrotask(scrollBottom)
-      autoLoopPendingTimer = setTimeout(() => {
-        autoLoopPendingTimer = undefined
-        // If human sent a new message, let the normal flow take over
-        if (messages().filter(m => m.role === "user").length > userCountAtDecision) return
-        // If window expired or autoloop was cancelled, stop
-        if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
-          stopAutoLoopWindow()
-          return
-        }
-        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: no response received — proceeding with recommendation.` }])
-        if (autoLoopConfirm()) {
-          setComposerText(decision.instruction)
-          setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
-          showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
-        } else {
-          inputQueue?.enqueue(decision.instruction)
-          setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
-        }
-        queueMicrotask(scrollBottom)
-      }, PENDING_WAIT_MS)
-      return
-    }
-
-    if (autoLoopConfirm()) {
-      setComposerText(decision.instruction)
-      setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(endsAt)}`)
-      showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
-      queueMicrotask(scrollBottom)
-    } else {
-      showToast("info", "Autoloop delegated", decision.instruction, 4000)
+      showToast("info", "Autopilot continuing", decision.instruction, 4000)
       inputQueue?.enqueue(decision.instruction)
-      setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+      setStatus("autopilot queued next prompt")
       queueMicrotask(scrollBottom)
+    } catch (err) {
+      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
+      if (!isAbort && autopilotEnabled()) {
+        setStatus("autopilot ready — supervisor unavailable")
+        setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autopilot could not evaluate this response and is waiting for you." }])
+        queueMicrotask(scrollBottom)
+      }
+    } finally {
+      autopilotSupervisorRunning = false
     }
   }
 
-  function scheduleAutoLoop() {
-    clearAutoLoopTimer()
-    const endsAt = autoLoopEndsAt()
-    if (!endsAt) return
-    const remainingMs = endsAt - Date.now()
-    if (remainingMs <= 0) {
-      stopAutoLoopWindow()
-      return
-    }
-    setStatus(`autoloop active — ${formatAutoLoopEstimatedEnd(endsAt)}`)
+  function scheduleAutopilotCheck() {
+    if (!autopilotEnabled() || autopilotSupervisorRunning) return
     if (running() || compacting() || pendingApproval() || (inputQueue?.depth() ?? 0) > 0 || (inputQueue?.isDraining() ?? false)) return
-    autoLoopTimer = setTimeout(() => {
-      autoLoopTimer = undefined
-      void queueAutoLoopContinuation()
-    }, 0)
+    queueMicrotask(() => { void queueAutopilotContinuation() })
   }
 
-  function configureAutoLoop(windowMs: number | undefined, confirm?: boolean) {
-    clearAutoLoopTimer({ clearWindow: true })
-    // autoLoopWindowMs is now cleared by clearAutoLoopTimer; set new value after
-    setAutoLoopWindowMs(windowMs)
-    setAutoLoopConfirm(confirm ?? false)
-    if (windowMs) {
-      const endsAt = Date.now() + windowMs
-      setAutoLoopEndsAt(endsAt)
-      // Route through scheduleAutoLoop so the idle guard (running/compacting/pendingApproval)
-      // is respected and the supervisor call is deferred until the queue is clear
-      scheduleAutoLoop()
+  function configureAutopilot(mode: AutopilotMode) {
+    autopilotAbort?.abort()
+    autopilotAbort = undefined
+    setAutopilotMode(mode)
+    if (mode !== "off") {
+      if (messages().length > 0) scheduleAutopilotCheck()
+      else setStatus(`${mode} autopilot enabled — waiting for your first task`)
     } else {
-      setStatus("autoloop disabled")
+      setStatus("autopilot disabled")
     }
   }
 
@@ -975,6 +862,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Auto-approve",
         hint: autoApprove() ? "ON" : "OFF",
         onSelect: () => { setAutoApprove(c => !c); setShowPalette(false) },
+      },
+      {
+        label: "Autopilot",
+        hint: autopilotMode() === "off" ? "OFF" : autopilotMode().toUpperCase(),
+        onSelect: () => {
+          setPaletteMode("autopilot")
+          setPaletteIndex(1)
+        },
       },
       {
         label: "DISPLAY",
@@ -1847,6 +1742,43 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return items
   })
 
+  const autopilotPaletteItems = createMemo<PaletteItem[]>(() => {
+    const current = autopilotMode()
+    const selectMode = (mode: AutopilotMode) => {
+      configureAutopilot(mode)
+      setShowPalette(false)
+      showToast(
+        "success",
+        mode === "off" ? "Autopilot stopped" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+        mode === "off"
+          ? "AI will wait for your next message."
+          : mode === "proactive"
+            ? "AI will plan and continue with the next appropriate repo-local task."
+            : "AI will answer routine continuation questions when the next step is clear and safe.",
+      )
+    }
+    return [
+      {
+        label: `Current: ${current}`,
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Standard",
+        hint: "routine continuation",
+        onSelect: () => selectMode("standard"),
+      },
+      {
+        label: "Proactive",
+        hint: "plan the next task",
+        onSelect: () => selectMode("proactive"),
+      },
+      ...(current !== "off"
+        ? [{ label: "Turn off", hint: "wait for input", onSelect: () => selectMode("off") } satisfies PaletteItem]
+        : []),
+    ]
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "maxSteps"
       ? [
@@ -1870,6 +1802,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ]
       : paletteMode() === "sessions"
       ? sessionPaletteItems()
+      : paletteMode() === "autopilot"
+        ? autopilotPaletteItems()
       : paletteMode() === "directories"
         ? directoryPaletteItems()
       : paletteMode() === "providers"
@@ -2519,7 +2453,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
       setMessages(next)
       saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
-      setStatus(formatQueueStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input", queuedInputs()))
+      setStatus(formatQueueStatus(autopilotEnabled() ? "autopilot enabled" : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
@@ -2651,9 +2585,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         refreshSessions,
         codexLogin: runCodexLogin,
         xaiLogin: runXaiLogin,
-        getAutoLoopInterval: autoLoopWindowMs,
-        getAutoLoopConfirm: autoLoopConfirm,
-        setAutoLoop: configureAutoLoop,
+        getAutopilotMode: autopilotMode,
+        setAutopilotMode: configureAutopilot,
         peerName: activePeerName,
         listPeers: activePeerName ? listLivePeers : undefined,
         callPeer: activePeerName
@@ -2713,7 +2646,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         queueMicrotask(scrollBottom)
         return
       }
-      if (slashCmd === "autoloop") {
+      if (slashCmd === "autopilot") {
         setComposerText("")
       }
       if (slashCmd === "commit") {
@@ -3202,7 +3135,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (event.name === "escape") {
-        if (paletteMode() === "sessions" || paletteMode() === "providers" || paletteMode() === "directories") {
+        if (paletteMode() === "sessions" || paletteMode() === "providers" || paletteMode() === "directories" || paletteMode() === "autopilot") {
           setPalettePendingDelete(null)
           setPaletteInput("")
           setPaletteMode("actions")
@@ -3273,6 +3206,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (running() && runAbort) {
+        if (autopilotEnabled()) configureAutopilot("off")
         inputQueue?.abort()
         setStatus(formatQueueStatus("interrupted", queuedInputs()))
         event.preventDefault()
@@ -3557,9 +3491,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
               </Show>
-              <Show when={autoLoopWindowMs()}>
+              <Show when={autopilotEnabled()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-                <text style={{ fg: "#d29922" }}>{`AUTO ${formatAutoLoopDuration(autoLoopWindowMs()!)}`}</text>
+                <text style={{ fg: "#d29922" }}>{autopilotMode() === "proactive" ? "PILOT+" : "PILOT"}</text>
               </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>
@@ -3751,6 +3685,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? "Timeline"
                         : paletteMode() === "queuedMessages"
                           ? "Queued Messages"
+                        : paletteMode() === "autopilot"
+                          ? "Autopilot"
                           : paletteMode() === "userMessageActions"
                             ? "Message Actions"
                       : "Command Palette"}
@@ -3761,7 +3697,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             >  Esc / ✕</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <Show when={paletteMode() !== "queuedMessages"}>
+            <Show when={paletteMode() !== "queuedMessages" && paletteMode() !== "autopilot"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                   <text style={{ fg: THEME.muted }}>
                     {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
@@ -3850,6 +3786,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                       ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
                     : paletteMode() === "queuedMessages"
                       ? "↑↓ navigate  •  Enter cancel  •  Esc back"
+                    : paletteMode() === "autopilot"
+                      ? "↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "codexKeyname"
                       ? "Enter key name  •  Enter save  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}

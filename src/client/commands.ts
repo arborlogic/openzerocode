@@ -4,8 +4,8 @@ import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
 import { getModelConfig } from "../provider/models"
-import { formatAutoLoopDuration, parseAutoLoopDuration } from "./autoloop"
 import type { PeerEntry } from "../peer/registry"
+import type { AutopilotMode } from "./autopilot"
 
 export type SlashCommandDef = {
   name: string
@@ -46,9 +46,8 @@ export type CommandContext = {
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
   xaiLogin: () => Promise<{ ok: boolean; message: string }>
-  getAutoLoopInterval: () => number | undefined
-  getAutoLoopConfirm: () => boolean
-  setAutoLoop: (windowMs: number | undefined, confirm?: boolean) => void
+  getAutopilotMode: () => AutopilotMode
+  setAutopilotMode: (mode: AutopilotMode) => void
   peerName?: string
   listPeers?: () => PeerEntry[]
   callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
@@ -71,7 +70,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
-  { name: "autoloop", description: "Delegate the next time window to AI: /autoloop 5m|1h|off" },
+  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|off" },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
   { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)" },
@@ -180,31 +179,33 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     return true
   }
 
-  if (cmd === "autoloop") {
-    const rawArg = arg.trim()
-    const normalized = rawArg.toLowerCase()
+  if (cmd === "autopilot") {
+    const normalized = arg.trim().toLowerCase()
     if (!normalized || normalized === "status") {
-      const windowMs = ctx.getAutoLoopInterval()
-      const confirmMode = ctx.getAutoLoopConfirm()
-      notifyCommand(ctx, "info", "Autoloop", windowMs ? `ON — ${formatAutoLoopDuration(windowMs)}${confirmMode ? " (confirm)" : ""}` : "OFF")
+      notifyCommand(ctx, "info", "Autopilot", ctx.getAutopilotMode().toUpperCase())
       return true
     }
     if (normalized === "off" || normalized === "stop" || normalized === "disable") {
-      ctx.setAutoLoop(undefined)
-      notifyCommand(ctx, "success", "Autoloop disabled", "AI will wait for human input.")
+      ctx.setAutopilotMode("off")
+      notifyCommand(ctx, "success", "Autopilot stopped", "AI will wait for your next message.")
       return true
     }
-    const tokens = rawArg.split(/\s+/)
-    const durationToken = tokens.find((t) => parseAutoLoopDuration(t))
-    const confirm = tokens.some((t) => t.toLowerCase() === "confirm")
-    const duration = durationToken ? parseAutoLoopDuration(durationToken) : undefined
-    if (!duration) {
-      notifyCommand(ctx, "error", "Invalid autoloop duration", "Usage: /autoloop 5m|1h|30s [confirm] | off")
+    const mode = normalized === "on" || normalized === "start" || normalized === "enable"
+      ? "standard"
+      : normalized
+    if (mode !== "standard" && mode !== "proactive") {
+      notifyCommand(ctx, "error", "Invalid autopilot option", "Usage: /autopilot standard|proactive|off|status")
       return true
     }
-    ctx.setAutoLoop(duration.ms, confirm)
-    const hint = confirm ? "Supervisor will fill the composer for your review before sending." : "AI will take over and keep making safe progress until time is up or confidence is low."
-    notifyCommand(ctx, "success", `Autoloop enabled${confirm ? " (confirm mode)" : ""}`, hint)
+    ctx.setAutopilotMode(mode)
+    notifyCommand(
+      ctx,
+      "success",
+      mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+      mode === "proactive"
+        ? "AI will plan and continue with the next appropriate repo-local task."
+        : "AI will answer routine continuation questions when the next step is clear and safe.",
+    )
     return true
   }
 
