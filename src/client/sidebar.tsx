@@ -126,6 +126,16 @@ export function Sidebar(props: {
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
   const [expandedFolders, setExpandedFolders] = createSignal<Set<string>>(new Set())
 
+  let scrollboxRef: any = null
+
+  // Force scrollbox to recalculate its scroll range after content changes.
+  // The opentui render loop drops requestRender() calls made mid-frame.
+  // Using setTimeout(0) ensures we request a render after the current frame
+  // and any pending render cycle have fully completed.
+  const scheduleScrollRecalc = () => {
+    setTimeout(() => { scrollboxRef?.requestRender() }, 0)
+  }
+
   const toggleFolder = (name: string) => {
     setExpandedFolders(prev => {
       const next = new Set(prev)
@@ -133,10 +143,18 @@ export function Sidebar(props: {
       else next.add(name)
       return next
     })
+    scheduleScrollRecalc()
   }
 
   const fileItems = createMemo(() => buildFileItems(gitFiles()))
   let gitRefreshSeq = 0
+
+  // When git files change (new snapshot loaded), the content height changes.
+  // Schedule a scroll recalc so the scrollbox picks up the new content size.
+  createEffect(() => {
+    gitFiles()
+    scheduleScrollRecalc()
+  })
 
   // Poll session lock status every 6s while sidebar is visible. This still keeps
   // the "in use" badge reasonably fresh but cuts idle wakeups in half.
@@ -228,8 +246,8 @@ export function Sidebar(props: {
 
   return (
     <scrollbox
+      ref={(node) => { scrollboxRef = node }}
       width={props.width}
-      height="100%"
       border={["left"]}
       borderColor={props.theme.border}
       backgroundColor={props.theme.surface}
