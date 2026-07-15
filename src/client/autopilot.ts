@@ -73,6 +73,8 @@ export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): strin
     ``,
     `Do not choose verification, review, testing, formatting, or committing as the next proactive task when the working tree appears clean and the previous task was already verified. Those are completion steps, not product progress. In that case, choose the next concrete roadmap, TODO, product, or API implementation item, then include verification and commit as final safeguards.`,
     `Use a verification-first prompt only when the latest response or repository state indicates unfinished local changes, failing tests, uncommitted work, or an interrupted implementation.`,
+    `When the roadmap item is broad or architectural, choose a small vertical slice that moves a real production code path toward the target boundary. Prefer tasks that replace or reduce an existing coupling in handlers, services, or client flows over tasks that only add helper functions, contracts, notes, or tests around the edge.`,
+    `Do not use Proactive Autopilot to request a progress explanation, justification, or retrospective when a safe implementation slice is available. Those are useful only when the human explicitly asks for them.`,
   ]
   const safety = [
     `Use "low" and an empty instruction when any of these apply:`,
