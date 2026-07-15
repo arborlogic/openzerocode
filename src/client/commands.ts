@@ -11,6 +11,7 @@ export type SlashCommandDef = {
   name: string
   description: string
   aliases?: string[]
+  argumentOptions?: string[]
 }
 
 export type CommandToastKind = "info" | "success" | "warning" | "error"
@@ -57,23 +58,23 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "help", description: "Show help, shortcuts and palette guide" },
   { name: "clear", description: "Clear conversation history" },
   { name: "new", description: "Start a fresh session" },
-  { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
-  { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
+  { name: "provider", description: "Switch provider: /provider <id> or /provider list", argumentOptions: ["list"] },
+  { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus", argumentOptions: ["browser", "headless", "code"] },
   { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
-  { name: "mode", description: "Switch mode: /mode build|plan|compose (no arg toggles)" },
+  { name: "mode", description: "Switch mode: /mode build|plan|compose (no arg toggles)", argumentOptions: ["build", "plan", "compose"] },
   { name: "learn", description: "Extract non-obvious learnings from this session" },
-  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off" },
+  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off", argumentOptions: ["low", "medium", "high", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
-  { name: "model", description: "Switch model: /model <name> or /model list" },
+  { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
-  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|off" },
+  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|off", argumentOptions: ["standard", "proactive", "off", "status"] },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
-  { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)" },
+  { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)", argumentOptions: ["view"] },
   { name: "export", description: "Export compact transcript: user asks, AI responses, and compact summary" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
   { name: "peers", description: "List online named peer processes" },

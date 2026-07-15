@@ -14,6 +14,7 @@ import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpSer
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
+import { cycleCommandArgument } from "./autocomplete-logic"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
@@ -3287,6 +3288,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       event.preventDefault()
       return
     }
+    if (event.name === "tab") {
+      const next = cycleCommandArgument(draft(), BUILTIN_COMMANDS, event.shift ? -1 : 1)
+      if (next !== undefined) {
+        setComposerText(next)
+        event.preventDefault()
+        return
+      }
+    }
     if (composer && !running() && event.name === "up") {
       if (autocompleteApi?.visible()) {
         autocompleteApi.move(-1)
@@ -3659,13 +3668,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact", "learn"])
-          if (name === "mode") {
-            // Toggle immediately — no text input needed
-            setComposerText("")
-            setMode(m => m === "build" ? "plan" : m === "plan" ? "compose" : "build")
-            setStatus(`Mode: ${mode()}`)
-          } else if (name === "learn") {
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "learn"])
+          if (name === "learn") {
             // Send a learn prompt to the agent
             setComposerText("Analyze this session and extract non-obvious learnings. For each learning, determine if it's project-specific (save to docs/compose/learnings/PROJECT.md) or global (save to ~/.openzerocode/LEARNINGS.md). Follow the compose:learn skill format with Observation, Evidence, and Implication sections.")
             queueMicrotask(() => { void submit() })

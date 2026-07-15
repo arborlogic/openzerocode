@@ -49,3 +49,27 @@ export function clampIndex(prev: number, dir: -1 | 1, length: number): number {
   if (next >= length) return 0
   return next
 }
+
+/** Cycle the argument of an already selected slash command. */
+export function cycleCommandArgument(
+  draft: string,
+  commands: SlashCommandDef[],
+  direction: -1 | 1 = 1,
+): string | undefined {
+  const match = draft.match(/^\/(\S+)(?:\s+(.*))?$/)
+  if (!match) return undefined
+
+  const enteredName = match[1]!.toLowerCase()
+  const command = commands.find((item) =>
+    item.name.toLowerCase() === enteredName || item.aliases?.some((alias) => alias.toLowerCase() === enteredName),
+  )
+  const options = command?.argumentOptions
+  if (!options?.length) return undefined
+
+  const current = (match[2] ?? "").trim()
+  const currentIndex = options.indexOf(current)
+  const nextIndex = currentIndex === -1
+    ? (direction === 1 ? 0 : options.length - 1)
+    : clampIndex(currentIndex, direction, options.length)
+  return `/${match[1]} ${options[nextIndex]}`
+}
