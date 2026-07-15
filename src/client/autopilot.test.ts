@@ -5,6 +5,7 @@ import {
   AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
   autopilotRateLimitDelayMs,
   buildAutopilotSupervisorPrompt,
+  formatAutopilotNoticeTime,
   formatAutopilotRetryDelay,
   parseAutopilotDecision,
 } from "./autopilot"
@@ -107,5 +108,10 @@ describe("autopilot helpers", () => {
     assert.equal(formatAutopilotRetryDelay(5 * 60_000), "5m")
     assert.equal(formatAutopilotRetryDelay(80 * 60_000), "1h20m")
     assert.equal(formatAutopilotRetryDelay(240 * 60_000), "4h")
+  })
+
+  it("formats proactive notice timestamps as HH:mm", () => {
+    assert.equal(formatAutopilotNoticeTime(new Date(2026, 6, 15, 9, 5, 42)), "09:05")
+    assert.equal(formatAutopilotNoticeTime(new Date(2026, 6, 15, 23, 59, 0)), "23:59")
   })
 })

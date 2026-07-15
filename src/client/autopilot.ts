@@ -33,6 +33,12 @@ export function formatAutopilotRetryDelay(ms: number): string {
   return remainder === 0 ? `${hours}h` : `${hours}h${remainder}m`
 }
 
+export function formatAutopilotNoticeTime(date = new Date()): string {
+  const hours = String(date.getHours()).padStart(2, "0")
+  const minutes = String(date.getMinutes()).padStart(2, "0")
+  return `${hours}:${minutes}`
+}
+
 export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): string {
   const common = [
     `You are the Autopilot supervisor for this OpenZeroCode session.`,

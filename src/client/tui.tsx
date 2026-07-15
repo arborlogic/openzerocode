@@ -58,6 +58,7 @@ import {
   AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
   autopilotRateLimitDelayMs,
   buildAutopilotSupervisorPrompt,
+  formatAutopilotNoticeTime,
   formatAutopilotRetryDelay,
   parseAutopilotDecision,
   type AutopilotDecision,
@@ -514,10 +515,11 @@ function App() {
     const attempt = autopilotRateLimitRetryCount
     const maxAttempts = AUTOPILOT_RATE_LIMIT_BACKOFF_MS.length
     const delayText = formatAutopilotRetryDelay(delayMs)
+    const noticeTime = formatAutopilotNoticeTime()
     setStatus(`autopilot rate-limited — retrying in ${delayText}`)
     setNotices((prev) => [
       ...prev,
-      { kind: "system", text: `⟳ Proactive Autopilot rate-limited; retry ${attempt}/${maxAttempts} in ${delayText}.` },
+      { kind: "system", text: `⟳ Proactive Autopilot rate-limited; retry ${attempt}/${maxAttempts} in ${delayText}. (${noticeTime})` },
     ])
     showToast("warning", "Autopilot rate-limited", `Retry ${attempt}/${maxAttempts} in ${delayText}.`, 6000)
     queueMicrotask(scrollBottom)
@@ -1941,8 +1943,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const turns = createMemo(() => {
     selectionRevision()
     const result: DisplayTurn[] = []
-    const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
-    const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy`
+    const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy (${formatAutopilotNoticeTime()})`
     let hiddenToolCount = 0
     const hiddenToolNames = new Set<string>()
 
