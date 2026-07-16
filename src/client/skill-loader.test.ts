@@ -101,6 +101,19 @@ describe("skill discovery", () => {
     })
   })
 
+  it("discovers the bundled review-helper skill", () => {
+    const skills = listSkills([join(process.cwd(), "skills")])
+    const reviewHelper = skills.find((skill) => skill.name === "review-helper")
+
+    assert.deepEqual(reviewHelper, {
+      name: "review-helper",
+      description:
+        "Perform a focused, evidence-based code review. Use when the user asks to review code, a diff, pull request, branch, commit, or implementation before merging.",
+      skillPath: join(process.cwd(), "skills", "review-helper", "SKILL.md"),
+      isBuiltin: true,
+    })
+  })
+
   it("lists nested skills and lets an earlier directory override by name", () => {
     const root = makeTempWorkspace()
     const global = makeTempWorkspace()
