@@ -103,7 +103,7 @@ cd openzerocode
 python3 scripts/dev-install.py
 ```
 
-這是目前支援的本機開發安裝路徑。它會安裝依賴，使用帶時間戳的 `-dev.YYYYMMDDHHMMSS` 版本後綴重新建置 `dist/openzerocode`，並執行 `npm install -g .`，讓全域 `openzerocode` 命令指向本機建置的二進位檔。
+這是目前支援的本機開發安裝路徑。它會安裝依賴，使用帶時間戳的 `-dev.YYYYMMDDHHMMSS` 版本後綴重新建置 `dist/openzerocode`，並執行 `npm install -g .`，讓全域 `openzerocode` 命令指向本機建置的二進位檔。內建 skills 會包含在安裝套件中，並部署在二進位檔旁。
 
 ### 執行
 

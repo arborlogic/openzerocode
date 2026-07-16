@@ -104,7 +104,7 @@ cd openzerocode
 python3 scripts/dev-install.py
 ```
 
-This remains the supported local development install path. It installs dependencies, rebuilds `dist/openzerocode` with a timestamped `-dev.YYYYMMDDHHMMSS` version suffix, and runs `npm install -g .` so the global `openzerocode` command points at that locally built binary.
+This remains the supported local development install path. It installs dependencies, rebuilds `dist/openzerocode` with a timestamped `-dev.YYYYMMDDHHMMSS` version suffix, and runs `npm install -g .` so the global `openzerocode` command points at that locally built binary. Built-in skills are included in the installed package and deployed beside that binary.
 
 ### Run
 

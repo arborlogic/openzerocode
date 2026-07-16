@@ -43,6 +43,8 @@
   "files": [
     "bin/openzerocode",
     "bin/package.json",
+    "skills/",
+    "parsers-config.ts",
     "src/",
     "scripts/",
     "tsconfig.json",

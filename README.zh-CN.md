@@ -103,7 +103,7 @@ cd openzerocode
 python3 scripts/dev-install.py
 ```
 
-这是当前支持的本地开发安装路径。它会安装依赖，使用带时间戳的 `-dev.YYYYMMDDHHMMSS` 版本后缀重新构建 `dist/openzerocode`，并执行 `npm install -g .`，让全局 `openzerocode` 命令指向本地构建的二进制文件。
+这是当前支持的本地开发安装路径。它会安装依赖，使用带时间戳的 `-dev.YYYYMMDDHHMMSS` 版本后缀重新构建 `dist/openzerocode`，并执行 `npm install -g .`，让全局 `openzerocode` 命令指向本地构建的二进制文件。内置 skills 会包含在安装包中，并部署在二进制文件旁。
 
 ### 运行
 
