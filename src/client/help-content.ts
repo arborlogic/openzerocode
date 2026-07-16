@@ -14,6 +14,8 @@ Commands
   /mode [build|plan|compose]
                          Switch mode; no arg cycles build / plan / compose
   /memory                Show loaded global memory files
+  /skills                List available skills
+  /skill <name>          Show a skill's instructions
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
   /tools                 Toggle completed tool details

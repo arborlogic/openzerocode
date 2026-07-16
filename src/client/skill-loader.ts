@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs"
-import { join, isAbsolute } from "node:path"
+import { join, isAbsolute, relative } from "node:path"
 import { homedir } from "node:os"
 import { parse as parseYaml } from "yaml"
 
@@ -24,6 +24,13 @@ export interface LoadedSkill {
   learnings?: string
   /** How this skill was matched: url_patterns > domains > description. */
   matchedBy: "url_patterns" | "domains" | "description"
+}
+
+/** A skill available for discovery, without its instruction body. */
+export interface SkillSummary {
+  name: string
+  description?: string
+  skillPath: string
 }
 
 /**
@@ -90,8 +97,16 @@ function parseAllSkills(skillsDir: string): ParsedSkill[] {
   }
   for (const entry of entries) {
     const dir = join(skillsDir, entry)
+    try {
+      if (!statSync(dir).isDirectory()) continue
+    } catch {
+      continue
+    }
     const skillPath = join(dir, "SKILL.md")
-    if (!existsSync(skillPath)) continue
+    if (!existsSync(skillPath)) {
+      out.push(...parseAllSkills(dir))
+      continue
+    }
     let raw: string
     try {
       raw = readFileSync(skillPath, "utf8")
@@ -111,6 +126,40 @@ function parseAllSkills(skillsDir: string): ParsedSkill[] {
     out.push({ name: frontmatter.name ?? entry, dir, skillPath, frontmatter, body, learnings })
   }
   return out
+}
+
+/**
+ * List every discoverable skill in the supplied directories.
+ * Directories are considered in order, so a project or configured skill with
+ * the same name overrides a later user-global one.
+ */
+export function listSkills(skillsDirs: string[]): SkillSummary[] {
+  const skills = skillsDirs.flatMap((dir) => parseAllSkills(dir))
+  const seen = new Set<string>()
+  return skills
+    .filter((skill) => {
+      if (seen.has(skill.name)) return false
+      seen.add(skill.name)
+      return true
+    })
+    .map((skill) => ({
+      name: skill.name,
+      description: skill.frontmatter.description ?? skill.frontmatter.summary,
+      skillPath: skill.skillPath,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** Find a skill by its metadata name or its directory-relative path. */
+export function findSkill(name: string, skillsDirs: string[]): ParsedSkill | undefined {
+  const normalized = name.trim().toLowerCase()
+  for (const skillsDir of skillsDirs) {
+    const match = parseAllSkills(skillsDir).find((skill) =>
+      skill.name.toLowerCase() === normalized || relative(skillsDir, skill.dir).toLowerCase() === normalized,
+    )
+    if (match) return match
+  }
+  return undefined
 }
 
 /** Glob-ish matcher supporting `*` (any chars) for url_patterns. */

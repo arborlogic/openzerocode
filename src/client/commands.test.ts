@@ -1,5 +1,8 @@
 import { describe, it, mock } from "bun:test"
 import assert from "node:assert"
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
@@ -60,6 +63,8 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("xai-login"))
     assert.ok(names.includes("mode"))
     assert.ok(names.includes("memory"))
+    assert.ok(names.includes("skills"))
+    assert.ok(names.includes("skill"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("queue"))
@@ -391,6 +396,46 @@ describe("executeCommand", () => {
     const args = call.arguments ?? call
     assert.equal(args[0], "info")
     assert.equal(args[1], "Prompt memory")
+  })
+
+  it("lists discovered skills", async () => {
+    const ctx = stubCtx({
+      skillDirs: () => [],
+    })
+    const result = await executeCommand("/skills", ctx)
+    assert.ok(result)
+    const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+    assert.equal(args[0], "info")
+    assert.equal(args[1], "Skills")
+    assert.equal(args[2], "No skills found")
+  })
+
+  it("lists skills and displays an individual skill", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ozc-command-skills-"))
+    const skillDir = join(root, "compose", "demo")
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, "SKILL.md"), "---\nname: compose:demo\ndescription: Demonstrate a workflow\n---\n# Demo\n\nFollow these steps.\n")
+    const ctx = stubCtx({ skillDirs: () => [root] })
+
+    assert.ok(await executeCommand("/skills", ctx))
+    let args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+    assert.equal(args[1], "Skills (1)")
+    assert.match(args[2], /compose:demo — Demonstrate a workflow/)
+
+    assert.ok(await executeCommand("/skill compose:demo", ctx))
+    args = (ctx.showToast as any).mock.calls[1].arguments ?? (ctx.showToast as any).mock.calls[1]
+    assert.equal(args[1], "Skill: compose:demo")
+    assert.match(args[2], /# Demo/)
+  })
+
+  it("shows usage when /skill has no name", async () => {
+    const ctx = stubCtx()
+    const result = await executeCommand("/skill", ctx)
+    assert.ok(result)
+    const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+    assert.equal(args[0], "error")
+    assert.equal(args[1], "Usage")
+    assert.match(args[2], /\/skill <name>/)
   })
 
   it("returns false for unknown command", async () => {

@@ -6,6 +6,7 @@ import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace
 import { getModelConfig } from "../provider/models"
 import type { PeerEntry } from "../peer/registry"
 import type { AutopilotMode } from "./autopilot"
+import { findSkill, listSkills, resolveSkillDirs } from "./skill-loader"
 
 export type SlashCommandDef = {
   name: string
@@ -52,6 +53,7 @@ export type CommandContext = {
   peerName?: string
   listPeers?: () => PeerEntry[]
   callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
+  skillDirs?: () => string[]
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
@@ -65,6 +67,8 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "learn", description: "Extract non-obvious learnings from this session" },
   { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off", argumentOptions: ["low", "medium", "high", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
+  { name: "skills", description: "List available skills" },
+  { name: "skill", description: "Show a skill's instructions: /skill <name>" },
   { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
@@ -81,14 +85,44 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "call", description: "Send a prompt to a named peer: /call <name> <prompt>" },
 ]
 
-function notifyCommand(ctx: CommandContext, kind: CommandToastKind, title: string, text?: string) {
-  ctx.showToast(kind, title, text)
+function notifyCommand(ctx: CommandContext, kind: CommandToastKind, title: string, text?: string, duration?: number) {
+  ctx.showToast(kind, title, text, duration)
 }
 
 export async function executeCommand(input: string, ctx: CommandContext): Promise<boolean> {
   const parts = input.slice(1).trim().split(/\s+/)
   const cmd = parts[0]?.toLowerCase()
   const arg = parts.slice(1).join(" ")
+
+  if (cmd === "skills") {
+    const skills = listSkills(ctx.skillDirs?.() ?? resolveSkillDirs())
+    if (skills.length === 0) {
+      notifyCommand(ctx, "info", "Skills", "No skills found")
+      return true
+    }
+    const lines = skills.map((skill) => {
+      const description = skill.description?.replace(/\s+/g, " ").trim()
+      return description ? `${skill.name} — ${description}` : skill.name
+    })
+    notifyCommand(ctx, "info", `Skills (${skills.length})`, lines.join("\n"), 12000)
+    return true
+  }
+
+  if (cmd === "skill") {
+    if (!arg) {
+      notifyCommand(ctx, "error", "Usage", "/skill <name> (use /skills to list names)")
+      return true
+    }
+    const skill = findSkill(arg, ctx.skillDirs?.() ?? resolveSkillDirs())
+    if (!skill) {
+      notifyCommand(ctx, "error", "Skill not found", `${arg} (use /skills to list names)`)
+      return true
+    }
+    const description = skill.frontmatter.description ?? skill.frontmatter.summary
+    const details = [description, "", skill.body.trim()].filter((part) => part !== undefined).join("\n")
+    notifyCommand(ctx, "info", `Skill: ${skill.name}`, details, 20000)
+    return true
+  }
 
   if (cmd === "provider") {
     if (!arg) {

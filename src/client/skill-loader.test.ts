@@ -3,7 +3,7 @@ import assert from "node:assert"
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { matchSkillByUrl, resolveSkillDirs } from "./skill-loader"
+import { findSkill, listSkills, matchSkillByUrl, resolveSkillDirs } from "./skill-loader"
 
 function makeTempWorkspace() {
   return mkdtempSync(join(tmpdir(), "ozc-skill-loader-"))
@@ -77,5 +77,23 @@ describe("matchSkillByUrl", () => {
 
     assert.equal(skill?.name, "project-docs")
     assert.match(skill?.body ?? "", /PROJECT DOCS BODY/)
+  })
+})
+
+describe("skill discovery", () => {
+  it("lists nested skills and lets an earlier directory override by name", () => {
+    const root = makeTempWorkspace()
+    const global = makeTempWorkspace()
+    writeSkill(root, "project-docs", "  domains: [docs.example.com]", "PROJECT DOCS BODY")
+    const nested = join(root, "skills", "compose", "ask")
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(nested, "SKILL.md"), "---\nname: compose:ask\ndescription: Ask for decisions\n---\nASK BODY\n")
+    writeSkill(global, "project-docs", "  domains: [docs.example.com]", "GLOBAL DOCS BODY")
+
+    const dirs = [join(root, "skills"), join(global, "skills")]
+    const skills = listSkills(dirs)
+    assert.deepEqual(skills.map((skill) => skill.name), ["compose:ask", "project-docs"])
+    assert.equal(findSkill("compose:ask", dirs)?.body.trim(), "ASK BODY")
+    assert.match(findSkill("project-docs", dirs)?.body ?? "", /PROJECT DOCS BODY/)
   })
 })
