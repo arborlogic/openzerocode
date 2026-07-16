@@ -126,4 +126,4 @@ Learn mode does not expose general edit/write/bash tools.
 
 ## Extending OpenZeroCode
 
-To add tools, hooks, or skills, use the `evolve` skill — it covers writing `.openzerocode/tools/*.ts`, `.openzerocode/hooks/*.ts`, and `.openzerocode/skills/*/SKILL.md`, all hot-reloaded on the next turn.
+To add project-local tools, hooks, or skills, follow the project's extension conventions and add the relevant files under `.openzerocode/tools/`, `.openzerocode/hooks/`, or `.openzerocode/skills/<name>/SKILL.md`. These extensions are hot-reloaded on the next turn.

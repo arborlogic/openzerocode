@@ -31,7 +31,7 @@ OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI co
 | **Sidebar** | Token usage, cost tracking, git diff summary | TUI sidebar (toggle with `<leader>b`) |
 | **Dynamic workflows** | JS scripts that orchestrate many subagents deterministically (fan-out, pipelines, nesting) | `workflow` tool |
 | **Custom skills** | Create your own skills in `~/.openzerocode/skills/<name>/SKILL.md` — auto-discovered | Place SKILL.md in `~/.openzerocode/skills/` |
-| **11 builtin skills** | openzerocode, evolve, docx-official, pdf-official, pptx-official, xlsx-official, design-blueprint, frontend-design, skill-creator, loop, modern-python-toolchain | Auto-discovered from `skills/` and `~/.openzerocode/skills/` |
+| **7 builtin skills** | openzerocode, docx-official, pdf-official, xlsx-official, frontend-design, skill-creator, modern-python-toolchain | Auto-discovered from `skills/` and `~/.openzerocode/skills/` |
 | **MCP** | Local & remote Model Context Protocol servers | `mcp` config + `openzerocode mcp` |
 
 ## Configuration Basics
@@ -121,11 +121,11 @@ When asked to change a behavior:
 3. Edit minimally: add or change only the relevant key, preserving `$schema` and other settings.
 4. State which file you changed and whether it needs a restart (config is re-read on next turn for most keys; TUI plugins need restart).
 
-Don't invent config keys. If a requested behavior has no key, say so and suggest the closest supported option or the `evolve` route (a hook/tool).
+Don't invent config keys. If a requested behavior has no key, say so and suggest the closest supported option or a project-local tool, hook, or skill implementation.
 
 ## Answering Feature Questions
 
 - Confirm the feature exists in the map above before describing it.
 - Give the trigger (command / key / config), then a one-line how.
-- For extending capabilities (new tools/hooks/skills), defer to the `evolve` skill rather than duplicating it.
+- For extending capabilities (new tools/hooks/skills), inspect the project's existing extension conventions before implementing changes.
 - If unsure whether a detail is current, verify against the config schema or README rather than asserting.

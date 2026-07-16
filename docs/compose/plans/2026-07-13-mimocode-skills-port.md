@@ -1,5 +1,7 @@
 # MiMoCode Skills Port Implementation Plan
 
+> **Historical record — superseded:** This migration plan is retained for provenance only. Do not execute it: the current skill inventory and its validation/verification checks are the authoritative quality gates.
+>
 > **For agentic workers:** Use compose:execute to implement this plan task-by-task.
 
 **Goal:** Port 17 skills from MiMoCode to OpenZeroCode — 6 compose skills and 11 builtin skills with all companion files.
