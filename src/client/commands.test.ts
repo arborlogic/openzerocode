@@ -302,6 +302,8 @@ describe("executeCommand", () => {
       assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "proactive")
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
       assert.equal(args[1], "Proactive Autopilot enabled")
+      assert.ok(args[2].includes("aligned with the existing plan"))
+      assert.ok(args[2].includes("pause on uncertainty"))
     })
 
     it("shows status", async () => {

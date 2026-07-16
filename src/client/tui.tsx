@@ -1817,7 +1817,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         mode === "off"
           ? "AI will wait for your next message."
           : mode === "proactive"
-            ? "AI will propose, continue safe repo-local work, and retry rate limits."
+            ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
             : "AI will answer routine continuation questions when the next step is clear and safe.",
       )
     }
@@ -1834,7 +1834,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Proactive",
-        hint: "long-running continuation",
+        hint: "plan-aligned continuation",
         onSelect: () => selectMode("proactive"),
       },
       ...(current !== "off"
