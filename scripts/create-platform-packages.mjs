@@ -147,7 +147,7 @@ for (const platform of platforms) {
     version: pkg.version,
     os: platform.os,
     cpu: platform.cpu,
-    files: ["README.md", `bin/${platform.binary}`],
+    files: ["README.md", `bin/${platform.binary}`, "bin/bundled-skills"],
     preferUnplugged: true,
     description: `${pkg.description} (${platform.id} binary)`,
     ...sharedMetadata,

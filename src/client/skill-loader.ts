@@ -35,17 +35,25 @@ export interface SkillSummary {
   isBuiltin: boolean
 }
 
-/** The skills packaged with OpenZeroCode, as opposed to project or user-local skills. */
-const BUILTIN_SKILLS_DIR = resolve(import.meta.dirname, "..", "..", "skills")
+/**
+ * Skills bundled beside the executable. The source-tree path keeps `bun run`
+ * working; release builds replace the managed `bundled-skills/` tree on update.
+ */
+const BUILTIN_SKILLS_DIRS = [
+  resolve(import.meta.dirname, "..", "..", "skills"),
+  join(process.execPath, "..", "bundled-skills"),
+]
 
 function isBuiltinSkill(skill: ParsedSkill): boolean {
-  const pathFromBuiltinDir = relative(BUILTIN_SKILLS_DIR, skill.dir)
-  return pathFromBuiltinDir !== "" && !pathFromBuiltinDir.startsWith("..") && !isAbsolute(pathFromBuiltinDir)
+  return BUILTIN_SKILLS_DIRS.some((builtinDir) => {
+    const pathFromBuiltinDir = relative(builtinDir, skill.dir)
+    return pathFromBuiltinDir !== "" && !pathFromBuiltinDir.startsWith("..") && !isAbsolute(pathFromBuiltinDir)
+  })
 }
 
 /**
  * Resolve ALL directories that hold skills/<name>/SKILL.md.
- * Search order: GEASS_SKILLS_DIR env → <cwd>/skills → ~/.openzerocode/skills → ~/Dev/ai-util/geass-agent/skills
+ * Search order: GEASS_SKILLS_DIR env → <cwd>/skills → ~/.openzerocode/skills → ~/Dev/ai-util/geass-agent/skills → bundled skills
  * Returns only directories that actually exist.
  */
 export function resolveSkillDirs(cwd: string = process.cwd()): string[] {
@@ -54,12 +62,13 @@ export function resolveSkillDirs(cwd: string = process.cwd()): string[] {
     join(cwd, "skills"),
     join(homedir(), ".openzerocode", "skills"),
     join(homedir(), "Dev", "ai-util", "geass-agent", "skills"),
+    ...BUILTIN_SKILLS_DIRS,
   ].filter((c): c is string => Boolean(c))
 
   const dirs: string[] = []
   for (const c of candidates) {
     const abs = isAbsolute(c) ? c : join(cwd, c)
-    if (existsSync(abs) && statSync(abs).isDirectory()) dirs.push(abs)
+    if (existsSync(abs) && statSync(abs).isDirectory() && !dirs.includes(abs)) dirs.push(abs)
   }
   return dirs
 }

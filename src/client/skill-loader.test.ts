@@ -45,6 +45,7 @@ describe("resolveSkillDirs", () => {
 
     assert.equal(dirs[0], join(root, "skills"))
     assert.equal(dirs[1], join(home, ".openzerocode", "skills"))
+    assert.equal(dirs.at(-1), join(process.cwd(), "skills"))
   })
 })
 
