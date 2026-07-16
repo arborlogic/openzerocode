@@ -88,6 +88,19 @@ describe("skill discovery", () => {
     assert.ok(skills.every((skill) => skill.isBuiltin))
   })
 
+  it("discovers the bundled commit-helper skill", () => {
+    const skills = listSkills([join(process.cwd(), "skills")])
+    const commitHelper = skills.find((skill) => skill.name === "commit-helper")
+
+    assert.deepEqual(commitHelper, {
+      name: "commit-helper",
+      description:
+        "Smart git commit message generator following Conventional Commits. Use when the user says 'commit', 'commit this', 'write a commit message', 'smart commit', or asks to create a git commit.",
+      skillPath: join(process.cwd(), "skills", "commit-helper", "SKILL.md"),
+      isBuiltin: true,
+    })
+  })
+
   it("lists nested skills and lets an earlier directory override by name", () => {
     const root = makeTempWorkspace()
     const global = makeTempWorkspace()
