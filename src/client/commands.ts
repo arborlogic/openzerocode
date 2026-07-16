@@ -4,13 +4,15 @@ import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
 import { getModelConfig } from "../provider/models"
-import { formatAutoLoopDuration, parseAutoLoopDuration } from "./autoloop"
 import type { PeerEntry } from "../peer/registry"
+import type { AutopilotMode } from "./autopilot"
+import { findSkill, listSkills, resolveSkillDirs, type SkillSummary } from "./skill-loader"
 
 export type SlashCommandDef = {
   name: string
   description: string
   aliases?: string[]
+  argumentOptions?: string[]
 }
 
 export type CommandToastKind = "info" | "success" | "warning" | "error"
@@ -20,8 +22,8 @@ export type CommandContext = {
   setCurrentProvider: (id: string) => Promise<{ ok: boolean; message: string }>
   currentModel: string
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
-  mode: "build" | "plan" | "learn"
-  setMode: (mode: "build" | "plan" | "learn") => void
+  mode: "build" | "plan" | "compose"
+  setMode: (mode: "build" | "plan" | "compose") => void
   reasoningEffort: "low" | "medium" | "high" | "max" | undefined
   setReasoningEffort: (effort: "low" | "medium" | "high" | "max" | undefined) => void
   messages: () => Message[]
@@ -39,6 +41,8 @@ export type CommandContext = {
   openProviderList: () => void
   openModelList: () => void
   openHelp: () => void
+  openSkills: (skills: SkillSummary[]) => void
+  openSkill: (name: string, content: string) => void
   openUsageDashboard: () => void
   compactSession: () => Promise<void>
   viewCompactionSummary: () => void
@@ -46,48 +50,84 @@ export type CommandContext = {
   refreshSessions: () => void
   codexLogin: (method?: "browser" | "headless" | "code", value?: string) => Promise<{ ok: boolean; message: string }>
   xaiLogin: () => Promise<{ ok: boolean; message: string }>
-  getAutoLoopInterval: () => number | undefined
-  getAutoLoopConfirm: () => boolean
-  setAutoLoop: (windowMs: number | undefined, confirm?: boolean) => void
+  getAutopilotMode: () => AutopilotMode
+  setAutopilotMode: (mode: AutopilotMode) => void
+  runReview: (target: string) => void
   peerName?: string
   listPeers?: () => PeerEntry[]
   callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
+  skillDirs?: () => string[]
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "help", description: "Show help, shortcuts and palette guide" },
   { name: "clear", description: "Clear conversation history" },
   { name: "new", description: "Start a fresh session" },
-  { name: "provider", description: "Switch provider: /provider <id> or /provider list" },
-  { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus" },
+  { name: "provider", description: "Switch provider: /provider <id> or /provider list", argumentOptions: ["list"] },
+  { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus", argumentOptions: ["browser", "headless", "code"] },
   { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
-  { name: "mode", description: "Switch mode: /mode build|plan|learn (no arg toggles build/plan)" },
-  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off" },
+  { name: "mode", description: "Switch mode: /mode build|plan|compose (no arg toggles)", argumentOptions: ["build", "plan", "compose"] },
+  { name: "learn", description: "Extract non-obvious learnings from this session" },
+  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off", argumentOptions: ["low", "medium", "high", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
-  { name: "model", description: "Switch model: /model <name> or /model list" },
+  { name: "skills", description: "List available skills" },
+  { name: "skill", description: "Show a skill's instructions: /skill <name>" },
+  { name: "review", description: "Review changes using the review-helper skill: /review [target]" },
+  { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
-  { name: "autoloop", description: "Delegate the next time window to AI: /autoloop 5m|1h|off" },
+  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|off", argumentOptions: ["standard", "proactive", "off", "status"] },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
-  { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)" },
+  { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)", argumentOptions: ["view"] },
   { name: "export", description: "Export compact transcript: user asks, AI responses, and compact summary" },
   { name: "exit", description: "Exit the app", aliases: ["quit"] },
   { name: "peers", description: "List online named peer processes" },
   { name: "call", description: "Send a prompt to a named peer: /call <name> <prompt>" },
 ]
 
-function notifyCommand(ctx: CommandContext, kind: CommandToastKind, title: string, text?: string) {
-  ctx.showToast(kind, title, text)
+function notifyCommand(ctx: CommandContext, kind: CommandToastKind, title: string, text?: string, duration?: number) {
+  ctx.showToast(kind, title, text, duration)
 }
 
 export async function executeCommand(input: string, ctx: CommandContext): Promise<boolean> {
   const parts = input.slice(1).trim().split(/\s+/)
   const cmd = parts[0]?.toLowerCase()
   const arg = parts.slice(1).join(" ")
+
+  if (cmd === "skills") {
+    const skills = listSkills(ctx.skillDirs?.() ?? resolveSkillDirs())
+    if (skills.length === 0) {
+      ctx.openSkills([])
+      return true
+    }
+    ctx.openSkills(skills)
+    return true
+  }
+
+  if (cmd === "skill") {
+    if (!arg) {
+      notifyCommand(ctx, "error", "Usage", "/skill <name> (use /skills to list names)")
+      return true
+    }
+    const skill = findSkill(arg, ctx.skillDirs?.() ?? resolveSkillDirs())
+    if (!skill) {
+      notifyCommand(ctx, "error", "Skill not found", `${arg} (use /skills to list names)`)
+      return true
+    }
+    const description = skill.frontmatter.description ?? skill.frontmatter.summary
+    const details = [description, "", skill.body.trim()].filter((part) => part !== undefined).join("\n")
+    ctx.openSkill(skill.name, details)
+    return true
+  }
+
+  if (cmd === "review") {
+    ctx.runReview(arg || "Review the current working-tree changes.")
+    return true
+  }
 
   if (cmd === "provider") {
     if (!arg) {
@@ -134,14 +174,14 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "mode") {
     if (!arg) {
-      const nextMode = ctx.mode === "build" ? "plan" : "build"
+      const nextMode = ctx.mode === "build" ? "plan" : ctx.mode === "plan" ? "compose" : "build"
       ctx.setMode(nextMode)
       notifyCommand(ctx, "success", "Mode updated", `Mode set to ${nextMode}`)
-    } else if (arg === "build" || arg === "plan" || arg === "learn") {
+    } else if (arg === "build" || arg === "plan" || arg === "compose") {
       ctx.setMode(arg)
       notifyCommand(ctx, "success", "Mode updated", `Mode set to ${arg}`)
     } else {
-      notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan|learn")
+      notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan|compose")
     }
     return true
   }
@@ -179,31 +219,33 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     return true
   }
 
-  if (cmd === "autoloop") {
-    const rawArg = arg.trim()
-    const normalized = rawArg.toLowerCase()
+  if (cmd === "autopilot") {
+    const normalized = arg.trim().toLowerCase()
     if (!normalized || normalized === "status") {
-      const windowMs = ctx.getAutoLoopInterval()
-      const confirmMode = ctx.getAutoLoopConfirm()
-      notifyCommand(ctx, "info", "Autoloop", windowMs ? `ON — ${formatAutoLoopDuration(windowMs)}${confirmMode ? " (confirm)" : ""}` : "OFF")
+      notifyCommand(ctx, "info", "Autopilot", ctx.getAutopilotMode().toUpperCase())
       return true
     }
     if (normalized === "off" || normalized === "stop" || normalized === "disable") {
-      ctx.setAutoLoop(undefined)
-      notifyCommand(ctx, "success", "Autoloop disabled", "AI will wait for human input.")
+      ctx.setAutopilotMode("off")
+      notifyCommand(ctx, "success", "Autopilot stopped", "AI will wait for your next message.")
       return true
     }
-    const tokens = rawArg.split(/\s+/)
-    const durationToken = tokens.find((t) => parseAutoLoopDuration(t))
-    const confirm = tokens.some((t) => t.toLowerCase() === "confirm")
-    const duration = durationToken ? parseAutoLoopDuration(durationToken) : undefined
-    if (!duration) {
-      notifyCommand(ctx, "error", "Invalid autoloop duration", "Usage: /autoloop 5m|1h|30s [confirm] | off")
+    const mode = normalized === "on" || normalized === "start" || normalized === "enable"
+      ? "standard"
+      : normalized
+    if (mode !== "standard" && mode !== "proactive") {
+      notifyCommand(ctx, "error", "Invalid autopilot option", "Usage: /autopilot standard|proactive|off|status")
       return true
     }
-    ctx.setAutoLoop(duration.ms, confirm)
-    const hint = confirm ? "Supervisor will fill the composer for your review before sending." : "AI will take over and keep making safe progress until time is up or confidence is low."
-    notifyCommand(ctx, "success", `Autoloop enabled${confirm ? " (confirm mode)" : ""}`, hint)
+    ctx.setAutopilotMode(mode)
+    notifyCommand(
+      ctx,
+      "success",
+      mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+      mode === "proactive"
+        ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
+        : "AI will answer routine continuation questions when the next step is clear and safe.",
+    )
     return true
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "openzerocode",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "license": "MIT",
   "description": "AI coding assistant in the terminal",
@@ -33,6 +33,8 @@
     "test": "tsx --test",
     "test:unit": "find src -name '*.test.ts' -not -path '*core/core.test.ts' -not -path '*provider/provider.test.ts' -not -path '*client/commands.test.ts' -not -path '*client/markdown-with-diff.test.ts' -print0 | xargs -0 tsx --test",
     "test:bun": "bun test --preload @opentui/solid/preload src/client/commands.test.ts src/client/markdown-with-diff.test.ts",
+    "test:packaging": "node scripts/create-platform-packages.mjs && tsx --test scripts/bundled-skills.test.ts scripts/install.test.ts",
+    "verify:release": "npm run typecheck && npm run test:unit && npm run test:bun && npm run test:packaging",
     "build": "bash scripts/build.sh",
     "release": "bun run scripts/release.ts",
     "release:patch": "bun run scripts/release.ts patch",
@@ -43,6 +45,8 @@
   "files": [
     "bin/openzerocode",
     "bin/package.json",
+    "skills/",
+    "parsers-config.ts",
     "src/",
     "scripts/",
     "tsconfig.json",

@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
 import { findPeer, listLivePeers } from "../peer/registry"
-import { getPeerContext, MAX_HOP_DEPTH } from "../peer/context"
+import { getMaxHopDepth, getMaxSamePairRoundtrips, getPeerContext } from "../peer/context"
 
 const Parameters = Schema.Struct({
   name: Schema.String.pipe(
@@ -10,9 +10,32 @@ const Parameters = Schema.Struct({
   message: Schema.String.pipe(
     Schema.annotate({ description: "The message or request to send to the peer" }),
   ),
+  oneWay: Schema.optional(Schema.Boolean.pipe(
+    Schema.annotate({ description: "When true, send a no-reply notification that does not advance the hop count" }),
+  )),
+  intent: Schema.optional(Schema.Literals([
+    "notify",
+    "handoff_summary",
+    "ask_question",
+    "review_plan",
+    "critique",
+    "brainstorm",
+    "delegate_task",
+  ]).pipe(
+    Schema.annotate({ description: "The collaboration intent for this peer message" }),
+  )),
 })
 
-type Args = { name: string; message: string }
+type Args = {
+  name: string
+  message: string
+  oneWay?: boolean
+  intent?: "notify" | "handoff_summary" | "ask_question" | "review_plan" | "critique" | "brainstorm" | "delegate_task"
+}
+
+function isOneWay(args: Args): boolean {
+  return args.oneWay === true || args.intent === "notify" || args.intent === "handoff_summary"
+}
 
 export const CallPeerTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
@@ -24,12 +47,18 @@ export const CallPeerTool = Effect.gen(function* () {
       "Send a message or request to another named openzerocode peer process working on a different project. " +
       "Use this when you need the other AI agent to take action or when you want to share results. " +
       "Only works when this process was started with --name. " +
-      `Calls are limited to ${MAX_HOP_DEPTH} hops to prevent infinite loops.`,
+      "Peer calls use a configurable max-hop guard. " +
+      "Use oneWay=true or intent notify/handoff_summary for no-reply updates that do not advance the hop count.",
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {
         const args = yield* decode(raw) as Effect.Effect<Args>
-        const { selfName, currentHop } = getPeerContext()
+        const { selfName, currentHop, fromPeer, samePairRoundtrips } = getPeerContext()
+        const maxHops = getMaxHopDepth()
+        const maxSamePairRoundtrips = getMaxSamePairRoundtrips()
+        const oneWay = isOneWay(args)
+        const nextHop = oneWay ? currentHop : currentHop + 1
+        const nextSamePairRoundtrips = fromPeer === args.name ? samePairRoundtrips + 1 : 0
 
         if (!selfName) {
           return new Result({
@@ -38,10 +67,17 @@ export const CallPeerTool = Effect.gen(function* () {
           })
         }
 
-        if (currentHop + 1 > MAX_HOP_DEPTH) {
+        if (!oneWay && nextHop > maxHops) {
           return new Result({
             title: "call_peer failed",
-            output: `Hop limit reached (max ${MAX_HOP_DEPTH}). Cannot make further peer calls in this chain.`,
+            output: `Hop limit reached (max ${maxHops}). Cannot make further peer calls in this chain. Use oneWay=true for no-reply summaries, or restart with --max-peer-hops / OPENZEROCODE_MAX_PEER_HOPS if the user explicitly approved a deeper collaboration.`,
+          })
+        }
+
+        if (!oneWay && fromPeer === args.name && nextSamePairRoundtrips > maxSamePairRoundtrips) {
+          return new Result({
+            title: "call_peer failed",
+            output: `Same-pair roundtrip limit reached for ${selfName}<->${args.name} (max ${maxSamePairRoundtrips}). Stop the loop, ask the user for approval, or provide a clearly new question before continuing.`,
           })
         }
 
@@ -58,7 +94,7 @@ export const CallPeerTool = Effect.gen(function* () {
         // Permission check — goes through the TUI's existing approval mechanism
         yield* ctx.ask({
           permission: "call_peer",
-          patterns: [`→ ${args.name}: ${args.message.length > 120 ? args.message.slice(0, 120) + "…" : args.message}`],
+          patterns: [`→ ${args.name}${oneWay ? " (one-way)" : ""}: ${args.message.length > 120 ? args.message.slice(0, 120) + "…" : args.message}`],
         })
 
         try {
@@ -72,7 +108,9 @@ export const CallPeerTool = Effect.gen(function* () {
               body: JSON.stringify({
                 text: args.message,
                 from: selfName,
-                hop: currentHop + 1,
+                hop: nextHop,
+                samePairRoundtrips: nextSamePairRoundtrips,
+                oneWay,
               }),
             }),
           )
@@ -86,8 +124,10 @@ export const CallPeerTool = Effect.gen(function* () {
           }
 
           return new Result({
-            title: `Called ${args.name}`,
-            output: `Message queued in ${args.name}. The peer will process it in turn.`,
+            title: oneWay ? `Sent one-way message to ${args.name}` : `Called ${args.name}`,
+            output: oneWay
+              ? `One-way message queued in ${args.name}. No callback is expected.`
+              : `Message queued in ${args.name}. The peer will process it in turn.`,
           })
         } catch (err) {
           return new Result({

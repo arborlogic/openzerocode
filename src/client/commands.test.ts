@@ -1,8 +1,12 @@
 import { describe, it, mock } from "bun:test"
 import assert from "node:assert"
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
 import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
+import type { AutopilotMode } from "./autopilot"
 
 function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
   const notices: DisplayBlock[] = []
@@ -36,6 +40,8 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
+    openSkills: mock(() => {}),
+    openSkill: mock(() => {}),
     openUsageDashboard: mock(() => {}),
     compactSession: mock(() => Promise.resolve()),
     viewCompactionSummary: mock(() => {}),
@@ -43,9 +49,9 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     refreshSessions: mock(() => {}),
     codexLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     xaiLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
-    getAutoLoopInterval: mock(() => undefined),
-    getAutoLoopConfirm: mock(() => false),
-    setAutoLoop: mock(() => {}),
+    getAutopilotMode: mock((): AutopilotMode => "off"),
+    setAutopilotMode: mock(() => {}),
+    runReview: mock(() => {}),
     ...overrides,
   }
 }
@@ -60,17 +66,35 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("xai-login"))
     assert.ok(names.includes("mode"))
     assert.ok(names.includes("memory"))
+    assert.ok(names.includes("skills"))
+    assert.ok(names.includes("skill"))
+    assert.ok(names.includes("review"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("queue"))
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
-    assert.ok(names.includes("autoloop"))
+    assert.ok(names.includes("autopilot"))
+    assert.ok(!BUILTIN_COMMANDS.some((command) => command.name === "autoloop" || command.aliases?.includes("autoloop")))
     assert.ok(names.includes("commit"))
     assert.ok(names.includes("compact"))
     assert.ok(names.includes("export"))
     assert.ok(names.includes("exit"))
+  })
+
+  describe("/review", () => {
+    it("starts a review of the supplied target", async () => {
+      const ctx = stubCtx()
+      assert.ok(await executeCommand("/review src/client/commands.ts", ctx))
+      assert.equal((ctx.runReview as any).mock.calls[0][0], "src/client/commands.ts")
+    })
+
+    it("defaults to reviewing working-tree changes", async () => {
+      const ctx = stubCtx()
+      assert.ok(await executeCommand("/review", ctx))
+      assert.equal((ctx.runReview as any).mock.calls[0][0], "Review the current working-tree changes.")
+    })
   })
 
   it("does not include removed commands", () => {
@@ -136,11 +160,11 @@ describe("executeCommand", () => {
       assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
-    it("switches to learn mode", async () => {
+    it("switches to compose mode", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/mode learn", ctx)
+      const result = await executeCommand("/mode compose", ctx)
       assert.ok(result)
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "learn")
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "compose")
     })
 
     it("toggles mode when no argument given", async () => {
@@ -276,61 +300,59 @@ describe("executeCommand", () => {
     })
   })
 
-  describe("/autoloop", () => {
-    it("enables autoloop with duration", async () => {
+  describe("/autopilot", () => {
+    it("enables autopilot", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/autoloop 5m", ctx)
+      const result = await executeCommand("/autopilot on", ctx)
       assert.ok(result)
-      assert.equal((ctx.setAutoLoop as any).mock.calls[0][0], 5 * 60_000)
+      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "standard")
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
       assert.equal(args[0], "success")
-      assert.equal(args[1], "Autoloop enabled")
+      assert.equal(args[1], "Standard Autopilot enabled")
     })
 
-    it("disables autoloop", async () => {
+    it("disables autopilot", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/autoloop off", ctx)
+      const result = await executeCommand("/autopilot off", ctx)
       assert.ok(result)
-      assert.equal((ctx.setAutoLoop as any).mock.calls[0][0], undefined)
+      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "off")
     })
 
-    it("enables autoloop in confirm mode", async () => {
+    it("enables proactive mode", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/autoloop 5m confirm", ctx)
+      const result = await executeCommand("/autopilot proactive", ctx)
       assert.ok(result)
-      assert.equal((ctx.setAutoLoop as any).mock.calls[0][0], 5 * 60_000)
-      assert.equal((ctx.setAutoLoop as any).mock.calls[0][1], true)
+      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "proactive")
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-      assert.equal(args[0], "success")
-      assert.ok((args[1] as string).includes("confirm"))
+      assert.equal(args[1], "Proactive Autopilot enabled")
+      assert.ok(args[2].includes("aligned with the existing plan"))
+      assert.ok(args[2].includes("pause on uncertainty"))
     })
 
     it("shows status", async () => {
-      const ctx = stubCtx({ getAutoLoopInterval: mock(() => 60 * 60_000) })
-      const result = await executeCommand("/autoloop", ctx)
+      const ctx = stubCtx({ getAutopilotMode: mock((): AutopilotMode => "proactive") })
+      const result = await executeCommand("/autopilot", ctx)
       assert.ok(result)
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
       assert.equal(args[0], "info")
-      assert.equal(args[1], "Autoloop")
-      assert.equal(args[2], "ON — 1h")
+      assert.equal(args[1], "Autopilot")
+      assert.equal(args[2], "PROACTIVE")
     })
 
-    it("shows confirm flag in status", async () => {
-      const ctx = stubCtx({ getAutoLoopInterval: mock(() => 60 * 60_000), getAutoLoopConfirm: mock(() => true) })
-      const result = await executeCommand("/autoloop", ctx)
-      assert.ok(result)
-      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-      assert.ok((args[2] as string).includes("confirm"))
-    })
-
-    it("rejects invalid duration", async () => {
+    it("rejects invalid options", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/autoloop soon", ctx)
+      const result = await executeCommand("/autopilot 5m", ctx)
       assert.ok(result)
-      assert.equal((ctx.setAutoLoop as any).mock.calls.length, 0)
+      assert.equal((ctx.setAutopilotMode as any).mock.calls.length, 0)
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
       assert.equal(args[0], "error")
-      assert.equal(args[1], "Invalid autoloop duration")
+      assert.equal(args[1], "Invalid autopilot option")
+    })
+
+    it("does not accept the removed /autoloop command", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/autoloop on", ctx)
+      assert.equal(result, false)
     })
   })
 
@@ -392,6 +414,44 @@ describe("executeCommand", () => {
     const args = call.arguments ?? call
     assert.equal(args[0], "info")
     assert.equal(args[1], "Prompt memory")
+  })
+
+  it("lists discovered skills", async () => {
+    const ctx = stubCtx({
+      skillDirs: () => [],
+    })
+    const result = await executeCommand("/skills", ctx)
+    assert.ok(result)
+    const args = (ctx.openSkills as any).mock.calls[0].arguments ?? (ctx.openSkills as any).mock.calls[0]
+    assert.deepEqual(args[0], [])
+  })
+
+  it("lists skills and displays an individual skill", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ozc-command-skills-"))
+    const skillDir = join(root, "compose", "demo")
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, "SKILL.md"), "---\nname: compose:demo\ndescription: Demonstrate a workflow\n---\n# Demo\n\nFollow these steps.\n")
+    const ctx = stubCtx({ skillDirs: () => [root] })
+
+    assert.ok(await executeCommand("/skills", ctx))
+    let args = (ctx.openSkills as any).mock.calls[0].arguments ?? (ctx.openSkills as any).mock.calls[0]
+    assert.equal(args[0][0].name, "compose:demo")
+    assert.equal(args[0][0].description, "Demonstrate a workflow")
+
+    assert.ok(await executeCommand("/skill compose:demo", ctx))
+    args = (ctx.openSkill as any).mock.calls[0].arguments ?? (ctx.openSkill as any).mock.calls[0]
+    assert.equal(args[0], "compose:demo")
+    assert.match(args[1], /# Demo/)
+  })
+
+  it("shows usage when /skill has no name", async () => {
+    const ctx = stubCtx()
+    const result = await executeCommand("/skill", ctx)
+    assert.ok(result)
+    const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+    assert.equal(args[0], "error")
+    assert.equal(args[1], "Usage")
+    assert.match(args[2], /\/skill <name>/)
   })
 
   it("returns false for unknown command", async () => {

@@ -113,6 +113,7 @@ export function Sidebar(props: {
   sessionTitle?: string
   sessionId?: string
   cwd?: string
+  version?: string
   /** Increment to force a git snapshot refresh from outside the component. */
   gitRefreshKey?: number
   /** Increment to trigger GEASS status re-read. */
@@ -126,6 +127,19 @@ export function Sidebar(props: {
   const [commitsCollapsed, setCommitsCollapsed] = createSignal(false)
   const [expandedFolders, setExpandedFolders] = createSignal<Set<string>>(new Set())
 
+  let scrollboxRef: any = null
+
+  // Force scrollbox to recalculate its scroll range after content changes.
+  // The opentui render loop drops requestRender() calls made mid-frame.
+  // We directly call the private recalculateBarProps to update scrollSize/viewportSize.
+  const scheduleScrollRecalc = () => {
+    setTimeout(() => {
+      if (scrollboxRef) {
+        ;(scrollboxRef as any).recalculateBarProps?.()
+      }
+    }, 50)
+  }
+
   const toggleFolder = (name: string) => {
     setExpandedFolders(prev => {
       const next = new Set(prev)
@@ -133,10 +147,18 @@ export function Sidebar(props: {
       else next.add(name)
       return next
     })
+    scheduleScrollRecalc()
   }
 
   const fileItems = createMemo(() => buildFileItems(gitFiles()))
   let gitRefreshSeq = 0
+
+  // When git files change (new snapshot loaded), the content height changes.
+  // Schedule a scroll recalc so the scrollbox picks up the new content size.
+  createEffect(() => {
+    gitFiles()
+    scheduleScrollRecalc()
+  })
 
   // Poll session lock status every 6s while sidebar is visible. This still keeps
   // the "in use" badge reasonably fresh but cuts idle wakeups in half.
@@ -227,19 +249,23 @@ export function Sidebar(props: {
   }
 
   return (
-    <scrollbox
+    <box
       width={props.width}
-      height="100%"
       border={["left"]}
       borderColor={props.theme.border}
       backgroundColor={props.theme.surface}
-      paddingLeft={1}
-      paddingRight={1}
-      paddingTop={1}
-      scrollY={true}
       flexDirection="column"
     >
-      <box flexDirection="column" gap={1}>
+      {/* Scrollable upper content */}
+      <scrollbox
+        ref={(node) => { scrollboxRef = node }}
+        flexGrow={1}
+        paddingLeft={1}
+        paddingRight={1}
+        paddingTop={1}
+        scrollY={true}
+      >
+        <box flexDirection="column" gap={1}>
         <box flexDirection="column">
           <Show when={props.sessionTitle}>
             <box flexDirection="row" gap={1}>
@@ -326,15 +352,6 @@ export function Sidebar(props: {
             <text style={{ fg: props.theme.accent }}>Branch</text>
             <text style={{ fg: props.theme.muted }} wrapMode="none">
               {truncateStart(branch() ?? "", Math.max(1, props.width - 4))}
-            </text>
-          </box>
-        </Show>
-
-        <Show when={props.cwd}>
-          <box flexDirection="column">
-            <text style={{ fg: props.theme.accent }}>Directory</text>
-            <text style={{ fg: props.theme.muted }} wrapMode="none">
-              {truncateStart(props.cwd ?? "", Math.max(1, props.width - 4))}
             </text>
           </box>
         </Show>
@@ -473,7 +490,26 @@ export function Sidebar(props: {
           </box>
         </Show>
       </box>
-      <box height={1} />
-    </scrollbox>
+      </scrollbox>
+
+      {/* Fixed bottom: Directory + Version */}
+      <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
+        <Show when={props.cwd}>
+          <box flexDirection="column">
+            <text style={{ fg: props.theme.accent }}>Directory</text>
+            <text style={{ fg: props.theme.muted }} wrapMode="none">
+              {truncateStart(props.cwd ?? "", Math.max(1, props.width - 4))}
+            </text>
+          </box>
+        </Show>
+        <Show when={props.version}>
+          <box flexDirection="row" gap={1}>
+            <text style={{ fg: props.theme.accent }}>●</text>
+            <text style={{ fg: "#ffffff" }}>Zero</text>
+            <text style={{ fg: props.theme.muted }}>{props.version}</text>
+          </box>
+        </Show>
+      </box>
+    </box>
   )
 }

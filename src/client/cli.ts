@@ -9,7 +9,7 @@ import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memor
 import { getActiveConfiguredProviderKeyName } from "../provider/config"
 import { buildSystemPrompt } from "./system-prompt"
 import { testConnection, isConnected, setEnabled, readPage } from "../browser/geass-client"
-import { resolveSkillsDir, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
+import { resolveSkillDirs, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
 import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
 
 export async function handleCli(args: string[], version: string): Promise<void> {
@@ -61,6 +61,8 @@ function printHelp(version: string) {
   console.log("    --host HOST            Host to bind to (default: 127.0.0.1)")
   console.log()
   console.log("  --name NAME              Register this TUI as a named peer (enables /peers and /call)")
+  console.log("  --max-peer-hops N        Override peer hop guard (default: 3, env: OPENZEROCODE_MAX_PEER_HOPS)")
+  console.log("  --max-same-pair-roundtrips N  Override same-pair peer loop guard (default: 4)")
   console.log()
   console.log("Examples:")
   console.log("  openzerocode                          Launch TUI")
@@ -87,13 +89,13 @@ async function handleHeadlessRun(args: string[]): Promise<void> {
 
   let activeSkill: LoadedSkill | undefined
   if (isConnected()) {
-    const skillsDir = resolveSkillsDir(process.cwd())
-    if (skillsDir) {
+    const skillDirs = resolveSkillDirs(process.cwd())
+    if (skillDirs.length > 0) {
       try {
         const page = await readPage()
         if (page?.url) {
-          activeSkill = matchSkillByUrl(page.url, skillsDir)
-          if (activeSkill) process.stderr.write(`[skill: ${activeSkill.name}] matched by ${activeSkill.matchedBy}\n`)
+          activeSkill = matchSkillByUrl(page.url, skillDirs)
+          if (activeSkill) process.stderr.write(`[skill: ${activeSkill.name}] matched by ${activeSkill.matchedBy} from ${activeSkill.dir}\n`)
         }
       } catch {
         // page read failed — proceed without a skill

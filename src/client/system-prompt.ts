@@ -1,7 +1,9 @@
-import { existsSync } from "fs"
-import { resolve } from "path"
+import { existsSync, readdirSync, readFileSync } from "fs"
+import { resolve, join } from "path"
+import { homedir } from "os"
 import type { RunMode } from "./session-runner"
 import { isConnected } from "../browser/geass-client"
+import { parse as parseYaml } from "yaml"
 
 const TODO_INSTRUCTIONS = [
   "# Task List (todowrite tool)",
@@ -59,8 +61,9 @@ const BUILD_MODE_REMINDER = [
 
 const PLAN_MODE_REMINDER = [
   "You are currently in Plan mode.",
-  "Do not write code, do not call tools, and do not make changes.",
-  "Explain the approach, risks, and step-by-step plan only.",
+  "You may inspect the project with read-only tools such as reading files, searching files, listing matching files, fetching referenced documentation, and analyzing images.",
+  "Do not write code, edit files, apply patches, run shell commands, commit changes, or perform browser/app actions.",
+  "Use inspection results to explain the current state, approach, risks, and step-by-step plan.",
 ].join("\n")
 
 const VISION_SECTION = [
@@ -75,20 +78,49 @@ const VISION_SECTION = [
   "Configure the local VLM via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
 ].join("\n")
 
-const LEARN_MODE_REMINDER = [
-  "You are currently in Learn mode.",
-  "Your job is to help the user refine durable development experience, not to implement code changes.",
-  "You may read/search files to understand current project state, existing DEVELOPMENT.md guidance, AGENTS.md, CONTEXT.md, and nearby project context.",
-  "On Learn-mode entry, OpenZeroCode creates empty ~/.openzerocode/AGENTS.md and ~/.openzerocode/CONTEXT.md files if missing; empty files are placeholders and are not loaded into the prompt until content is added.",
-  "Learn mode supports two explicit workflows: (1) distill project/discussion experience into global ~/.openzerocode memory, and (2) extract relevant global/project experience into this project's DEVELOPMENT.md as development reference.",
-  "Do not edit source files or run shell commands in Learn mode.",
-  "Discuss candidate memory updates first. Prefer concise, durable guidance over transient facts.",
-  "Before applying memory, present the exact target file and text to be written, then wait for explicit user confirmation.",
-  "Only after explicit confirmation may you call learn_memory_apply for global ~/.openzerocode memory or learn_project_memory_apply for project DEVELOPMENT.md guidance.",
-  "Use ~/.openzerocode/AGENTS.md for user-wide instructions such as language preference, response style, and general safety rules.",
-  "Use ~/.openzerocode/CONTEXT.md for user background, common tools, project-family lessons, and long-term development preferences.",
-  "Use <workspace>/DEVELOPMENT.md for project-specific architecture, workflow, verification, and maintenance guidance extracted for this repository.",
-  "Do not rely on conditional auto-injection; if a lesson should guide this project, explicitly extract it into DEVELOPMENT.md after confirmation.",
+const COMPOSE_MODE_REMINDER = [
+  "You are currently in Compose mode.",
+  "Compose mode provides a structured workflow for specs-driven development.",
+  "You have access to the following compose skills. Invoke the appropriate skill based on the current stage of development:",
+  "",
+  "## Available Compose Skills",
+  "",
+  "- **compose:brainstorm** — Explore user intent, requirements, and design before implementation. Use BEFORE any creative work.",
+  "- **compose:plan** — Write detailed implementation plans from specs. Use when you have requirements for a multi-step task.",
+  "- **compose:tdd** — Test-driven development discipline. Use when implementing any feature or bugfix.",
+  "- **compose:execute** — Execute a written implementation plan step-by-step.",
+  "- **compose:verify** — Evidence-based verification before claiming work is complete.",
+  "- **compose:review** — Code review via subagent dispatch.",
+  "- **compose:merge** — Complete development work (merge/PR/discard).",
+  "- **compose:debug** — Debugging guidance for bugs, test failures, or unexpected behavior.",
+  "- **compose:learn** — Extract non-obvious learnings from sessions into structured knowledge artifacts.",
+  "- **compose:ask** — Route decisions through the question tool. Use whenever you need user input.",
+  "- **compose:parallel** — Dispatch parallel agents for independent tasks.",
+  "- **compose:feedback** — Handle code review feedback with technical rigor.",
+  "- **compose:report** — Write final reports after implementation is verified.",
+  "- **compose:subagent** — Execute plans with fresh subagent per task and two-stage review.",
+  "- **compose:worktree** — Set up isolated workspaces via git worktrees.",
+  "",
+  "## Workflow",
+  "",
+  "The typical compose lifecycle is:",
+  "1. **Brainstorm** — Understand the idea, explore approaches, present design",
+  "2. **Plan** — Write detailed implementation plan with TDD steps",
+  "3. **Implement** — Execute plan using TDD (compose:tdd + compose:execute)",
+  "4. **Verify** — Run verification commands, confirm output",
+  "5. **Review** — Code review",
+  "6. **Merge** — Complete development",
+  "",
+  "## How to Use Skills",
+  "",
+  "When the user describes a task, determine which skill applies and follow its guidance.",
+  "Skills are loaded from the project's skills/compose/ directory.",
+  "Each skill has its own workflow — follow it step by step.",
+  "",
+  "## Learnings",
+  "",
+  "Before brainstorming, load project learnings from docs/compose/learnings/*.md as context.",
+  "After verify/debug failures, trigger compose:learn to extract the discovery.",
 ].join("\n")
 
 function buildEnvironmentSection(cwd: string): string {
@@ -120,19 +152,124 @@ function buildGeassSection(): string | null {
   ].join("\n")
 }
 
+interface ComposeSkill {
+  name: string
+  description?: string
+  source: string
+}
+
+function loadComposeSkills(cwd: string): ComposeSkill[] {
+  const dirs = [
+    resolve(cwd, "skills", "compose"),
+    join(homedir(), ".openzerocode", "skills", "compose"),
+  ]
+
+  const seen = new Set<string>()
+  const skills: ComposeSkill[] = []
+
+  for (const skillsDir of dirs) {
+    if (!existsSync(skillsDir)) continue
+    let entries: string[]
+    try {
+      entries = readdirSync(skillsDir)
+    } catch {
+      continue
+    }
+
+    for (const entry of entries) {
+      if (seen.has(entry)) continue
+      const skillPath = join(skillsDir, entry, "SKILL.md")
+      if (!existsSync(skillPath)) continue
+      try {
+        const raw = readFileSync(skillPath, "utf8")
+        const { frontmatter } = splitFrontmatter(raw)
+        const frontmatterName = typeof frontmatter.name === "string" ? frontmatter.name : undefined
+        const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined
+        const name = frontmatterName ?? `compose:${entry}`
+        seen.add(entry)
+        skills.push({ name, description, source: skillPath })
+      } catch {
+        continue
+      }
+    }
+  }
+  return skills
+}
+
+function splitFrontmatter(raw: string): { frontmatter: Record<string, unknown>; body: string } {
+  if (!raw.startsWith("---")) return { frontmatter: {}, body: raw }
+  const end = raw.indexOf("\n---", 3)
+  if (end < 0) return { frontmatter: {}, body: raw }
+  const yamlText = raw.slice(3, end).replace(/^\n/, "")
+  const body = raw.slice(end + 4).replace(/^\n/, "")
+  let frontmatter: Record<string, unknown> = {}
+  try {
+    frontmatter = (parseYaml(yamlText) as Record<string, unknown>) ?? {}
+  } catch {
+    frontmatter = {}
+  }
+  return { frontmatter, body }
+}
+
+function buildComposeSkillsSection(cwd: string): string {
+  const skills = loadComposeSkills(cwd)
+  if (skills.length === 0) return ""
+
+  const parts = [
+    "# Compose Skills (available from project + ~/.openzerocode/skills)",
+    "",
+    "The following compose skills are available. Do not inline all skill bodies into context. When a skill is relevant, read its SKILL.md file first, then follow it.",
+    "",
+  ]
+  for (const skill of skills) {
+    const line = skill.description
+      ? `- **${skill.name}** — ${skill.description} (${skill.source})`
+      : `- **${skill.name}** (${skill.source})`
+    parts.push(line)
+  }
+  return parts.join("\n")
+}
+
+function buildLearningsSection(cwd: string): string {
+  const learningsDir = resolve(cwd, "docs", "compose", "learnings")
+  if (!existsSync(learningsDir)) return ""
+
+  let entries: string[]
+  try {
+    entries = readdirSync(learningsDir)
+  } catch {
+    return ""
+  }
+
+  const mdFiles = entries.filter((e) => e.endsWith(".md"))
+  if (mdFiles.length === 0) return ""
+
+  const parts = ["# Project Learnings (auto-loaded)", ""]
+  for (const file of mdFiles) {
+    try {
+      const content = readFileSync(join(learningsDir, file), "utf8")
+      parts.push(content.trim())
+      parts.push("")
+    } catch {
+      continue
+    }
+  }
+  return parts.join("\n")
+}
+
 export function buildSystemPrompt(
   mode: RunMode,
   agentsInstruction?: string,
   contextInstruction?: string,
   cwd: string = process.cwd(),
 ) {
-  const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : mode === "learn" ? LEARN_MODE_REMINDER : BUILD_MODE_REMINDER
+  const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : mode === "compose" ? COMPOSE_MODE_REMINDER : BUILD_MODE_REMINDER
   const parts = [BASE_SYSTEM_PROMPT, modeReminder]
 
   parts.push(buildEnvironmentSection(cwd))
 
-  // Plan mode disables tools entirely, and Learn mode exposes only read/search
-  // plus confirmed Learn memory tools. General tool-specific guidance belongs in Build mode.
+  // Plan mode exposes only narrow read-only inspection tools, and Compose mode
+  // loads compose skills. General tool-specific guidance belongs in Build mode.
   if (mode === "build") {
     parts.push(TODO_INSTRUCTIONS)
 
@@ -142,6 +279,18 @@ export function buildSystemPrompt(
     }
 
     parts.push(VISION_SECTION)
+  }
+
+  if (mode === "compose") {
+    const composeSkillsSection = buildComposeSkillsSection(cwd)
+    if (composeSkillsSection) {
+      parts.push(composeSkillsSection)
+    }
+
+    const learningsSection = buildLearningsSection(cwd)
+    if (learningsSection) {
+      parts.push(learningsSection)
+    }
   }
 
   if (agentsInstruction) {

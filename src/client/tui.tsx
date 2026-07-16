@@ -14,16 +14,18 @@ import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpSer
 import { createStreamState } from "./stream-state"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
+import { cycleCommandArgument } from "./autocomplete-logic"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
+import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSummary } from "./skill-loader"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getModelConfig } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
-import { formatProviderError, isRateLimitError, delay } from "./errors"
+import { formatProviderError, isRateLimitError } from "./errors"
 import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
@@ -48,15 +50,27 @@ import { SplashScreen } from "./splash"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { testConnection, isConnected, setEnabled, setRuntimeSessionId } from "../browser/geass-client"
+import { getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel, normalizeLocalVlmEndpoint, setProcessLocalVlmConfig } from "../browser/local-vlm-client"
 import { loadUIPrefs, saveUIPrefs } from "./ui-prefs"
 import { UsageDashboard, VIEW_MODES, type ViewMode } from "./usage-dashboard"
 import { appendUsageEntry } from "./usage-stats"
 import { createInputQueue, type QueueItem } from "./input-queue"
-import { buildAutoLoopSupervisorPrompt, parseAutoLoopSupervisorDecision, type SupervisorDecision, formatAutoLoopDuration, formatAutoLoopEstimatedEnd } from "./autoloop"
+import {
+  AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
+  AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
+  autopilotRateLimitDelayMs,
+  canScheduleAutopilotContinuation,
+  buildAutopilotSupervisorPrompt,
+  formatAutopilotNoticeTime,
+  formatAutopilotRetryDelay,
+  parseAutopilotDecision,
+  type AutopilotDecision,
+  type AutopilotMode,
+} from "./autopilot"
 import { writeCompactTranscriptExport } from "./session-export"
 import { registerPeer, unregisterPeer, listLivePeers, findPeer, canonicalWorkdir } from "../peer/registry"
 import { startPeerServer } from "../peer/server"
-import { setPeerContext } from "../peer/context"
+import { configurePeerBudget, setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
@@ -78,10 +92,22 @@ await handleCli(args, VERSION)
 // Module-level state shared between peer server (started before render) and
 // the SolidJS component (which wires up the enqueue callback after mount).
 let activePeerName: string | undefined
-let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number) => void) | undefined
-const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number }> = []
+let _peerEnqueueFn: ((text: string, fromPeer: string, hop: number, options?: { samePairRoundtrips?: number; oneWay?: boolean }) => void) | undefined
+const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number; samePairRoundtrips?: number; oneWay?: boolean }> = []
 
 {
+  const numericFlag = (name: string): number | undefined => {
+    const eq = args.find((a) => a.startsWith(`${name}=`))
+    const idx = args.indexOf(name)
+    const raw = eq ? eq.slice(name.length + 1) : idx >= 0 ? args[idx + 1] : undefined
+    const value = Number.parseInt(raw ?? "", 10)
+    return Number.isFinite(value) && value > 0 ? value : undefined
+  }
+  configurePeerBudget({
+    maxHops: numericFlag("--max-peer-hops"),
+    maxSamePairRoundtrips: numericFlag("--max-same-pair-roundtrips"),
+  })
+
   const nameIdx = args.indexOf("--name")
   const nameArg = nameIdx >= 0 && args[nameIdx + 1] ? args[nameIdx + 1] : undefined
   if (nameArg) {
@@ -89,9 +115,9 @@ const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number }> 
     // The port is only known after the server starts, so registration happens after.
     const { generateToken } = await import("../peer/registry")
     const token = generateToken()
-    const server = await startPeerServer(token, (text, from, hop) => {
-      if (_peerEnqueueFn) _peerEnqueueFn(text, from, hop)
-      else pendingPeerInputs.push({ text, fromPeer: from, hop })
+    const server = await startPeerServer(token, (text, from, hop, options) => {
+      if (_peerEnqueueFn) _peerEnqueueFn(text, from, hop, options)
+      else pendingPeerInputs.push({ text, fromPeer: from, hop, ...options })
     })
     const result = registerPeer(nameArg, server.port, process.cwd(), token)
     if (!result.ok) {
@@ -107,12 +133,31 @@ const pendingPeerInputs: Array<{ text: string; fromPeer: string; hop: number }> 
   }
 }
 
+const initialUIPrefs = loadUIPrefs()
+setProcessLocalVlmConfig({
+  endpoint: initialUIPrefs.localVlmEndpoint,
+  model: initialUIPrefs.localVlmModel,
+  force: initialUIPrefs.forceLocalVlm,
+})
+
 let currentProvider = autoDetectProvider() ?? "opencode-zen"
-let currentModel = normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
+let currentModel = currentProvider === "opencode-zen"
+  ? normalizeBigPickleModel(process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
+  : (process.env.OPENZERO_MODEL ?? defaultModelForProvider(currentProvider))
 let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider, currentModel)
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
+
+const REVIEW_REQUEST_PREFIX = "\x02review\x02"
+
+function encodeReviewRequest(target: string): string {
+  return `${REVIEW_REQUEST_PREFIX}${target}`
+}
+
+function decodeReviewRequest(input: string): string | undefined {
+  return input.startsWith(REVIEW_REQUEST_PREFIX) ? input.slice(REVIEW_REQUEST_PREFIX.length) : undefined
+}
 
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
@@ -134,6 +179,16 @@ function runSync<E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Pr
 
 function systemPrompt(mode: RunMode) {
   return buildSystemPrompt(mode, agentsInstruction, contextInstruction, process.cwd())
+}
+
+function peerRequestSystemPrompt(peerOrigin: string, oneWay: boolean | undefined): string {
+  if (oneWay) {
+    return `\n\n[Peer Notice]\nThis one-way message was sent by peer process "${peerOrigin}" for notification or handoff-summary purposes. Do not call_peer back unless the user explicitly asks you to start a new collaboration thread.`
+  }
+
+  return `\n\n[Peer Request]\nThis task was sent by peer process "${peerOrigin}". ` +
+    `After completing the task, use the call_peer tool to send a concise summary of what you did and any relevant results back to "${peerOrigin}". ` +
+    `If the task cannot be completed or requires clarification, call_peer back with that information instead.`
 }
 
 function refreshAgentsInstruction() {
@@ -159,7 +214,7 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
-      if (loaded.mode === "plan" || loaded.mode === "learn") initialMode = loaded.mode
+      if (loaded.mode === "plan" || loaded.mode === "compose") initialMode = loaded.mode
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
@@ -191,18 +246,9 @@ function App() {
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
   const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
-  const bootstrapLearnMemory = () => {
-    const result = ensureGlobalMemoryFiles()
-    if (result.created.length > 0) {
-      const created = result.created.map((path) => displayPath(path)).join(", ")
-      showToast("info", "Learn memory initialized", `Created empty global memory files: ${created}`, 5000)
-      refreshAgentsInstruction()
-    }
-  }
   const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
     setModeRaw((prev) => {
       const resolved = typeof next === "function" ? (next as (prev: RunMode) => RunMode)(prev) : next
-      if (resolved === "learn" && prev !== "learn") bootstrapLearnMemory()
       return resolved
     })
   }
@@ -218,9 +264,20 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
-  const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "reference" | "codexKeyname">("actions")
+  const [referenceTitle, setReferenceTitle] = createSignal("Help")
+  const [referenceContent, setReferenceContent] = createSignal(HELP_CONTENT)
+  const [referenceSkills, setReferenceSkills] = createSignal<SkillSummary[] | undefined>()
   const [paletteInput, setPaletteInput] = createSignal("")
+  const filteredReferenceSkills = createMemo(() => {
+    const skills = referenceSkills()
+    const query = paletteInput().trim().toLocaleLowerCase()
+    if (!skills || !query) return skills
+    return skills.filter((skill) =>
+      `${skill.name} ${skill.description ?? ""}`.toLocaleLowerCase().includes(query),
+    )
+  })
+  const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
@@ -249,10 +306,9 @@ function App() {
       setToasts((prev) => prev.filter((toast) => toast.id !== id))
     }, duration)
   }
-  if (initialMode === "learn") bootstrapLearnMemory()
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   setTodoUpdateCallback(setTodos)
-  const _uiPrefs = loadUIPrefs()
+  const _uiPrefs = initialUIPrefs
   // The Browser tool group is the single control for GEASS: if it is enabled,
   // turn the GEASS client on and probe the connection at startup.
   const _browserEnabled = !_uiPrefs.disabledToolGroups.includes("browser")
@@ -264,6 +320,9 @@ function App() {
   const [showThinkingBlocks, setShowThinkingBlocks] = createSignal(_uiPrefs.showThinkingBlocks)
   const [autoApprove, setAutoApprove] = createSignal(initialAutoApprove)
   const [maxSteps, setMaxSteps] = createSignal(_uiPrefs.maxSteps)
+  const [forceLocalVlm, setForceLocalVlm] = createSignal(_uiPrefs.forceLocalVlm)
+  const [localVlmEndpoint, setLocalVlmEndpoint] = createSignal(_uiPrefs.localVlmEndpoint)
+  const [localVlmModel, setLocalVlmModel] = createSignal(_uiPrefs.localVlmModel)
   const [disabledToolGroups, setDisabledToolGroups] = createSignal<string[]>(_uiPrefs.disabledToolGroups)
   const [registeredTools, setRegisteredTools] = createSignal<readonly Def[]>([])
   const refreshRegisteredTools = () =>
@@ -283,9 +342,8 @@ function App() {
       .catch((e) => setStatus(`MCP ${server.id} failed: ${e instanceof Error ? e.message : String(e)}`))
   }
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
-  const [autoLoopWindowMs, setAutoLoopWindowMs] = createSignal<number | undefined>(undefined)
-  const [autoLoopEndsAt, setAutoLoopEndsAt] = createSignal<number | undefined>(undefined)
-  const [autoLoopConfirm, setAutoLoopConfirm] = createSignal(false)
+  const [autopilotMode, setAutopilotMode] = createSignal<AutopilotMode>("off")
+  const autopilotEnabled = () => autopilotMode() !== "off"
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -329,6 +387,13 @@ function App() {
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
   createEffect(() => { saveUIPrefs({ autoCompressionEnabled: autoCompressionEnabled() }) })
+  createEffect(() => {
+    const endpoint = localVlmEndpoint()
+    const model = localVlmModel()
+    const force = forceLocalVlm()
+    saveUIPrefs({ localVlmEndpoint: endpoint, localVlmModel: model, forceLocalVlm: force })
+    setProcessLocalVlmConfig({ endpoint, model, force })
+  })
   // Auto-detect vertical layout when terminal is portrait-oriented
   let autoLayoutOverride = false
   createEffect(() => {
@@ -353,9 +418,10 @@ function App() {
   let autocompleteApi: AutocompleteApi | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
-  let autoLoopAbort: AbortController | undefined
-  let autoLoopTimer: ReturnType<typeof setTimeout> | undefined
-  let autoLoopPendingTimer: ReturnType<typeof setTimeout> | undefined
+  let autopilotAbort: AbortController | undefined
+  let autopilotSupervisorRunning = false
+  let autopilotRateLimitTimer: ReturnType<typeof setTimeout> | undefined
+  let autopilotRateLimitRetryCount = 0
   let history: string[] = []
   let historyIndex = -1
   let historyDraft = ""
@@ -388,8 +454,8 @@ function App() {
         setQueuedInputItems(inputQueue.pendingItems())
       },
       onDrainEnd: () => {
-        scheduleAutoLoop()
-        setStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input")
+        if (autopilotEnabled()) scheduleAutopilotCheck()
+        else setStatus("waiting for input")
       },
     },
   )
@@ -406,49 +472,24 @@ function App() {
   // Wire peer enqueue now that inputQueue is ready, flushing any prompts
   // received during startup before the Solid component mounted.
   if (activePeerName) {
-    _peerEnqueueFn = (text, fromPeer, hop) => {
-      inputQueue.enqueue(encodePeerInput(fromPeer, hop, text))
+    _peerEnqueueFn = (text, fromPeer, hop, options) => {
+      inputQueue.enqueue(encodePeerInput(fromPeer, hop, text, options))
     }
     for (const pending of pendingPeerInputs.splice(0)) {
-      _peerEnqueueFn(pending.text, pending.fromPeer, pending.hop)
+      _peerEnqueueFn(pending.text, pending.fromPeer, pending.hop, {
+        samePairRoundtrips: pending.samePairRoundtrips,
+        oneWay: pending.oneWay,
+      })
     }
   }
 
-  function clearAutoLoopTimer(options?: { clearWindow?: boolean }) {
-    if (autoLoopTimer) clearTimeout(autoLoopTimer)
-    autoLoopTimer = undefined
-    // Always cancel a pending-wait timer so it never fires after a reschedule
-    if (autoLoopPendingTimer) clearTimeout(autoLoopPendingTimer)
-    autoLoopPendingTimer = undefined
-    if (options?.clearWindow) {
-      autoLoopAbort?.abort()
-      autoLoopAbort = undefined
-      setAutoLoopWindowMs(undefined)
-      setAutoLoopEndsAt(undefined)
-    }
-  }
-
-  function disableAutoLoop(reason?: string) {
-    clearAutoLoopTimer({ clearWindow: true })
-    setStatus("autoloop stopped — waiting for human")
-    const noticeText = reason ? `⟳ Autoloop stopped: ${reason}` : "⟳ Autoloop stopped — waiting for human input."
-    setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
-    queueMicrotask(scrollBottom)
-  }
-
-  function stopAutoLoopWindow() {
-    clearAutoLoopTimer({ clearWindow: true })
-    setStatus("waiting for input")
-    setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autoloop ended — delegated time window expired." }])
-    queueMicrotask(scrollBottom)
-  }
-
-  async function runAutoLoopSupervisor(remainingMs: number): Promise<SupervisorDecision> {
-    autoLoopAbort?.abort()
-    autoLoopAbort = new AbortController()
-    // Capture signal locally — autoLoopAbort may be reassigned by a concurrent call
-    const signal = autoLoopAbort.signal
-    const supervisorPrompt = buildAutoLoopSupervisorPrompt(formatAutoLoopDuration(remainingMs))
+  async function runAutopilotSupervisor(): Promise<AutopilotDecision> {
+    autopilotAbort?.abort()
+    autopilotAbort = new AbortController()
+    const signal = autopilotAbort.signal
+    const mode = autopilotMode()
+    if (mode === "off") return { confidence: "low", instruction: "", reason: "autopilot is off" }
+    const supervisorPrompt = buildAutopilotSupervisorPrompt(mode)
     const msgHistory = sanitizeMessages(messages())
     const result = await runSync(Effect.gen(function* () {
       const provider = yield* Provider
@@ -466,142 +507,120 @@ function App() {
         ],
       })
     }))
-    return parseAutoLoopSupervisorDecision(contentToText(result.message.content))
+    return parseAutopilotDecision(contentToText(result.message.content))
   }
 
-  async function queueAutoLoopContinuation() {
-    const endsAt = autoLoopEndsAt()
-    if (!endsAt || Date.now() >= endsAt) {
-      stopAutoLoopWindow()
-      return
+  function clearAutopilotRateLimitRetry(resetCount = true) {
+    if (autopilotRateLimitTimer) {
+      clearTimeout(autopilotRateLimitTimer)
+      autopilotRateLimitTimer = undefined
     }
-    const remainingMs = Math.max(1_000, endsAt - Date.now())
-    setStatus(`autoloop: deciding next step...`)
+    if (resetCount) autopilotRateLimitRetryCount = 0
+  }
 
-    let decision: SupervisorDecision | undefined
-    let supervisorError: unknown
-    let retried = false
-    while (true) {
-      if (!autoLoopEndsAt()) return
-      try {
-        decision = await runAutoLoopSupervisor(Math.max(1_000, autoLoopEndsAt()! - Date.now()))
-        supervisorError = undefined
-        break
-      } catch (err) {
-        supervisorError = err
-        // Detect abort via the error type, not by re-reading autoLoopAbort
-        // (which may have been reassigned by a concurrent call)
-        if (err instanceof Error && (err.name === "AbortError" || err.message === "aborted")) return
-        if (!isRateLimitError(err) || retried) break
-        retried = true
-        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: rate limited — waiting 3 minutes before retry` }])
-        setStatus("autoloop: rate limited, waiting 3m...")
-        // Make the delay interruptible: resolve early if the abort signal fires
-        const rateSignal = autoLoopAbort?.signal
-        await Promise.race([
-          delay(3 * 60_000),
-          new Promise<void>(resolve => rateSignal?.addEventListener("abort", () => resolve(), { once: true })),
-        ])
-        if (rateSignal?.aborted || !autoLoopEndsAt()) return
-      }
-    }
-    if (supervisorError !== undefined || decision === undefined) {
-      const msg = isRateLimitError(supervisorError) ? "rate limit persists — stopping autoloop" : "supervisor error"
-      disableAutoLoop(msg)
-      return
-    }
-
-    if (decision.confidence === "low") {
-      disableAutoLoop(decision.reason || "low confidence")
-      return
-    }
-
-    // Re-check after async gap — window may have expired or been cancelled
-    if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
-      stopAutoLoopWindow()
-      return
-    }
-
-    if (decision.confidence === "pending") {
-      // AI gave multiple options with a recommendation — wait 3min for human, then proceed
-      const PENDING_WAIT_MS = 3 * 60_000
-      // Count only user-role messages so that tool-result messages appended by an
-      // in-flight worker do not falsely register as "human responded"
-      const userCountAtDecision = messages().filter(m => m.role === "user").length
-      const noticeText = `⟳ Autoloop: AI gave a recommendation — proceeding in 3 minutes unless you respond.\n  → ${decision.instruction}`
-      setNotices((prev) => [...prev, { kind: "system", text: noticeText }])
-      setStatus(`autoloop: waiting 3m for your response...`)
+  function scheduleAutopilotRateLimitRetry() {
+    if (autopilotRateLimitTimer || autopilotMode() !== "proactive") return
+    const delayMs = autopilotRateLimitDelayMs(autopilotRateLimitRetryCount)
+    if (delayMs === undefined) {
+      const total = formatAutopilotRetryDelay(AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS)
+      const attempts = AUTOPILOT_RATE_LIMIT_BACKOFF_MS.length
+      configureAutopilot("off")
+      setStatus("autopilot paused after repeated rate limits")
+      setNotices((prev) => [
+        ...prev,
+        { kind: "system", text: `⟳ Autopilot paused after ${attempts} rate-limit retries over about ${total}.` },
+      ])
+      showToast("warning", "Autopilot paused", `Rate limited after ${attempts} retries over about ${total}.`, 8000)
       queueMicrotask(scrollBottom)
-      autoLoopPendingTimer = setTimeout(() => {
-        autoLoopPendingTimer = undefined
-        // If human sent a new message, let the normal flow take over
-        if (messages().filter(m => m.role === "user").length > userCountAtDecision) return
-        // If window expired or autoloop was cancelled, stop
-        if (!autoLoopEndsAt() || Date.now() >= autoLoopEndsAt()!) {
-          stopAutoLoopWindow()
+      return
+    }
+
+    autopilotRateLimitRetryCount++
+    const attempt = autopilotRateLimitRetryCount
+    const maxAttempts = AUTOPILOT_RATE_LIMIT_BACKOFF_MS.length
+    const delayText = formatAutopilotRetryDelay(delayMs)
+    const noticeTime = formatAutopilotNoticeTime()
+    setStatus(`autopilot rate-limited — retrying in ${delayText}`)
+    setNotices((prev) => [
+      ...prev,
+      { kind: "system", text: `⟳ Proactive Autopilot rate-limited; retry ${attempt}/${maxAttempts} in ${delayText}. (${noticeTime})` },
+    ])
+    showToast("warning", "Autopilot rate-limited", `Retry ${attempt}/${maxAttempts} in ${delayText}.`, 6000)
+    queueMicrotask(scrollBottom)
+    autopilotRateLimitTimer = setTimeout(() => {
+      autopilotRateLimitTimer = undefined
+      if (autopilotMode() !== "proactive") return
+      void queueAutopilotContinuation()
+    }, delayMs)
+  }
+
+  async function queueAutopilotContinuation() {
+    if (!autopilotEnabled() || autopilotSupervisorRunning) return
+    autopilotSupervisorRunning = true
+    setStatus(`autopilot: deciding next step...`)
+    try {
+      const decision = await runAutopilotSupervisor()
+      if (!autopilotEnabled()) return
+      clearAutopilotRateLimitRetry()
+      if (decision.confidence === "low") {
+        setStatus("autopilot ready — waiting for your input")
+        if (decision.reason) {
+          setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autopilot paused: ${decision.reason}` }])
+          queueMicrotask(scrollBottom)
+        }
+        return
+      }
+      showToast("info", "Autopilot continuing", decision.instruction, 4000)
+      inputQueue?.enqueue(decision.instruction)
+      setStatus("autopilot queued next prompt")
+      queueMicrotask(scrollBottom)
+    } catch (err) {
+      const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
+      if (!isAbort && autopilotEnabled()) {
+        if (autopilotMode() === "proactive" && isRateLimitError(err)) {
+          scheduleAutopilotRateLimitRetry()
           return
         }
-        setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autoloop: no response received — proceeding with recommendation.` }])
-        if (autoLoopConfirm()) {
-          setComposerText(decision.instruction)
-          setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
-          showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
-        } else {
-          inputQueue?.enqueue(decision.instruction)
-          setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}`)
-        }
+        setStatus("autopilot ready — supervisor unavailable")
+        setNotices((prev) => [...prev, { kind: "system", text: "⟳ Autopilot could not evaluate this response and is waiting for you." }])
         queueMicrotask(scrollBottom)
-      }, PENDING_WAIT_MS)
-      return
-    }
-
-    if (autoLoopConfirm()) {
-      setComposerText(decision.instruction)
-      setStatus(`autoloop: review and send — ${formatAutoLoopEstimatedEnd(endsAt)}`)
-      showToast("info", "Autoloop: review before sending", decision.instruction, 8000)
-      queueMicrotask(scrollBottom)
-    } else {
-      showToast("info", "Autoloop delegated", decision.instruction, 4000)
-      inputQueue?.enqueue(decision.instruction)
-      setStatus(`autoloop queued — ${formatAutoLoopEstimatedEnd(endsAt)}`)
-      queueMicrotask(scrollBottom)
+      }
+    } finally {
+      autopilotSupervisorRunning = false
     }
   }
 
-  function scheduleAutoLoop() {
-    clearAutoLoopTimer()
-    const endsAt = autoLoopEndsAt()
-    if (!endsAt) return
-    const remainingMs = endsAt - Date.now()
-    if (remainingMs <= 0) {
-      stopAutoLoopWindow()
-      return
-    }
-    setStatus(`autoloop active — ${formatAutoLoopEstimatedEnd(endsAt)}`)
-    if (running() || compacting() || pendingApproval() || (inputQueue?.depth() ?? 0) > 0 || (inputQueue?.isDraining() ?? false)) return
-    autoLoopTimer = setTimeout(() => {
-      autoLoopTimer = undefined
-      void queueAutoLoopContinuation()
-    }, 0)
+  function scheduleAutopilotCheck() {
+    if (!canScheduleAutopilotContinuation({
+      enabled: autopilotEnabled(),
+      supervisorRunning: autopilotSupervisorRunning,
+      rateLimitRetryPending: Boolean(autopilotRateLimitTimer),
+      running: running(),
+      compacting: compacting(),
+      awaitingApproval: Boolean(pendingApproval()),
+      queuedInputCount: inputQueue?.depth() ?? 0,
+      inputQueueDraining: inputQueue?.isDraining() ?? false,
+    })) return
+    queueMicrotask(() => { void queueAutopilotContinuation() })
   }
 
-  function configureAutoLoop(windowMs: number | undefined, confirm?: boolean) {
-    clearAutoLoopTimer({ clearWindow: true })
-    // autoLoopWindowMs is now cleared by clearAutoLoopTimer; set new value after
-    setAutoLoopWindowMs(windowMs)
-    setAutoLoopConfirm(confirm ?? false)
-    if (windowMs) {
-      const endsAt = Date.now() + windowMs
-      setAutoLoopEndsAt(endsAt)
-      // Route through scheduleAutoLoop so the idle guard (running/compacting/pendingApproval)
-      // is respected and the supervisor call is deferred until the queue is clear
-      scheduleAutoLoop()
+  function configureAutopilot(mode: AutopilotMode) {
+    autopilotAbort?.abort()
+    autopilotAbort = undefined
+    clearAutopilotRateLimitRetry()
+    setAutopilotMode(mode)
+    if (mode !== "off") {
+      if (messages().length > 0) scheduleAutopilotCheck()
+      else setStatus(`${mode} autopilot enabled — waiting for your first task`)
     } else {
-      setStatus("autoloop disabled")
+      setStatus("autopilot disabled")
     }
   }
 
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
+  const PALETTE_INPUT_WIDTH = createMemo(() => Math.min(128, Math.max(PALETTE_WIDTH(), dimensions().width - 8)))
+  const isPaletteTextEntryMode = () => paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL"
+  const activePaletteWidth = () => isPaletteTextEntryMode() ? PALETTE_INPUT_WIDTH() : PALETTE_WIDTH()
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
 
@@ -939,6 +958,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => { setAutoApprove(c => !c); setShowPalette(false) },
       },
       {
+        label: "Autopilot",
+        hint: autopilotMode() === "off" ? "OFF" : autopilotMode().toUpperCase(),
+        onSelect: () => {
+          setPaletteMode("autopilot")
+          setPaletteIndex(1)
+        },
+      },
+      {
         label: "DISPLAY",
         kind: "section",
         onSelect: () => {},
@@ -1049,6 +1076,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           void compactCurrentSession()
         },
       },
+      {
+        label: "Auto compression",
+        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        onSelect: () => {
+          const nextEnabled = !autoCompressionEnabled()
+          setAutoCompressionEnabled(nextEnabled)
+          saveUIPrefs({ autoCompressionEnabled: nextEnabled })
+          setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
+          setShowPalette(false)
+        },
+      },
       ...(compaction()?.summary
         ? [{
             label: "View compaction summary",
@@ -1093,7 +1131,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Experiment",
-        hint: `auto compression ${autoCompressionEnabled() ? "ON" : "OFF"}, GEASS …`,
+        hint: "VLM, GEASS, tools …",
         onSelect: () => {
           setPalettePendingDelete(null)
           setPaletteMode("experiments")
@@ -1107,9 +1145,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch mode",
-        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → learn" : "learn → build",
+        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → compose" : "compose → build",
         onSelect: () => {
-          setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
+          setMode(m => m === "build" ? "plan" : m === "plan" ? "compose" : "build")
           setShowPalette(false)
         },
       },
@@ -1659,14 +1697,30 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => {},
       },
       {
-        label: "Auto compression",
-        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        label: "Force local VLM for vision",
+        hint: forceLocalVlm() ? "ON · image tools use local VLM" : "OFF · native vision when available",
         onSelect: () => {
-          const nextEnabled = !autoCompressionEnabled()
-          setAutoCompressionEnabled(nextEnabled)
-          saveUIPrefs({ autoCompressionEnabled: nextEnabled })
-          setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
-          setShowPalette(false)
+          const nextEnabled = !forceLocalVlm()
+          setForceLocalVlm(nextEnabled)
+          setStatus(nextEnabled ? "local VLM forced for image analysis" : "local VLM force disabled")
+        },
+      },
+      {
+        label: "Local VLM endpoint",
+        hint: localVlmEndpoint() || getDefaultLocalVlmEndpoint(),
+        onSelect: () => {
+          setPaletteInput(localVlmEndpoint() || getDefaultLocalVlmEndpoint())
+          setPaletteMode("localVlmEndpoint")
+          setPaletteIndex(0)
+        },
+      },
+      {
+        label: "Local VLM model",
+        hint: localVlmModel() || getDefaultLocalVlmModel(),
+        onSelect: () => {
+          setPaletteInput(localVlmModel() || getDefaultLocalVlmModel())
+          setPaletteMode("localVlmModel")
+          setPaletteIndex(0)
         },
       },
       {
@@ -1782,6 +1836,43 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return items
   })
 
+  const autopilotPaletteItems = createMemo<PaletteItem[]>(() => {
+    const current = autopilotMode()
+    const selectMode = (mode: AutopilotMode) => {
+      configureAutopilot(mode)
+      setShowPalette(false)
+      showToast(
+        "success",
+        mode === "off" ? "Autopilot stopped" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+        mode === "off"
+          ? "AI will wait for your next message."
+          : mode === "proactive"
+            ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
+            : "AI will answer routine continuation questions when the next step is clear and safe.",
+      )
+    }
+    return [
+      {
+        label: `Current: ${current}`,
+        kind: "section",
+        onSelect: () => {},
+      },
+      {
+        label: "Standard",
+        hint: "routine continuation",
+        onSelect: () => selectMode("standard"),
+      },
+      {
+        label: "Proactive",
+        hint: "plan-aligned continuation",
+        onSelect: () => selectMode("proactive"),
+      },
+      ...(current !== "off"
+        ? [{ label: "Turn off", hint: "wait for input", onSelect: () => selectMode("off") } satisfies PaletteItem]
+        : []),
+    ]
+  })
+
   const paletteItems = createMemo<PaletteItem[]>(() =>
     paletteMode() === "maxSteps"
       ? [
@@ -1793,8 +1884,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
           { label: "Press Enter to save · Esc to cancel · leave blank for default", kind: "section" as const, onSelect: () => {} },
         ]
+      : paletteMode() === "localVlmEndpoint"
+      ? [
+          { label: `Current: ${localVlmEndpoint() || getDefaultLocalVlmEndpoint()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
+      : paletteMode() === "localVlmModel"
+      ? [
+          { label: `Current: ${localVlmModel() || getDefaultLocalVlmModel()}`, kind: "section" as const, onSelect: () => {} },
+          { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
       : paletteMode() === "sessions"
       ? sessionPaletteItems()
+      : paletteMode() === "autopilot"
+        ? autopilotPaletteItems()
       : paletteMode() === "directories"
         ? directoryPaletteItems()
       : paletteMode() === "providers"
@@ -1821,7 +1924,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
     // queuedMessages is intentionally unfiltered; the queue is small and simpler without search input
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1835,14 +1938,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "localVlmEndpoint" && mode !== "localVlmModel" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -1871,8 +1974,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const turns = createMemo(() => {
     selectionRevision()
     const result: DisplayTurn[] = []
-    const assistantFooter = () => `${providerLabel()}/${modelLabel()}  •  select text to copy`
-    const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy`
+    const footerText = () => `${truncateText(providerLabel(), 12)}/${truncateText(modelLabel(), 28)}  •  select text to copy (${formatAutopilotNoticeTime()})`
     let hiddenToolCount = 0
     const hiddenToolNames = new Set<string>()
 
@@ -2067,7 +2169,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setSelectionRevision((v) => v + 1)
     }
     setMessages(loaded?.messages ?? [])
-    setMode(loaded?.mode === "plan" || loaded?.mode === "learn" ? loaded.mode : "build")
+    setMode(loaded?.mode === "plan" || loaded?.mode === "compose" ? loaded.mode : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
@@ -2295,6 +2397,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
   }
 
+  const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
+    const cfg = getModelConfig(currentModel, currentModelInfo)
+    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit)
+    if (nearContextLimit && autoCompressionEnabled()) {
+      await compactCurrentSession({ automatic: true })
+    } else if (nearContextLimit && opts.warnWhenDisabled) {
+      setNotices((prev) => {
+        const text = "Context is getting full — you can run /compact now if you want to reduce session history."
+        const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
+        if (!alreadyPresent) showToast("warning", "Context getting full", "You can run /compact now to reduce session history.", 4500)
+        return alreadyPresent ? prev : [...prev, { kind: "system", text }]
+      })
+    }
+  }
+
   const runQueuedPrompt = async (rawInput: string, abortSignal: AbortSignal) => {
     if (compacting()) {
       setStatus(formatQueueStatus("waiting for compaction...", queuedInputs()))
@@ -2302,9 +2419,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (abortSignal.aborted) return
     }
 
-    const { text: input, peerOrigin, peerHop } = decodePeerInput(rawInput)
-    // Update peer context so call_peer tool knows our name and current hop depth
-    setPeerContext(activePeerName, peerHop ?? 0)
+    const reviewTarget = decodeReviewRequest(rawInput)
+    const { text: decodedInput, peerOrigin, peerHop, samePairRoundtrips, oneWay } = decodePeerInput(rawInput)
+    const input = reviewTarget ?? decodedInput
+    const reviewSkill = reviewTarget ? findSkill("review-helper", resolveSkillDirs()) : undefined
+    // Update peer context so call_peer tool knows our name, peer origin, and current hop state.
+    setPeerContext(activePeerName, peerHop ?? 0, peerOrigin, samePairRoundtrips ?? 0)
 
     history = [input, ...history.filter((item) => item !== input)].slice(0, 100)
     historyIndex = -1
@@ -2324,20 +2444,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     queueMicrotask(scrollBottom)
 
-    {
-      const cfg = getModelConfig(currentModel, currentModelInfo)
-      const nearContextLimit = shouldAutoCompactContext(messages(), input, cfg.contextLimit)
-      if (nearContextLimit && autoCompressionEnabled()) {
-        await compactCurrentSession({ automatic: true })
-      } else if (nearContextLimit) {
-        setNotices((prev) => {
-          const text = "Context is getting full — you can run /compact now if you want to reduce session history."
-          const alreadyPresent = prev.some((notice) => notice.kind === "system" && notice.text === text)
-          if (!alreadyPresent) showToast("warning", "Context getting full", "You can run /compact now to reduce session history.", 4500)
-          return alreadyPresent ? prev : [...prev, { kind: "system", text }]
-        })
-      }
-    }
+    await maybeAutoCompactContext(input, { warnWhenDisabled: true })
 
     if (abortSignal.aborted) return
 
@@ -2351,6 +2458,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
     const activeSessionId = sessionId()
     markSessionActive(activeSessionId)
+    let completedResponse = false
 
     let noticesCleared = false
     const clearNoticesOnce = () => {
@@ -2403,13 +2511,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       }, {
         runSync,
-        systemPrompt: peerOrigin
-          ? (mode: RunMode) =>
-              systemPrompt(mode) +
-              `\n\n[Peer Request]\nThis task was sent by peer process "${peerOrigin}". ` +
-              `After completing the task, use the call_peer tool to send a concise summary of what you did and any relevant results back to "${peerOrigin}". ` +
-              `If the task cannot be completed or requires clarification, call_peer back with that information instead.`
-          : systemPrompt,
+        systemPrompt: (runMode: RunMode) => {
+          const base = systemPrompt(runMode)
+          const withReviewSkill = reviewSkill ? `${base}\n\n${buildExplicitSkillSection(reviewSkill)}` : base
+          return peerOrigin ? withReviewSkill + peerRequestSystemPrompt(peerOrigin, oneWay) : withReviewSkill
+        },
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
@@ -2448,8 +2554,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
       setMessages(next)
       saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
-      setStatus(formatQueueStatus(autoLoopEndsAt() ? `autoloop active — ${formatAutoLoopEstimatedEnd(autoLoopEndsAt()!)}` : "waiting for input", queuedInputs()))
+      setStatus(formatQueueStatus(autopilotEnabled() ? "autopilot enabled" : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
+      completedResponse = true
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
       if (!isAbort) {
@@ -2463,6 +2570,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       unmarkSessionActive(activeSessionId)
       runAbort = undefined
       setRunning(false)
+    }
+    if (completedResponse && !abortSignal.aborted) {
+      await maybeAutoCompactContext("")
     }
   }
 
@@ -2568,7 +2678,29 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         openQueuedMessages: openQueuedMessagesPalette,
         openHelp: () => {
           setShowPalette(true)
-          setPaletteMode("help")
+          setReferenceTitle("Help")
+          setReferenceContent(HELP_CONTENT)
+          setReferenceSkills(undefined)
+          setPaletteInput("")
+          setPaletteMode("reference")
+          setPaletteIndex(0)
+        },
+        openSkills: (skills) => {
+          setShowPalette(true)
+          setReferenceTitle("Skills")
+          setReferenceContent("")
+          setReferenceSkills(skills)
+          setPaletteInput("")
+          setPaletteMode("reference")
+          setPaletteIndex(0)
+        },
+        openSkill: (name, content) => {
+          setShowPalette(true)
+          setReferenceTitle(`Skill: ${name}`)
+          setReferenceContent(content)
+          setReferenceSkills(undefined)
+          setPaletteInput("")
+          setPaletteMode("reference")
           setPaletteIndex(0)
         },
         openUsageDashboard: () => {
@@ -2580,9 +2712,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         refreshSessions,
         codexLogin: runCodexLogin,
         xaiLogin: runXaiLogin,
-        getAutoLoopInterval: autoLoopWindowMs,
-        getAutoLoopConfirm: autoLoopConfirm,
-        setAutoLoop: configureAutoLoop,
+        getAutopilotMode: autopilotMode,
+        setAutopilotMode: configureAutopilot,
+        runReview: (target) => {
+          const skill = findSkill("review-helper", resolveSkillDirs())
+          if (!skill) {
+            showToast("error", "Review skill not found", "Expected skills/review-helper/SKILL.md")
+            return
+          }
+          inputQueue?.enqueue(encodeReviewRequest(target))
+        },
         peerName: activePeerName,
         listPeers: activePeerName ? listLivePeers : undefined,
         callPeer: activePeerName
@@ -2598,7 +2737,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   "Content-Type": "application/json",
                   "x-peer-token": peer.token,
                 },
-                body: JSON.stringify({ text: prompt, from: activePeerName, hop: 1 }),
+                body: JSON.stringify({
+                  text: prompt,
+                  from: activePeerName,
+                  hop: 1,
+                  samePairRoundtrips: 0,
+                }),
               })
               if (!res.ok) {
                 const body = await res.json().catch(() => ({})) as { error?: string }
@@ -2637,7 +2781,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         queueMicrotask(scrollBottom)
         return
       }
-      if (slashCmd === "autoloop") {
+      if (slashCmd === "autopilot") {
         setComposerText("")
       }
       if (slashCmd === "commit") {
@@ -2859,6 +3003,45 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setPaletteInput("")
           setShowPalette(false)
           setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "localVlmEndpoint") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = paletteInput().trim()
+          const normalized = value ? normalizeLocalVlmEndpoint(value) : ""
+          setLocalVlmEndpoint(normalized)
+          setStatus(normalized ? `local VLM endpoint set to ${normalized}` : "local VLM endpoint reset to default")
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "localVlmModel") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const value = paletteInput().trim()
+          setLocalVlmModel(value)
+          setStatus(value ? `local VLM model set to ${value}` : "local VLM model reset to default")
+          setPaletteInput("")
+          setPaletteMode("experiments")
+          setPaletteIndex(0)
           event.preventDefault()
           return
         }
@@ -3087,7 +3270,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (event.name === "escape") {
-        if (paletteMode() === "sessions" || paletteMode() === "providers" || paletteMode() === "directories") {
+        if (paletteMode() === "sessions" || paletteMode() === "providers" || paletteMode() === "directories" || paletteMode() === "autopilot") {
           setPalettePendingDelete(null)
           setPaletteInput("")
           setPaletteMode("actions")
@@ -3110,8 +3293,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         } else if (paletteMode() === "userMessageActions") {
           setUserMsgActionTarget(null)
           setShowPalette(false)
-        } else if (paletteMode() === "help") {
+        } else if (paletteMode() === "reference") {
           setShowPalette(false)
+          setPaletteInput("")
           setPaletteMode("actions")
         } else {
           setShowPalette(false)
@@ -3158,6 +3342,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         return
       }
       if (running() && runAbort) {
+        if (autopilotEnabled()) configureAutopilot("off")
         inputQueue?.abort()
         setStatus(formatQueueStatus("interrupted", queuedInputs()))
         event.preventDefault()
@@ -3168,6 +3353,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       autocompleteApi.select()
       event.preventDefault()
       return
+    }
+    if (event.name === "tab") {
+      const next = cycleCommandArgument(draft(), BUILTIN_COMMANDS, event.shift ? -1 : 1)
+      if (next !== undefined) {
+        setComposerText(next)
+        event.preventDefault()
+        return
+      }
     }
     if (composer && !running() && event.name === "up") {
       if (autocompleteApi?.visible()) {
@@ -3431,10 +3624,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
               <text
-                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#d29922" }}
-                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "learn" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#bc8cff" }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "compose" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
               >
-                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Learn"}
+                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Compose"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
@@ -3442,9 +3635,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
               </Show>
-              <Show when={autoLoopWindowMs()}>
+              <Show when={autopilotEnabled()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-                <text style={{ fg: "#d29922" }}>{`AUTO ${formatAutoLoopDuration(autoLoopWindowMs()!)}`}</text>
+                <text style={{ fg: "#d29922" }}>{autopilotMode() === "proactive" ? "PILOT+" : "PILOT"}</text>
               </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>
@@ -3495,6 +3688,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           modelInfo={modelInfoLabel()}
           sessionTitle={sessionMeta()?.title}
           cwd={currentCwd()}
+          version={VERSION}
           sessionId={sessionId()}
           gitRefreshKey={gitRefreshRevision()}
           geassRevision={geassRevision()}
@@ -3524,6 +3718,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             modelInfo={modelInfoLabel()}
             sessionTitle={sessionMeta()?.title}
             cwd={currentCwd()}
+            version={VERSION}
             sessionId={sessionId()}
             gitRefreshKey={gitRefreshRevision()}
             geassRevision={geassRevision()}
@@ -3539,12 +3734,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "compact"])
-          if (name === "mode") {
-            // Toggle immediately — no text input needed
-            setComposerText("")
-            setMode(m => m === "build" ? "plan" : m === "plan" ? "learn" : "build")
-            setStatus(`Mode: ${mode()}`)
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "learn"])
+          if (name === "learn") {
+            // Send a learn prompt to the agent
+            setComposerText("Analyze this session and extract non-obvious learnings. For each learning, determine if it's project-specific (save to docs/compose/learnings/PROJECT.md) or global (save to ~/.openzerocode/LEARNINGS.md). Follow the compose:learn skill format with Observation, Evidence, and Implication sections.")
+            queueMicrotask(() => { void submit() })
           } else if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })
@@ -3559,12 +3753,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         width={dimensions().width - 8}
       />
 
-      <Show when={showPalette() && paletteMode() === "help"}>
+      <Show when={showPalette() && paletteMode() === "reference"}>
         <box
           position="absolute"
           top={2}
-          left={layoutMode() === "horizontal" ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2) : 2}
-          width={PALETTE_WIDTH()}
+          left={layoutMode() === "horizontal" ? Math.floor((dimensions().width - 2 - activePaletteWidth()) / 2) : 2}
+          width={activePaletteWidth()}
           height={dimensions().height - 4}
           zIndex={100}
           backgroundColor={THEME.surface}
@@ -3573,27 +3767,67 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           flexDirection="column"
         >
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
-            <text style={{ fg: THEME.accent, flexGrow: 1 }}>Help</text>
+            <text style={{ fg: THEME.accent, flexGrow: 1 }}>{referenceTitle()}</text>
             <text
               style={{ fg: THEME.muted }}
               onMouseDown={() => setShowPalette(false)}
             >Esc / tap to close</text>
           </box>
+          <Show when={referenceSkills()}>
+            <box paddingLeft={2} paddingRight={2} paddingBottom={1} flexDirection="row">
+              <text style={{ fg: THEME.muted }}>Search: </text>
+              <text style={{ fg: THEME.text, flexGrow: 1 }}>{paletteInput() || "Type to filter skills"}</text>
+              <text style={{ fg: THEME.accent }}>●</text>
+              <text style={{ fg: THEME.muted }}> built-in</text>
+            </box>
+          </Show>
           <scrollbox flexGrow={1} scrollY={true} paddingLeft={2} paddingRight={2} paddingBottom={1}>
-            <text style={{ fg: THEME.muted }}>{HELP_CONTENT}</text>
+            <Show
+              when={referenceSkills()}
+              fallback={<text style={{ fg: THEME.muted }}>{referenceContent()}</text>}
+            >
+              {() => (
+                <Show
+                  when={(filteredReferenceSkills() ?? []).length > 0}
+                  fallback={<text style={{ fg: THEME.muted }}>{paletteInput().trim() ? "No matching skills" : "No skills found"}</text>}
+                >
+                  <box flexDirection="column">
+                    <For each={filteredReferenceSkills() ?? []}>{(skill) => {
+                      const description = skill.description?.replace(/\s+/g, " ").trim()
+                      return (
+                        <box flexDirection="row" alignItems="center">
+                          <Show when={skill.isBuiltin}>
+                            <text style={{ fg: THEME.accent }}>● </text>
+                          </Show>
+                          <box
+                            border={["top", "right", "bottom", "left"]}
+                            borderColor={THEME.border}
+                            paddingLeft={1}
+                            paddingRight={1}
+                          >
+                            <text style={{ fg: THEME.text }}>{skill.name}</text>
+                          </box>
+                          <Show when={description}><text style={{ fg: THEME.muted }}> — {description}</text></Show>
+                        </box>
+                      )
+                    }}</For>
+                  </box>
+                </Show>
+              )}
+            </Show>
           </scrollbox>
         </box>
       </Show>
 
-      <Show when={showPalette() && paletteMode() !== "help"}>
+      <Show when={showPalette() && paletteMode() !== "reference"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
-            ? Math.floor((dimensions().width - 2 - PALETTE_WIDTH()) / 2)
+            ? Math.floor((dimensions().width - 2 - activePaletteWidth()) / 2)
             : 2
           }
-          width={PALETTE_WIDTH()}
+          width={activePaletteWidth()}
           zIndex={100}
           backgroundColor={THEME.surface}
           border={["top", "left", "right", "bottom"]}
@@ -3622,10 +3856,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                           ? `Key name · ${paletteCodexKeynameTarget()}`
                         : paletteMode() === "editProviderBaseURL"
                           ? `Base URL · ${paletteProviderKeyTarget()}`
+                        : paletteMode() === "localVlmEndpoint"
+                          ? "Local VLM Endpoint"
+                        : paletteMode() === "localVlmModel"
+                          ? "Local VLM Model"
                         : paletteMode() === "timeline"
                           ? "Timeline"
                         : paletteMode() === "queuedMessages"
                           ? "Queued Messages"
+                        : paletteMode() === "autopilot"
+                          ? "Autopilot"
                           : paletteMode() === "userMessageActions"
                             ? "Message Actions"
                       : "Command Palette"}
@@ -3636,10 +3876,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             >  Esc / ✕</text>
           </box>
           <box border={["top"]} borderColor={THEME.border} flexDirection="column">
-            <Show when={paletteMode() !== "queuedMessages"}>
+            <Show when={paletteMode() !== "queuedMessages" && paletteMode() !== "autopilot"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                   <text style={{ fg: THEME.muted }}>
-                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                   </text>
                   <box
                     backgroundColor={THEME.background}
@@ -3649,12 +3889,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                     paddingRight={1}
                     flexDirection="row"
                   >
-                    <text style={{ fg: THEME.text }}>{paletteInput()}</text>
+                    <text style={{ fg: THEME.text }} wrapMode="none">{paletteInput()}</text>
                     <text style={{ fg: THEME.accent }}>▌</text>
                   </box>
                 </box>
             </Show>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "localVlmEndpoint" && paletteMode() !== "localVlmModel" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3709,7 +3949,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
-                : paletteMode() === "maxSteps"
+                : paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel"
                   ? "Enter save  •  Esc cancel"
                   : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
                   ? "Enter confirm  •  Esc back"
@@ -3725,6 +3965,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                       ? "↑↓ navigate  •  Enter select  •  Ctrl+D delete  •  Esc back"
                     : paletteMode() === "queuedMessages"
                       ? "↑↓ navigate  •  Enter cancel  •  Esc back"
+                    : paletteMode() === "autopilot"
+                      ? "↑↓ navigate  •  Enter select  •  Esc back"
                     : paletteMode() === "codexKeyname"
                       ? "Enter key name  •  Enter save  •  Esc back"
                     : "Type to filter  •  ↑↓ navigate  •  Enter select  •  Esc close"}

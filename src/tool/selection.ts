@@ -1,5 +1,13 @@
 import type { Def } from "./types"
 
+const PLAN_MODE_READONLY_TOOL_IDS = new Set([
+  "read",
+  "grep",
+  "glob",
+  "web_fetch",
+  "analyze_image",
+])
+
 /**
  * Human-facing labels and descriptions for selectable tool groups. A group id
  * that appears on a tool's `Def.group` but is missing here still works — it
@@ -49,6 +57,14 @@ export function selectEnabledTools(
   if (disabledGroups.length === 0) return [...tools]
   const disabled = new Set(disabledGroups)
   return tools.filter((t) => !t.group || !disabled.has(t.group))
+}
+
+/**
+ * Plan mode may inspect project state, but must not mutate the workspace or
+ * drive external UI. Keep this allowlist intentionally narrow.
+ */
+export function selectPlanModeTools(tools: readonly Def[]): Def[] {
+  return tools.filter((tool) => PLAN_MODE_READONLY_TOOL_IDS.has(tool.id))
 }
 
 /**

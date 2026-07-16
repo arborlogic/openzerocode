@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.0 - 2026-07-16
+
+### Added
+
+- Added bundled, discoverable skills and the `/skills`, `/skill <name>`, and `/review [target]` commands, including built-in commit and review helpers.
+- Added Compose mode and a bundled spec-driven workflow covering brainstorming, planning, TDD, execution, verification, review, and related development tasks.
+- Added Autopilot modes: **standard** can continue safe, routine work and **proactive** can advance explicitly established plans with bounded, rate-limit-aware retries.
+- Added tab/Shift+Tab cycling for slash-command arguments, a skills reference dialog, built-in-skill filtering, and sidebar usability improvements.
+- Added a command-palette preference to force image analysis through a local VLM without changing the active chat model.
+- Added bounded multi-peer collaboration support and improved peer context handling.
+- Added support for text-only response output items from the Zero API.
+
+### Changed
+
+- Bundled skills are now shipped beside platform binaries and installed into an installer-managed `bundled-skills` directory; upgrades replace that directory while preserving user-managed sibling `skills`.
+- Dev/npm installations now include the files required to deploy bundled skills after installation.
+- Plan mode is read-only: it permits inspection tools only and blocks workspace, shell, and browser mutations.
+- Refined system prompts, context compression defaults, token/model metadata handling, and proactive continuation safeguards.
+- The TUI now uses a fixed vertical layout with its sidebar initially collapsed, replacing the terminal-shape-dependent layout preference.
+
+### Fixed
+
+- Added release checks that pack a native platform package and verify bundled skills are included in its npm tarball.
+- Added runtime-state coverage that prevents Autopilot continuation checks while work, compaction, approval, queue draining, or rate-limit retry is pending.
+- Fixed bundled-skill upgrades leaving removed skills behind.
+- Fixed sidebar scroll-range recalculation after content changes.
+- Fixed native-vision test coverage to use the currently supported Codex vision model metadata.
+
+### Breaking changes
+
+- Replaced Learn mode with Compose mode. Use `/mode compose`; the previous memory-learning workflow is no longer available through `/mode learn`.
+- Replaced `/autoloop` with `/autopilot [standard|proactive|off]`.
+- Removed hardcoded metadata for generic `gpt-5.4`, `gpt-5.5`, and their mini/nano variants. Provider-supplied metadata is now used for those models; explicit Codex model metadata remains available.
+
 ## 0.6.0 - 2026-07-10
 
 - Added `xai-oauth` provider with SuperGrok / X Premium+ device-code login (`/xai-login`), token refresh, and Responses API transport for Grok models.

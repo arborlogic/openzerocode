@@ -6,12 +6,14 @@
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
   /xai-login             Authorize xAI Grok (SuperGrok / X Premium+)
-  /mode                  Toggle build / plan mode
+  /mode                  Cycle build / plan / compose mode
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
+  /autopilot [standard|proactive|off]
+                         Continue routine prompts or propose the next task
   /commit                Generate a commit message from current changes
   /exit  [/quit]         Exit the app
   exit  quit             Also work without the slash
@@ -32,6 +34,7 @@
   INPUT
     Focus input          Return focus to the composer
     Auto-approve         Toggle automatic tool approval
+    Autopilot            Choose standard or proactive continuation
 
   DISPLAY
     Display settings     Toggle tools, thinking, layout
@@ -46,7 +49,7 @@
     Timeline             Browse messages → Revert / Copy / Fork
 
   MODEL
-    Switch mode          Toggle build ↔ plan
+    Switch mode          Cycle build → plan → compose
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
 

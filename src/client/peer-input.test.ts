@@ -10,6 +10,8 @@ describe("peer input encoding", () => {
       text: "please inspect this",
       peerOrigin: "worker-a",
       peerHop: 2,
+      samePairRoundtrips: 0,
+      oneWay: false,
     })
   })
 
@@ -20,6 +22,31 @@ describe("peer input encoding", () => {
       text: "hello",
       peerOrigin: "team:worker:a",
       peerHop: 3,
+      samePairRoundtrips: 0,
+      oneWay: false,
+    })
+  })
+
+  it("round-trips one-way and same-pair metadata", () => {
+    const encoded = encodePeerInput("planner", 4, "decision log", {
+      samePairRoundtrips: 2,
+      oneWay: true,
+    })
+
+    assert.deepEqual(decodePeerInput(encoded), {
+      text: "decision log",
+      peerOrigin: "planner",
+      peerHop: 4,
+      samePairRoundtrips: 2,
+      oneWay: true,
+    })
+  })
+
+  it("decodes legacy peer metadata", () => {
+    assert.deepEqual(decodePeerInput("\x01peer:worker-a:2\x01legacy"), {
+      text: "legacy",
+      peerOrigin: "worker-a",
+      peerHop: 2,
     })
   })
 

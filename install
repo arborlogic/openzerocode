@@ -99,6 +99,26 @@ install_file() {
   chmod 755 "$destination"
 }
 
+# Bundled skills live in a dedicated, installer-managed directory. Replacing
+# that tree removes skills deleted by a newer release without touching a user's
+# adjacent $INSTALL_DIR/skills directory.
+install_bundled_skills() {
+  local source=$1
+  local destination="$INSTALL_DIR/bundled-skills"
+
+  if [[ ! -d "$source" ]]; then
+    return
+  fi
+
+  # `--binary` may already point into the install directory.
+  if [[ -e "$destination" && "$source" -ef "$destination" ]]; then
+    return
+  fi
+
+  rm -rf "$destination"
+  cp -R "$source" "$destination"
+}
+
 if [[ -n "$binary_path" ]]; then
   if [[ ! -f "$binary_path" ]]; then
     echo -e "${RED}Error: Binary not found at ${binary_path}${NC}" >&2
@@ -206,6 +226,7 @@ install_from_binary() {
     dest="$INSTALL_DIR/$APP.exe"
   fi
   install_file "$binary_path" "$dest"
+  install_bundled_skills "$(dirname "$binary_path")/bundled-skills"
 }
 
 install_from_release() {
@@ -233,6 +254,7 @@ install_from_release() {
   fi
 
   install_file "$binary_path_in_package" "$INSTALL_DIR/$binary_name"
+  install_bundled_skills "$(dirname "$binary_path_in_package")/bundled-skills"
 }
 
 if [[ -n "$binary_path" ]]; then

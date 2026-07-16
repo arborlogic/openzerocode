@@ -89,7 +89,10 @@ jobs:
           STAGE_DIR="release/${APP_NAME:-openzerocode}-${TARGET}-${VERSION}"
           mkdir -p "$STAGE_DIR/bin"
           cp "npm/packages/$TARGET/bin/$BINARY_NAME" "$STAGE_DIR/bin/$BINARY_NAME"
+          cp -R "npm/packages/$TARGET/bin/bundled-skills" "$STAGE_DIR/bin/bundled-skills"
           chmod 755 "$STAGE_DIR/bin/$BINARY_NAME"
+
+          test -f "$STAGE_DIR/bin/bundled-skills/commit-helper/SKILL.md"
 
           mkdir -p release-artifacts
           if [[ "$TARGET" == win32-* ]]; then

@@ -116,6 +116,141 @@ describe("zero-api provider request serialization", () => {
     assert.equal(requestBody.model, "openaicodex/gpt-5.5")
     assert.equal(requestBody.stream, false)
   })
+
+  it("streams refusal deltas as assistant text instead of dropping them", async () => {
+    const originalFetch = globalThis.fetch
+    const encoder = new TextEncoder()
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            "event: response.refusal.delta",
+            'data: {"type":"response.refusal.delta","delta":"I cannot do that."}',
+            "",
+            "event: response.completed",
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+            "",
+          ].join("\n")))
+          controller.close()
+        },
+      })
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }) as unknown as typeof fetch
+
+    try {
+      const stream = await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.stream({
+            model: "openaicodex/gpt-5.5",
+            messages: [{ role: "user", content: "review code" }],
+            stream: true,
+          })
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+
+      const reader = stream.getReader()
+      const chunks: string[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value.delta.content) chunks.push(value.delta.content)
+      }
+
+      assert.equal(chunks.join(""), "I cannot do that.")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it("streams final response output text when no text delta was sent", async () => {
+    const originalFetch = globalThis.fetch
+    const encoder = new TextEncoder()
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            "event: response.completed",
+            'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Review result"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}',
+            "",
+          ].join("\n")))
+          controller.close()
+        },
+      })
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }) as unknown as typeof fetch
+
+    try {
+      const stream = await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.stream({
+            model: "openaicodex/gpt-5.5",
+            messages: [{ role: "user", content: "review code" }],
+            stream: true,
+          })
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+
+      const reader = stream.getReader()
+      const chunks: string[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value.delta.content) chunks.push(value.delta.content)
+      }
+
+      assert.equal(chunks.join(""), "Review result")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it("streams final output item message text when no text delta was sent", async () => {
+    const originalFetch = globalThis.fetch
+    const encoder = new TextEncoder()
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            "event: response.output_item.done",
+            'data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"Inline final text"}]}}',
+            "",
+            "event: response.completed",
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+            "",
+          ].join("\n")))
+          controller.close()
+        },
+      })
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }) as unknown as typeof fetch
+
+    try {
+      const stream = await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.stream({
+            model: "openaicodex/gpt-5.5",
+            messages: [{ role: "user", content: "review code" }],
+            stream: true,
+          })
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+
+      const reader = stream.getReader()
+      const chunks: string[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value.delta.content) chunks.push(value.delta.content)
+      }
+
+      assert.equal(chunks.join(""), "Inline final text")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })
 
 describeIfKey("zero-api provider", () => {

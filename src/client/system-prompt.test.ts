@@ -1,6 +1,35 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { buildSystemPrompt } from "./system-prompt"
+
+function makeTempWorkspace() {
+  return mkdtempSync(join(tmpdir(), "ozc-system-prompt-"))
+}
+
+function withHome<T>(home: string, fn: () => T): T {
+  const previous = process.env.HOME
+  process.env.HOME = home
+  try {
+    return fn()
+  } finally {
+    if (previous === undefined) delete process.env.HOME
+    else process.env.HOME = previous
+  }
+}
+
+function writeComposeSkill(root: string, name: string, body: string) {
+  const dir = join(root, "skills", "compose", name)
+  const skillPath = join(dir, "SKILL.md")
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    skillPath,
+    ["---", `name: compose:${name}`, `description: ${name} description`, "---", "", body, ""].join("\n"),
+  )
+  return skillPath
+}
 
 describe("buildSystemPrompt", () => {
   it("includes build-mode execution guidance", () => {
@@ -27,21 +56,19 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt("plan")
 
     assert.match(prompt, /You are currently in Plan mode\./)
-    assert.match(prompt, /Do not write code, do not call tools, and do not make changes\./)
+    assert.match(prompt, /You may inspect the project with read-only tools/)
+    assert.match(prompt, /Do not write code, edit files, apply patches, run shell commands, commit changes/)
   })
 
-  it("includes learn-mode memory workflow guidance", () => {
-    const prompt = buildSystemPrompt("learn")
+  it("includes compose-mode structured workflow guidance", () => {
+    const prompt = buildSystemPrompt("compose")
 
-    assert.match(prompt, /You are currently in Learn mode\./)
-    assert.match(prompt, /help the user refine durable development experience/)
-    assert.match(prompt, /wait for explicit user confirmation/)
-    assert.match(prompt, /learn_memory_apply/)
-    assert.match(prompt, /learn_project_memory_apply/)
-    assert.match(prompt, /DEVELOPMENT\.md/)
-    assert.match(prompt, /~\/\.openzerocode\/AGENTS\.md/)
-    assert.match(prompt, /~\/\.openzerocode\/CONTEXT\.md/)
-    assert.doesNotMatch(prompt, /<project>\/\.openzerocode\/CONTEXT\.md/)
+    assert.match(prompt, /You are currently in Compose mode\./)
+    assert.match(prompt, /specs-driven development/)
+    assert.match(prompt, /compose:brainstorm/)
+    assert.match(prompt, /compose:plan/)
+    assert.match(prompt, /compose:tdd/)
+    assert.match(prompt, /compose:verify/)
     assert.doesNotMatch(prompt, /# Task List \(todowrite tool\)/)
   })
 
@@ -84,5 +111,34 @@ describe("buildSystemPrompt", () => {
     assert.match(buildPrompt, /# Vision/)
     assert.match(buildPrompt, /attaches the image for direct provider vision analysis/)
     assert.doesNotMatch(planPrompt, /# Vision/)
+  })
+
+  it("loads compose skills from the project before user-global skills", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    const projectDir = writeComposeSkill(root, "review", "PROJECT REVIEW BODY")
+    writeComposeSkill(join(home, ".openzerocode"), "review", "GLOBAL REVIEW BODY")
+
+    const prompt = withHome(home, () => buildSystemPrompt("compose", undefined, undefined, root))
+
+    assert.match(prompt, /compose:review/)
+    assert.match(prompt, /review description/)
+    assert.match(prompt, new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    assert.doesNotMatch(prompt, /PROJECT REVIEW BODY/)
+    assert.doesNotMatch(prompt, /GLOBAL REVIEW BODY/)
+  })
+
+  it("falls back to user-global compose skills when a project entry is incomplete", () => {
+    const root = makeTempWorkspace()
+    const home = makeTempWorkspace()
+    mkdirSync(join(root, "skills", "compose", "report"), { recursive: true })
+    const globalDir = writeComposeSkill(join(home, ".openzerocode"), "report", "GLOBAL REPORT BODY")
+
+    const prompt = withHome(home, () => buildSystemPrompt("compose", undefined, undefined, root))
+
+    assert.match(prompt, /compose:report/)
+    assert.match(prompt, /report description/)
+    assert.match(prompt, new RegExp(globalDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+    assert.doesNotMatch(prompt, /GLOBAL REPORT BODY/)
   })
 })

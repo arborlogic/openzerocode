@@ -9,3 +9,4 @@ openzerocode-*.tgz
 .env
 workspace/
 openzerocode-exports/
+.mimocode/

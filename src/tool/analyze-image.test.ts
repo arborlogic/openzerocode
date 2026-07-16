@@ -1,4 +1,4 @@
-import { afterEach, describe, it } from "node:test"
+import { afterEach, beforeEach, describe, it } from "node:test"
 import assert from "node:assert"
 import { mkdtempSync, writeFileSync } from "fs"
 import { join } from "path"
@@ -14,6 +14,7 @@ const PNG_1X1 = Buffer.from(
 )
 
 const originalFetch = globalThis.fetch
+const originalForceLocalVlm = process.env.OPENZEROCODE_FORCE_LOCAL_VLM
 
 function testCtx(model?: string): Context {
   return new Context({
@@ -40,11 +41,17 @@ function stubFetch(handler: (url: string) => Response | Promise<Response>): void
   }) as typeof fetch
 }
 
-afterEach(() => {
-  globalThis.fetch = originalFetch
-})
-
 describe("analyze_image", () => {
+  beforeEach(() => {
+    delete process.env.OPENZEROCODE_FORCE_LOCAL_VLM
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    if (originalForceLocalVlm === undefined) delete process.env.OPENZEROCODE_FORCE_LOCAL_VLM
+    else process.env.OPENZEROCODE_FORCE_LOCAL_VLM = originalForceLocalVlm
+  })
+
   it("prefers native vision attachment when chat model supports vision", async () => {
     let fetchCalls = 0
     stubFetch(async () => {
@@ -54,7 +61,7 @@ describe("analyze_image", () => {
 
     const path = tempPng()
     const tool = await Effect.runPromise(AnalyzeImageTool)
-    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5")))
+    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5-codex")))
 
     assert.equal(result.metadata?.analysisPath, "native")
     assert.ok(result.output.includes("native model vision"))
@@ -98,11 +105,30 @@ describe("analyze_image", () => {
     const result = await Effect.runPromise(tool.execute({
       path,
       endpoint: "http://forced-vlm.example",
-    }, testCtx("gpt-5.5")))
+    }, testCtx("gpt-5.5-codex")))
 
     assert.equal(result.metadata?.analysisPath, "local_vlm")
     assert.ok(result.output.includes("forced local"))
     assert.ok(seenUrl.startsWith("http://forced-vlm.example/"))
+  })
+
+  it("forces local VLM from command-palette preference without changing chat model", async () => {
+    process.env.OPENZEROCODE_FORCE_LOCAL_VLM = "1"
+    let fetchCalls = 0
+    stubFetch(async () => {
+      fetchCalls += 1
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: "palette local" } }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } })
+    })
+
+    const path = tempPng()
+    const tool = await Effect.runPromise(AnalyzeImageTool)
+    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5-codex")))
+
+    assert.equal(result.metadata?.analysisPath, "local_vlm")
+    assert.ok(result.output.includes("palette local"))
+    assert.ok(fetchCalls >= 1)
   })
 
   it("returns file error for missing path without calling VLM", async () => {
@@ -113,7 +139,7 @@ describe("analyze_image", () => {
     })
 
     const tool = await Effect.runPromise(AnalyzeImageTool)
-    const result = await Effect.runPromise(tool.execute({ path: "/no/such/image.png" }, testCtx("gpt-5.5")))
+    const result = await Effect.runPromise(tool.execute({ path: "/no/such/image.png" }, testCtx("gpt-5.5-codex")))
     assert.equal(result.title, "File Error")
     assert.equal(result.images, undefined)
     assert.equal(fetchCalls, 0)

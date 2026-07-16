@@ -14,7 +14,7 @@
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
 import * as path from "path"
 import * as os from "os"
-import pkg from "../package.json" with { type: "json" }
+import { replaceBundledSkills } from "./bundled-skills"
 import { resolveBuildVersion } from "./version"
 
 const PLATFORM_MAP: Record<string, string> = { darwin: "darwin", linux: "linux", win32: "windows" }
@@ -88,9 +88,14 @@ if (chmodResult.exitCode !== 0) {
   process.exit(chmodResult.exitCode)
 }
 
+const bundledSkillsSource = path.join(dir, "skills")
+const bundledSkillsDestination = path.join(path.dirname(outfile), "bundled-skills")
+await replaceBundledSkills(bundledSkillsSource, bundledSkillsDestination)
+
 const stat = await outputFile.stat()
 const sizeMB = (stat.size / 1024 / 1024).toFixed(1)
 
 console.log("✅ Build successful!")
 console.log(`   ${outfile}  (${sizeMB} MB)`)
+console.log(`   ${bundledSkillsDestination}  (bundled skills)`)
 

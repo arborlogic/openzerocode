@@ -22,8 +22,12 @@ function env(name: string): string | undefined {
   return process.env[name] || undefined;
 }
 
-function normalizeEndpoint(endpoint: string): string {
+export function normalizeLocalVlmEndpoint(endpoint: string): string {
   return endpoint.replace(/\/+$/, '');
+}
+
+function normalizeEndpoint(endpoint: string): string {
+  return normalizeLocalVlmEndpoint(endpoint);
 }
 
 function cleanVlmText(text: string): string {
@@ -118,6 +122,22 @@ export function getDefaultLocalVlmEndpoint(): string {
 
 export function getDefaultLocalVlmModel(): string {
   return env('OPENZEROCODE_VLM_MODEL') ?? env('GEASS_VLM_MODEL') ?? DEFAULT_MODEL;
+}
+
+export function setProcessLocalVlmConfig(config: { endpoint?: string | null; model?: string | null; force?: boolean | null }) {
+  const endpoint = config.endpoint?.trim();
+  const model = config.model?.trim();
+  if (endpoint) process.env.OPENZEROCODE_VLM_URL = normalizeEndpoint(endpoint);
+  else delete process.env.OPENZEROCODE_VLM_URL;
+  if (model) process.env.OPENZEROCODE_VLM_MODEL = model;
+  else delete process.env.OPENZEROCODE_VLM_MODEL;
+  if (config.force === true) process.env.OPENZEROCODE_FORCE_LOCAL_VLM = '1';
+  else if (config.force === false) delete process.env.OPENZEROCODE_FORCE_LOCAL_VLM;
+}
+
+export function shouldForceLocalVlm(): boolean {
+  const value = env('OPENZEROCODE_FORCE_LOCAL_VLM')?.trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
 export async function analyzeImageWithLocalVlm(request: LocalVlmRequest): Promise<LocalVlmResult> {

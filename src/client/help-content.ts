@@ -11,15 +11,19 @@ Commands
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
   /xai-login             Authorize xAI Grok (SuperGrok / X Premium+)
-  /mode [build|plan|learn]
-                         Switch mode; no arg cycles build / plan / learn
+  /mode [build|plan|compose]
+                         Switch mode; no arg cycles build / plan / compose
   /memory                Show loaded global memory files
-                         Learn mode bootstraps empty ~/.openzerocode memory files
+  /skills                List available skills
+  /skill <name>          Show a skill's instructions
+  /review [target]       Review changes using the review-helper skill
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
+  /autopilot [standard|proactive|off]
+                         Continue routine prompts or propose the next task
   /usage                 Open token usage dashboard
   /compact               Summarize and compress earlier session history
   /commit                Generate a commit message from current changes
@@ -42,6 +46,7 @@ Command Palette  (Ctrl+P / F2)
   INPUT
     Focus input          Return focus to the composer
     Auto-approve         Toggle automatic tool approval
+    Autopilot            Choose standard or proactive continuation
 
   DISPLAY
     Display settings     Toggle tools, thinking, layout
@@ -59,7 +64,7 @@ Command Palette  (Ctrl+P / F2)
     Usage dashboard      Token usage by session / provider / model
 
   MODEL
-    Switch mode          Cycle build → plan → learn
+    Switch mode          Cycle build → plan → compose
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
 

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { extractFilter, filterCommands, shouldShowAutocomplete, clampIndex } from "./autocomplete-logic"
+import { extractFilter, filterCommands, shouldShowAutocomplete, clampIndex, cycleCommandArgument } from "./autocomplete-logic"
 import { BUILTIN_COMMANDS } from "./commands"
 
 const noop = () => {}
@@ -108,5 +108,36 @@ describe("clampIndex", () => {
 
   it("returns prev when length is 0", () => {
     assert.equal(clampIndex(0, 1, 0), 0)
+  })
+})
+
+describe("cycleCommandArgument", () => {
+  it("fills the first option after a command is selected", () => {
+    assert.equal(cycleCommandArgument("/reasoning ", BUILTIN_COMMANDS), "/reasoning low")
+  })
+
+  it("cycles through options and wraps around", () => {
+    assert.equal(cycleCommandArgument("/reasoning low", BUILTIN_COMMANDS), "/reasoning medium")
+    assert.equal(cycleCommandArgument("/reasoning off", BUILTIN_COMMANDS), "/reasoning low")
+  })
+
+  it("cycles backward with Shift+Tab", () => {
+    assert.equal(cycleCommandArgument("/mode build", BUILTIN_COMMANDS, -1), "/mode compose")
+    assert.equal(cycleCommandArgument("/mode plan", BUILTIN_COMMANDS, -1), "/mode build")
+  })
+
+  it("starts from the closest end when the current value is custom", () => {
+    assert.equal(cycleCommandArgument("/model custom-model", BUILTIN_COMMANDS), "/model list")
+    assert.equal(cycleCommandArgument("/model custom-model", BUILTIN_COMMANDS, -1), "/model list")
+  })
+
+  it("supports command aliases and preserves the entered alias", () => {
+    const commands = [{ name: "example", aliases: ["ex"], description: "Example", argumentOptions: ["one", "two"] }]
+    assert.equal(cycleCommandArgument("/ex ", commands), "/ex one")
+  })
+
+  it("does not handle commands without predefined options", () => {
+    assert.equal(cycleCommandArgument("/call peer ", BUILTIN_COMMANDS), undefined)
+    assert.equal(cycleCommandArgument("hello", BUILTIN_COMMANDS), undefined)
   })
 })

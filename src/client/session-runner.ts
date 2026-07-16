@@ -6,14 +6,14 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
-import { selectEnabledTools } from "../tool/selection"
+import { selectEnabledTools, selectPlanModeTools } from "../tool/selection"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
 import { estimateTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
-export type RunMode = "build" | "plan" | "learn"
+export type RunMode = "build" | "plan" | "compose"
 
 type SessionUi = {
   abort: AbortSignal
@@ -44,6 +44,61 @@ type SessionRuntime = {
   parseJson: (raw: string) => Record<string, unknown>
   compactionSummary?: string
   ask: (request: Omit<PermissionRequest, "id">) => Promise<void>
+}
+
+function estimateMessagesTokens(messages: Message[]): number {
+  return estimateTokens(JSON.stringify(messages))
+}
+
+function compactCurrentTurnForRequest(
+  permanentPrefix: Message[],
+  currentTurnMessages: Message[],
+  contextLimit: number,
+): Message[] {
+  if (currentTurnMessages.length === 0) return permanentPrefix
+
+  const targetTotal = Math.floor(contextLimit * 0.72)
+  const prefixCost = estimateMessagesTokens(permanentPrefix)
+  const turnBudget = Math.max(2_000, targetTotal - prefixCost)
+  if (estimateMessagesTokens(currentTurnMessages) <= turnBudget) {
+    return [...permanentPrefix, ...currentTurnMessages]
+  }
+
+  let used = 0
+  let tailStart = currentTurnMessages.length
+  const minTailMessages = Math.min(6, currentTurnMessages.length)
+
+  for (let i = currentTurnMessages.length - 1; i >= 0; i--) {
+    const message = currentTurnMessages[i]!
+    const cost = estimateMessagesTokens([message])
+    const mustKeep = currentTurnMessages.length - i <= minTailMessages
+    if (!mustKeep && used + cost > turnBudget) break
+    used += cost
+    tailStart = i
+  }
+
+  // Avoid sending orphaned tool results without their assistant tool call.
+  while (tailStart < currentTurnMessages.length && currentTurnMessages[tailStart]?.role === "tool") {
+    tailStart++
+  }
+
+  const omitted = currentTurnMessages.slice(0, tailStart)
+  const tail = currentTurnMessages.slice(tailStart)
+  if (omitted.length === 0) return [...permanentPrefix, ...tail]
+
+  const omittedToolResults = omitted.filter((message) => message.role === "tool").length
+  const omittedAssistantMessages = omitted.filter((message) => message.role === "assistant").length
+  const summary: Message = {
+    role: "system",
+    content: [
+      "[Current Turn Compacted]",
+      `${omitted.length} earlier current-turn messages were omitted to stay within the model context window.`,
+      `Omitted: ${omittedAssistantMessages} assistant/tool-call messages and ${omittedToolResults} tool result messages.`,
+      "Recent tool activity is preserved below; continue from that latest available state.",
+    ].join("\n"),
+  }
+
+  return [...permanentPrefix, summary, ...tail]
 }
 
 export type StreamOptions = {
@@ -132,6 +187,7 @@ export async function* streamSession(
 
   const allMessages: Message[] = [systemMessage, ...compactionMessage, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
+  const turnProgressStart = resultHistory.length
   yield { type: "message", message: userMessage }
 
   const allTools = await runtime.runSync(Effect.gen(function* () {
@@ -140,15 +196,13 @@ export async function* streamSession(
   }))
   // Hide user-disabled tool groups (e.g. the GEASS browser tools) from the model
   // so it never tries them; core tools have no group and always pass.
-  const tools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
-  const learnToolIds = new Set(["read", "grep", "glob", "learn_memory_apply", "learn_project_memory_apply"])
-  const modeTools = options.mode === "learn"
-    ? tools.filter((tool) => learnToolIds.has(tool.id))
-    : tools
-  const toolDefs = options.mode === "plan" ? [] : convertToolsToDefs(modeTools)
+  const enabledTools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
+  const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
+  const toolDefs = convertToolsToDefs(tools)
 
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
   const currentTurnStart = allMessages.length
+  const { contextLimit } = getModelConfig(options.model, options.modelInfo)
 
   for (let step = 0; step < maxSteps; step++) {
     yield { type: "status", text: `thinking (step ${step + 1}/${maxSteps})...` }
@@ -158,7 +212,7 @@ export async function* streamSession(
     for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
       const requestMessages = step === 0
         ? allMessages
-        : [...permanentPrefix, ...allMessages.slice(currentTurnStart)]
+        : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), contextLimit)
 
       stream = await runtime.runSync(Effect.gen(function* () {
         const p = yield* Provider
@@ -287,6 +341,21 @@ export async function* streamSession(
           function: { name: a.name, arguments: a.arguments },
         }))
       : undefined
+
+    if (!content && !hasReasoning && !toolCalls) {
+      const hadProgressThisTurn = resultHistory.length > turnProgressStart
+      if (hadProgressThisTurn && finishReason !== "length") {
+        yield { type: "done" }
+        return resultHistory
+      }
+      const errorText = "Provider returned an empty assistant response"
+      yield { type: "notice", kind: "error", text: errorText }
+      const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
+      resultHistory.push(errorMsg)
+      yield { type: "message", message: errorMsg }
+      yield { type: "error", message: errorText }
+      return resultHistory
+    }
 
     const assistantMessage: Message = createAssistantMessage({
       content: content || undefined,

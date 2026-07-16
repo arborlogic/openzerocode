@@ -34,7 +34,7 @@ A peer call is not a background job or a separate API call. It enters the callee
 ~/.openzerocode/peers.json          ← shared registry file
 src/peer/registry.ts                ← read/write registry, liveness check
 src/peer/server.ts                  ← lightweight HTTP server (per named instance)
-src/peer/context.ts                 ← runtime state: selfName, currentHop
+src/peer/context.ts                 ← runtime state: selfName, currentHop, peer guard configuration
 src/tool/call-peer.ts               ← call_peer tool (AI-callable)
 src/client/tui.tsx                  ← --name parsing, wiring, display
 src/client/commands.ts              ← /peers, /call slash commands
@@ -111,7 +111,7 @@ Terminal B (geass) — AI run
     ├─ call_peer("myapp", "Done. Updated UserPayload.id to string. ...")
     │   │
     │   ├─ Check selfName is set (peer mode active)
-    │   ├─ Check currentHop + 1 ≤ MAX_HOP_DEPTH (3)
+    │   ├─ Check hop and same-pair guards
     │   ├─ Look up myapp in peers.json
     │   ├─ ctx.ask → TUI permission prompt: "→ myapp: Done. Updated..."
     │   └─ POST /prompt { text, from: "geass", hop: 1 }
@@ -123,18 +123,30 @@ Terminal B (geass) — AI run
 
 ---
 
-## Hop Limit
+## Collaboration Bounds
 
-Calls carry a `hop` counter that increments at each crossing:
+OpenZeroCode uses a configurable hop guard, plus a same-pair roundtrip guard for direct ping-pong loops.
+
+### Hop guard
+
+Calls carry a `hop` counter that increments at each non-one-way crossing:
 
 | Source | hop value |
 |--------|-----------|
-| Human `/call` | 0 |
-| First AI callback | 1 |
-| Second AI callback | 2 |
-| Third AI callback | 3 = MAX_HOP_DEPTH → rejected |
+| Human `/call` or first AI peer call | 1 |
+| First AI callback to that call | 2 |
+| Second AI callback | 3 |
+| Next callback attempt | 4 > default max → rejected |
 
-`MAX_HOP_DEPTH = 3` is defined in `src/peer/context.ts`. When the limit is reached, `call_peer` returns an error to the AI explaining why, and the chain stops. The AI can inform the user instead of silently failing.
+The default max hop depth is `3` and is defined in `src/peer/context.ts`. Users can raise or lower it with `--max-peer-hops <N>` or `OPENZEROCODE_MAX_PEER_HOPS=<N>`. When the limit is reached, `call_peer` returns an error to the AI explaining why, and the chain stops. The AI can inform the user instead of silently failing.
+
+This remains conservative by default, but lets a user explicitly allow deeper peer work without switching to a separate collaboration mode.
+
+### One-way messages and same-pair guard
+
+`call_peer` supports `oneWay: true`; intents `notify` and `handoff_summary` are also treated as one-way messages. One-way messages do not increment the hop count and receive a `[Peer Notice]` prompt that tells the callee not to call back unless the user starts a new collaboration thread.
+
+Direct same-pair ping-pong is guarded independently with a default maximum of `4` same-pair roundtrips. It can be overridden with `--max-same-pair-roundtrips <N>` or `OPENZEROCODE_MAX_SAME_PAIR_ROUNDTRIPS=<N>`.
 
 ---
 
@@ -193,7 +205,7 @@ This ensures the callee AI always knows:
 2. It is expected to report back
 3. The caller's name (for the `call_peer` invocation)
 
-The instruction is in the system prompt, not the user message, so it is invisible in the TUI.
+The instruction is in the system prompt, not the user message, so it is invisible in the TUI. One-way peer notices receive a separate no-reply prompt instead.
 
 ---
 
@@ -251,11 +263,49 @@ The callee AI deciding *what* to report back is the feature, not a workaround. A
 
 The `call_peer` tool gives the AI explicit control over what crosses the process boundary.
 
-### Why `MAX_HOP_DEPTH = 3`?
+### Peer Collaboration Budget
+
+Peer collaboration uses a conservative hop budget by default. When a task needs
+more multi-agent back-and-forth, the user can raise the same max-hop guard rather
+than enabling a separate collaboration mode.
+
+Implemented controls:
+
+- Default max peer hop depth remains **3**.
+- Users can override the hop budget with `--max-peer-hops <N>` or
+  `OPENZEROCODE_MAX_PEER_HOPS=<N>`.
+- Same-pair ping-pong is guarded independently with a default maximum of **4**
+  same-pair roundtrips. It can be overridden with
+  `--max-same-pair-roundtrips <N>` or
+  `OPENZEROCODE_MAX_SAME_PAIR_ROUNDTRIPS=<N>`.
+- `call_peer` supports `oneWay: true`; intents `notify` and `handoff_summary`
+  are also treated as one-way messages.
+- One-way messages do not increment the hop count and inject a no-reply peer
+  notice instead of the normal callback instruction.
+
+This keeps the safe default while allowing user-authorized deeper peer work
+without changing source constants.
+
+### Future Budget Improvements
+
+Potential follow-up controls:
+
+- Add a wall-clock budget, e.g. 15–20 minutes.
+- Detect repeated cycles such as `A -> B -> A -> B`, not only same-pair count.
+- Add a message similarity guard so agents cannot keep exchanging materially
+  identical summaries.
+- Support intent-specific budgets for `ask_question`, `review_plan`,
+  `critique`, `brainstorm`, and `delegate_task`.
+- Require persisted intermediate artifacts during long discussions, such as a
+  decision log, task breakdown, risk register, and implementation checklist.
+
+### Why default max hop depth = 3?
 
 - hop 0: human initiates
 - hop 1: first AI responds
 - hop 2: second AI responds to the response
 - hop 3: would be a third round-trip, which in practice indicates a loop rather than useful work
 
-Three is conservative enough to catch runaway loops quickly while allowing legitimate back-and-forth. It is defined as a named constant and can be adjusted.
+Three is conservative enough to catch runaway loops quickly while allowing
+legitimate back-and-forth. It is the default budget, not a hard-coded product
+limit.

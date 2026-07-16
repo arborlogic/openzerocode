@@ -68,6 +68,23 @@ function responseToolCallFromItem(item: any, index = 0): ToolCall {
   }
 }
 
+function responseTextFromOutputItem(item: any): string {
+  if (item?.type !== "message" || !Array.isArray(item.content)) return ""
+  return item.content
+    .map((part: any) => {
+      if (typeof part?.text === "string") return part.text
+      if (typeof part?.refusal === "string") return part.refusal
+      return ""
+    })
+    .join("")
+}
+
+function responseTextFromResponse(response: any): string {
+  if (typeof response?.output_text === "string") return response.output_text
+  if (!Array.isArray(response?.output)) return ""
+  return response.output.map(responseTextFromOutputItem).join("")
+}
+
 function contentPartsText(content: any): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
@@ -197,6 +214,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
           const reader = body2.getReader() as ReadableStreamDefaultReader<Uint8Array>
           const decoder = new TextDecoder()
           let buffer = ""
+          let emittedText = false
           let streamDone = false
 
           return new ReadableStream<Chunk>({
@@ -227,6 +245,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                         try { raw = JSON.parse(msg.data) } catch { continue }
                         const type: string = raw.type ?? msg.event ?? ""
                         if (type === "response.completed" || type === "response.incomplete") {
+                          const text = !emittedText ? responseTextFromResponse(raw.response) : ""
+                          if (text) {
+                            emittedText = true
+                            try { controller.enqueue({ delta: { content: text } }) } catch {}
+                          }
                           try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
                         }
                       }
@@ -246,6 +269,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                         try { raw = JSON.parse(msg.data) } catch { continue }
                         const type: string = raw.type ?? msg.event ?? ""
                         if (type === "response.completed" || type === "response.incomplete") {
+                          const text = !emittedText ? responseTextFromResponse(raw.response) : ""
+                          if (text) {
+                            emittedText = true
+                            try { controller.enqueue({ delta: { content: text } }) } catch {}
+                          }
                           try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
                         }
                       }
@@ -265,7 +293,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                     try { raw = JSON.parse(msg.data) } catch { continue }
                     const type: string = raw.type ?? msg.event ?? ""
 
-                    if (type === "response.output_text.delta") {
+                    if (type === "response.output_text.delta" || type === "response.refusal.delta") {
+                      if (raw.delta) emittedText = true
                       controller.enqueue({ delta: { content: raw.delta ?? "" } })
                     } else if (type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") {
                       controller.enqueue({ delta: { reasoning_content: raw.delta ?? "" } })
@@ -275,9 +304,25 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       controller.enqueue({ delta: {}, tool_calls: [{ id: raw.call_id, index: raw.output_index ?? 0, type: "function", function: { arguments: raw.delta ?? "" } }] })
                     } else if (type === "response.output_item.done" && raw.item?.type === "function_call") {
                       controller.enqueue({ delta: {}, tool_calls: [responseToolCallFromItem(raw.item, raw.output_index ?? 0)] })
+                    } else if (type === "response.output_item.done" && raw.item?.type === "message" && !emittedText) {
+                      const text = responseTextFromOutputItem(raw.item)
+                      if (text) {
+                        emittedText = true
+                        controller.enqueue({ delta: { content: text } })
+                      }
                     } else if (type === "response.completed") {
+                      const text = !emittedText ? responseTextFromResponse(raw.response) : ""
+                      if (text) {
+                        emittedText = true
+                        controller.enqueue({ delta: { content: text } })
+                      }
                       controller.enqueue({ delta: {}, finish_reason: "stop", usage: usageFromResponses(raw.response?.usage) })
                     } else if (type === "response.incomplete") {
+                      const text = !emittedText ? responseTextFromResponse(raw.response) : ""
+                      if (text) {
+                        emittedText = true
+                        controller.enqueue({ delta: { content: text } })
+                      }
                       controller.enqueue({ delta: {}, finish_reason: "length", usage: usageFromResponses(raw.response?.usage) })
                     } else if (raw.choices) {
                       const delta = raw.choices[0]?.delta ?? {}
