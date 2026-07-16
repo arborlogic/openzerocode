@@ -39,6 +39,29 @@ export function formatAutopilotNoticeTime(date = new Date()): string {
   return `${hours}:${minutes}`
 }
 
+export type AutopilotContinuationState = {
+  enabled: boolean
+  supervisorRunning: boolean
+  rateLimitRetryPending: boolean
+  running: boolean
+  compacting: boolean
+  awaitingApproval: boolean
+  queuedInputCount: number
+  inputQueueDraining: boolean
+}
+
+/** Whether an assistant turn is in a safe idle state for one continuation check. */
+export function canScheduleAutopilotContinuation(state: AutopilotContinuationState): boolean {
+  return state.enabled
+    && !state.supervisorRunning
+    && !state.rateLimitRetryPending
+    && !state.running
+    && !state.compacting
+    && !state.awaitingApproval
+    && state.queuedInputCount === 0
+    && !state.inputQueueDraining
+}
+
 export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): string {
   const common = [
     `You are the Autopilot supervisor for this OpenZeroCode session.`,

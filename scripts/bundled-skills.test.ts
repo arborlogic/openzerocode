@@ -1,9 +1,13 @@
 import assert from "node:assert/strict"
 import { after, describe, it } from "node:test"
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+import { spawnSync } from "node:child_process"
 import { replaceBundledSkills } from "./bundled-skills"
+
+const projectRoot = resolve(import.meta.dirname, "..")
+const platformPackageDir = join(projectRoot, "npm", "packages", `${process.platform}-${process.arch}`)
 
 const workspaces: string[] = []
 
@@ -33,5 +37,22 @@ describe("replaceBundledSkills", () => {
     assert.equal(await readFile(join(destination, "current", "SKILL.md"), "utf8"), "current bundled skill")
     await assert.rejects(access(join(destination, "removed", "SKILL.md")))
     assert.equal(await readFile(join(userSkills, "mine", "SKILL.md"), "utf8"), "user-managed skill")
+  })
+
+  it("includes bundled skills in the native platform package tarball", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "openzerocode-platform-package-"))
+    workspaces.push(workspace)
+    const packageDir = join(workspace, "package")
+
+    await cp(platformPackageDir, packageDir, { recursive: true })
+    const packed = spawnSync("npm", ["pack", "--json"], { cwd: packageDir, encoding: "utf8" })
+    assert.equal(packed.status, 0, packed.stderr)
+
+    const [{ filename }] = JSON.parse(packed.stdout) as Array<{ filename: string }>
+    const archive = join(packageDir, filename)
+    const listed = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" })
+    assert.equal(listed.status, 0, listed.stderr)
+    assert.match(listed.stdout, /package\/bin\/bundled-skills\/openzerocode\/SKILL\.md/)
+    assert.match(listed.stdout, /package\/bin\/bundled-skills\/review-helper\/SKILL\.md/)
   })
 })

@@ -141,6 +141,10 @@ fs.writeFileSync(path.join(distRoot, "package.json"), JSON.stringify(rootPackage
 for (const platform of platforms) {
   const packageDir = path.join(generatedRoot, platform.id)
   fs.mkdirSync(path.join(packageDir, "bin"), { recursive: true })
+  fs.cpSync(path.join(root, "skills"), path.join(packageDir, "bin", "bundled-skills"), {
+    recursive: true,
+    force: true,
+  })
 
   const platformPackage = {
     name: `@openzerocode/${platform.id}`,

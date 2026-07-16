@@ -47,7 +47,7 @@ describe("analyze_image", () => {
   })
 
   afterEach(() => {
-  globalThis.fetch = originalFetch
+    globalThis.fetch = originalFetch
     if (originalForceLocalVlm === undefined) delete process.env.OPENZEROCODE_FORCE_LOCAL_VLM
     else process.env.OPENZEROCODE_FORCE_LOCAL_VLM = originalForceLocalVlm
   })
@@ -61,7 +61,7 @@ describe("analyze_image", () => {
 
     const path = tempPng()
     const tool = await Effect.runPromise(AnalyzeImageTool)
-    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5")))
+    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5-codex")))
 
     assert.equal(result.metadata?.analysisPath, "native")
     assert.ok(result.output.includes("native model vision"))
@@ -105,7 +105,7 @@ describe("analyze_image", () => {
     const result = await Effect.runPromise(tool.execute({
       path,
       endpoint: "http://forced-vlm.example",
-    }, testCtx("gpt-5.5")))
+    }, testCtx("gpt-5.5-codex")))
 
     assert.equal(result.metadata?.analysisPath, "local_vlm")
     assert.ok(result.output.includes("forced local"))
@@ -124,7 +124,7 @@ describe("analyze_image", () => {
 
     const path = tempPng()
     const tool = await Effect.runPromise(AnalyzeImageTool)
-    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5")))
+    const result = await Effect.runPromise(tool.execute({ path }, testCtx("gpt-5.5-codex")))
 
     assert.equal(result.metadata?.analysisPath, "local_vlm")
     assert.ok(result.output.includes("palette local"))
@@ -139,7 +139,7 @@ describe("analyze_image", () => {
     })
 
     const tool = await Effect.runPromise(AnalyzeImageTool)
-    const result = await Effect.runPromise(tool.execute({ path: "/no/such/image.png" }, testCtx("gpt-5.5")))
+    const result = await Effect.runPromise(tool.execute({ path: "/no/such/image.png" }, testCtx("gpt-5.5-codex")))
     assert.equal(result.title, "File Error")
     assert.equal(result.images, undefined)
     assert.equal(fetchCalls, 0)

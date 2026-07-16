@@ -4,6 +4,7 @@ import {
   AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
   AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
   autopilotRateLimitDelayMs,
+  canScheduleAutopilotContinuation,
   buildAutopilotSupervisorPrompt,
   formatAutopilotNoticeTime,
   formatAutopilotRetryDelay,
@@ -95,6 +96,28 @@ describe("autopilot helpers", () => {
     const result = parseAutopilotDecision("not json")
     assert.equal(result.confidence, "low")
     assert.ok(result.reason.includes("not valid JSON"))
+  })
+
+  it("only schedules a continuation from a fully idle Autopilot state", () => {
+    const idleState = {
+      enabled: true,
+      supervisorRunning: false,
+      rateLimitRetryPending: false,
+      running: false,
+      compacting: false,
+      awaitingApproval: false,
+      queuedInputCount: 0,
+      inputQueueDraining: false,
+    }
+
+    assert.equal(canScheduleAutopilotContinuation(idleState), true)
+    for (const blockedField of Object.keys(idleState) as Array<keyof typeof idleState>) {
+      if (blockedField === "enabled" || blockedField === "queuedInputCount") {
+        assert.equal(canScheduleAutopilotContinuation({ ...idleState, [blockedField]: blockedField === "enabled" ? false : 1 }), false)
+      } else {
+        assert.equal(canScheduleAutopilotContinuation({ ...idleState, [blockedField]: true }), false)
+      }
+    }
   })
 
   it("defines proactive rate-limit backoff delays up to 8h45m total", () => {

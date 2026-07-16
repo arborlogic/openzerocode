@@ -59,6 +59,7 @@ import {
   AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
   AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
   autopilotRateLimitDelayMs,
+  canScheduleAutopilotContinuation,
   buildAutopilotSupervisorPrompt,
   formatAutopilotNoticeTime,
   formatAutopilotRetryDelay,
@@ -590,9 +591,16 @@ function App() {
   }
 
   function scheduleAutopilotCheck() {
-    if (!autopilotEnabled() || autopilotSupervisorRunning) return
-    if (autopilotRateLimitTimer) return
-    if (running() || compacting() || pendingApproval() || (inputQueue?.depth() ?? 0) > 0 || (inputQueue?.isDraining() ?? false)) return
+    if (!canScheduleAutopilotContinuation({
+      enabled: autopilotEnabled(),
+      supervisorRunning: autopilotSupervisorRunning,
+      rateLimitRetryPending: Boolean(autopilotRateLimitTimer),
+      running: running(),
+      compacting: compacting(),
+      awaitingApproval: Boolean(pendingApproval()),
+      queuedInputCount: inputQueue?.depth() ?? 0,
+      inputQueueDraining: inputQueue?.isDraining() ?? false,
+    })) return
     queueMicrotask(() => { void queueAutopilotContinuation() })
   }
 

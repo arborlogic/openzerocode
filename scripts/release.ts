@@ -17,7 +17,7 @@ Arguments:
 Options:
   --push                     Push the release commit and tag to origin.
   --remote <name>            Git remote to push to (default: origin).
-  --no-verify                Skip npm run typecheck.
+  --no-verify                Skip typecheck, unit, Bun, and packaging smoke tests.
   --dry-run                  Print planned actions without changing files; still validates the changelog entry.
   --help                     Show this help.
 
@@ -249,7 +249,7 @@ async function main() {
   console.log(`Updated: ${changedFiles.map((file) => basename(file)).join(", ")}`)
 
   if (options.verify) {
-    await runCommand(["npm", "run", "typecheck"], options.dryRun)
+    await runCommand(["npm", "run", "verify:release"], options.dryRun)
   } else {
     console.log("Skipping verification (--no-verify)")
   }
