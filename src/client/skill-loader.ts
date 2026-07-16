@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs"
-import { join, isAbsolute, relative } from "node:path"
+import { join, isAbsolute, relative, resolve } from "node:path"
 import { homedir } from "node:os"
 import { parse as parseYaml } from "yaml"
 
@@ -31,6 +31,16 @@ export interface SkillSummary {
   name: string
   description?: string
   skillPath: string
+  /** True when the skill is shipped in OpenZeroCode's bundled skills directory. */
+  isBuiltin: boolean
+}
+
+/** The skills packaged with OpenZeroCode, as opposed to project or user-local skills. */
+const BUILTIN_SKILLS_DIR = resolve(import.meta.dirname, "..", "..", "skills")
+
+function isBuiltinSkill(skill: ParsedSkill): boolean {
+  const pathFromBuiltinDir = relative(BUILTIN_SKILLS_DIR, skill.dir)
+  return pathFromBuiltinDir !== "" && !pathFromBuiltinDir.startsWith("..") && !isAbsolute(pathFromBuiltinDir)
 }
 
 /**
@@ -146,6 +156,7 @@ export function listSkills(skillsDirs: string[]): SkillSummary[] {
       name: skill.name,
       description: skill.frontmatter.description ?? skill.frontmatter.summary,
       skillPath: skill.skillPath,
+      isBuiltin: isBuiltinSkill(skill),
     }))
     .sort((a, b) => a.name.localeCompare(b.name))
 }

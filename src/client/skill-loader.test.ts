@@ -81,6 +81,13 @@ describe("matchSkillByUrl", () => {
 })
 
 describe("skill discovery", () => {
+  it("marks skills shipped in the bundled skills directory as built-in", () => {
+    const skills = listSkills([join(process.cwd(), "skills")])
+
+    assert.ok(skills.length > 0)
+    assert.ok(skills.every((skill) => skill.isBuiltin))
+  })
+
   it("lists nested skills and lets an earlier directory override by name", () => {
     const root = makeTempWorkspace()
     const global = makeTempWorkspace()
@@ -93,6 +100,7 @@ describe("skill discovery", () => {
     const dirs = [join(root, "skills"), join(global, "skills")]
     const skills = listSkills(dirs)
     assert.deepEqual(skills.map((skill) => skill.name), ["compose:ask", "project-docs"])
+    assert.ok(skills.every((skill) => !skill.isBuiltin))
     assert.equal(findSkill("compose:ask", dirs)?.body.trim(), "ASK BODY")
     assert.match(findSkill("project-docs", dirs)?.body ?? "", /PROJECT DOCS BODY/)
   })

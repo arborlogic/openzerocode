@@ -257,8 +257,16 @@ function App() {
   const [referenceTitle, setReferenceTitle] = createSignal("Help")
   const [referenceContent, setReferenceContent] = createSignal(HELP_CONTENT)
   const [referenceSkills, setReferenceSkills] = createSignal<SkillSummary[] | undefined>()
-  const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
+  const filteredReferenceSkills = createMemo(() => {
+    const skills = referenceSkills()
+    const query = paletteInput().trim().toLocaleLowerCase()
+    if (!skills || !query) return skills
+    return skills.filter((skill) =>
+      `${skill.name} ${skill.description ?? ""}`.toLocaleLowerCase().includes(query),
+    )
+  })
+  const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
   const [paletteProviderTarget, setPaletteProviderTarget] = createSignal(currentProvider)
   const [paletteModelBackMode, setPaletteModelBackMode] = createSignal<"actions" | "providers">("actions")
@@ -2650,13 +2658,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setReferenceTitle("Help")
           setReferenceContent(HELP_CONTENT)
           setReferenceSkills(undefined)
+          setPaletteInput("")
           setPaletteMode("reference")
           setPaletteIndex(0)
         },
         openSkills: (skills) => {
           setShowPalette(true)
           setReferenceTitle("Skills")
+          setReferenceContent("")
           setReferenceSkills(skills)
+          setPaletteInput("")
           setPaletteMode("reference")
           setPaletteIndex(0)
         },
@@ -2665,6 +2676,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setReferenceTitle(`Skill: ${name}`)
           setReferenceContent(content)
           setReferenceSkills(undefined)
+          setPaletteInput("")
           setPaletteMode("reference")
           setPaletteIndex(0)
         },
@@ -3252,6 +3264,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setShowPalette(false)
         } else if (paletteMode() === "reference") {
           setShowPalette(false)
+          setPaletteInput("")
           setPaletteMode("actions")
         } else {
           setShowPalette(false)
@@ -3729,18 +3742,32 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               onMouseDown={() => setShowPalette(false)}
             >Esc / tap to close</text>
           </box>
+          <Show when={referenceSkills()}>
+            <box paddingLeft={2} paddingRight={2} paddingBottom={1} flexDirection="row">
+              <text style={{ fg: THEME.muted }}>Search: </text>
+              <text style={{ fg: THEME.text, flexGrow: 1 }}>{paletteInput() || "Type to filter skills"}</text>
+              <text style={{ fg: THEME.accent }}>●</text>
+              <text style={{ fg: THEME.muted }}> built-in</text>
+            </box>
+          </Show>
           <scrollbox flexGrow={1} scrollY={true} paddingLeft={2} paddingRight={2} paddingBottom={1}>
             <Show
               when={referenceSkills()}
               fallback={<text style={{ fg: THEME.muted }}>{referenceContent()}</text>}
             >
-              {(skills: () => SkillSummary[]) => (
-                <Show when={skills().length > 0} fallback={<text style={{ fg: THEME.muted }}>No skills found</text>}>
+              {() => (
+                <Show
+                  when={(filteredReferenceSkills() ?? []).length > 0}
+                  fallback={<text style={{ fg: THEME.muted }}>{paletteInput().trim() ? "No matching skills" : "No skills found"}</text>}
+                >
                   <box flexDirection="column">
-                    <For each={skills()}>{(skill) => {
+                    <For each={filteredReferenceSkills() ?? []}>{(skill) => {
                       const description = skill.description?.replace(/\s+/g, " ").trim()
                       return (
                         <box flexDirection="row" alignItems="center">
+                          <Show when={skill.isBuiltin}>
+                            <text style={{ fg: THEME.accent }}>● </text>
+                          </Show>
                           <box
                             border={["top", "right", "bottom", "left"]}
                             borderColor={THEME.border}
