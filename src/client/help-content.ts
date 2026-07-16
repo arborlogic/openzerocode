@@ -16,6 +16,7 @@ Commands
   /memory                Show loaded global memory files
   /skills                List available skills
   /skill <name>          Show a skill's instructions
+  /review [target]       Review changes using the review-helper skill
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
   /tools                 Toggle completed tool details

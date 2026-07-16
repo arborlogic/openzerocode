@@ -51,6 +51,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     xaiLogin: mock(() => Promise.resolve({ ok: true, message: "authorized" })),
     getAutopilotMode: mock((): AutopilotMode => "off"),
     setAutopilotMode: mock(() => {}),
+    runReview: mock(() => {}),
     ...overrides,
   }
 }
@@ -67,6 +68,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("memory"))
     assert.ok(names.includes("skills"))
     assert.ok(names.includes("skill"))
+    assert.ok(names.includes("review"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("queue"))
@@ -79,6 +81,20 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("compact"))
     assert.ok(names.includes("export"))
     assert.ok(names.includes("exit"))
+  })
+
+  describe("/review", () => {
+    it("starts a review of the supplied target", async () => {
+      const ctx = stubCtx()
+      assert.ok(await executeCommand("/review src/client/commands.ts", ctx))
+      assert.equal((ctx.runReview as any).mock.calls[0][0], "src/client/commands.ts")
+    })
+
+    it("defaults to reviewing working-tree changes", async () => {
+      const ctx = stubCtx()
+      assert.ok(await executeCommand("/review", ctx))
+      assert.equal((ctx.runReview as any).mock.calls[0][0], "Review the current working-tree changes.")
+    })
   })
 
   it("does not include removed commands", () => {

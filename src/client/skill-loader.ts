@@ -228,11 +228,24 @@ export function matchSkillByUrl(url: string, skillsDir: string | string[]): Load
 
 /** Build the prompt section injected for a matched skill (SKILL.md + LEARNINGS.md). */
 export function buildSkillSection(skill: LoadedSkill): string {
-  const parts: string[] = []
-  parts.push(`# Active Skill: ${skill.name}`)
-  parts.push(
+  return buildSkillSectionForActivation(
+    skill,
     `The current page matched this skill (by ${skill.matchedBy}). Follow it as the authoritative golden path.`,
   )
+}
+
+/** Build the prompt section when a user explicitly selects a skill. */
+export function buildExplicitSkillSection(skill: Pick<LoadedSkill, "name" | "body" | "learnings">): string {
+  return buildSkillSectionForActivation(
+    skill,
+    "The user explicitly selected this skill. Follow it as the authoritative instruction for this request.",
+  )
+}
+
+function buildSkillSectionForActivation(skill: Pick<LoadedSkill, "name" | "body" | "learnings">, activation: string): string {
+  const parts: string[] = []
+  parts.push(`# Active Skill: ${skill.name}`)
+  parts.push(activation)
   parts.push("")
   parts.push(skill.body.trim())
   if (skill.learnings && skill.learnings.trim()) {

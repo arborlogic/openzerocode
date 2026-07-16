@@ -18,7 +18,7 @@ import { cycleCommandArgument } from "./autocomplete-logic"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
-import type { SkillSummary } from "./skill-loader"
+import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSummary } from "./skill-loader"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getModelConfig } from "../provider/models"
@@ -147,6 +147,16 @@ let currentModelInfo: ModelInfo | undefined = getCachedModelInfo(currentProvider
 let currentLayer = Layer.merge(buildLayer(currentProvider, currentModel), toolLayer)
 let agentsInstruction = loadAgentsInstruction(process.cwd())
 let contextInstruction = loadContextInstruction(process.cwd())
+
+const REVIEW_REQUEST_PREFIX = "\x02review\x02"
+
+function encodeReviewRequest(target: string): string {
+  return `${REVIEW_REQUEST_PREFIX}${target}`
+}
+
+function decodeReviewRequest(input: string): string | undefined {
+  return input.startsWith(REVIEW_REQUEST_PREFIX) ? input.slice(REVIEW_REQUEST_PREFIX.length) : undefined
+}
 
 function refreshCurrentModelInfo() {
   currentModelInfo = getCachedModelInfo(currentProvider, currentModel)
@@ -2401,7 +2411,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       if (abortSignal.aborted) return
     }
 
-    const { text: input, peerOrigin, peerHop, samePairRoundtrips, oneWay } = decodePeerInput(rawInput)
+    const reviewTarget = decodeReviewRequest(rawInput)
+    const { text: decodedInput, peerOrigin, peerHop, samePairRoundtrips, oneWay } = decodePeerInput(rawInput)
+    const input = reviewTarget ?? decodedInput
+    const reviewSkill = reviewTarget ? findSkill("review-helper", resolveSkillDirs()) : undefined
     // Update peer context so call_peer tool knows our name, peer origin, and current hop state.
     setPeerContext(activePeerName, peerHop ?? 0, peerOrigin, samePairRoundtrips ?? 0)
 
@@ -2490,9 +2503,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
       }, {
         runSync,
-        systemPrompt: peerOrigin
-          ? (mode: RunMode) => systemPrompt(mode) + peerRequestSystemPrompt(peerOrigin, oneWay)
-          : systemPrompt,
+        systemPrompt: (runMode: RunMode) => {
+          const base = systemPrompt(runMode)
+          const withReviewSkill = reviewSkill ? `${base}\n\n${buildExplicitSkillSection(reviewSkill)}` : base
+          return peerOrigin ? withReviewSkill + peerRequestSystemPrompt(peerOrigin, oneWay) : withReviewSkill
+        },
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
         ask: (req) => new Promise<void>((resolve, reject) => {
@@ -2691,6 +2706,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         xaiLogin: runXaiLogin,
         getAutopilotMode: autopilotMode,
         setAutopilotMode: configureAutopilot,
+        runReview: (target) => {
+          const skill = findSkill("review-helper", resolveSkillDirs())
+          if (!skill) {
+            showToast("error", "Review skill not found", "Expected skills/review-helper/SKILL.md")
+            return
+          }
+          inputQueue?.enqueue(encodeReviewRequest(target))
+        },
         peerName: activePeerName,
         listPeers: activePeerName ? listLivePeers : undefined,
         callPeer: activePeerName

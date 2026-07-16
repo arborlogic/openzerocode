@@ -52,6 +52,7 @@ export type CommandContext = {
   xaiLogin: () => Promise<{ ok: boolean; message: string }>
   getAutopilotMode: () => AutopilotMode
   setAutopilotMode: (mode: AutopilotMode) => void
+  runReview: (target: string) => void
   peerName?: string
   listPeers?: () => PeerEntry[]
   callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
@@ -71,6 +72,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
   { name: "skills", description: "List available skills" },
   { name: "skill", description: "Show a skill's instructions: /skill <name>" },
+  { name: "review", description: "Review changes using the review-helper skill: /review [target]" },
   { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
@@ -119,6 +121,11 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     const description = skill.frontmatter.description ?? skill.frontmatter.summary
     const details = [description, "", skill.body.trim()].filter((part) => part !== undefined).join("\n")
     ctx.openSkill(skill.name, details)
+    return true
+  }
+
+  if (cmd === "review") {
+    ctx.runReview(arg || "Review the current working-tree changes.")
     return true
   }
 
