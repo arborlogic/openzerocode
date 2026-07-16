@@ -18,6 +18,7 @@ import { cycleCommandArgument } from "./autocomplete-logic"
 import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
+import type { SkillSummary } from "./skill-loader"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { getModelConfig } from "../provider/models"
@@ -252,7 +253,10 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "help" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "reference" | "codexKeyname">("actions")
+  const [referenceTitle, setReferenceTitle] = createSignal("Help")
+  const [referenceContent, setReferenceContent] = createSignal(HELP_CONTENT)
+  const [referenceSkills, setReferenceSkills] = createSignal<SkillSummary[] | undefined>()
   const [userMsgActionTarget, setUserMsgActionTarget] = createSignal<{ index: number; text: string } | null>(null)
   const [paletteInput, setPaletteInput] = createSignal("")
   const [palettePendingDelete, setPalettePendingDelete] = createSignal<string | null>(null)
@@ -2643,7 +2647,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         openQueuedMessages: openQueuedMessagesPalette,
         openHelp: () => {
           setShowPalette(true)
-          setPaletteMode("help")
+          setReferenceTitle("Help")
+          setReferenceContent(HELP_CONTENT)
+          setReferenceSkills(undefined)
+          setPaletteMode("reference")
+          setPaletteIndex(0)
+        },
+        openSkills: (skills) => {
+          setShowPalette(true)
+          setReferenceTitle("Skills")
+          setReferenceSkills(skills)
+          setPaletteMode("reference")
+          setPaletteIndex(0)
+        },
+        openSkill: (name, content) => {
+          setShowPalette(true)
+          setReferenceTitle(`Skill: ${name}`)
+          setReferenceContent(content)
+          setReferenceSkills(undefined)
+          setPaletteMode("reference")
           setPaletteIndex(0)
         },
         openUsageDashboard: () => {
@@ -3228,7 +3250,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         } else if (paletteMode() === "userMessageActions") {
           setUserMsgActionTarget(null)
           setShowPalette(false)
-        } else if (paletteMode() === "help") {
+        } else if (paletteMode() === "reference") {
           setShowPalette(false)
           setPaletteMode("actions")
         } else {
@@ -3687,7 +3709,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         width={dimensions().width - 8}
       />
 
-      <Show when={showPalette() && paletteMode() === "help"}>
+      <Show when={showPalette() && paletteMode() === "reference"}>
         <box
           position="absolute"
           top={2}
@@ -3701,19 +3723,45 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           flexDirection="column"
         >
           <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
-            <text style={{ fg: THEME.accent, flexGrow: 1 }}>Help</text>
+            <text style={{ fg: THEME.accent, flexGrow: 1 }}>{referenceTitle()}</text>
             <text
               style={{ fg: THEME.muted }}
               onMouseDown={() => setShowPalette(false)}
             >Esc / tap to close</text>
           </box>
           <scrollbox flexGrow={1} scrollY={true} paddingLeft={2} paddingRight={2} paddingBottom={1}>
-            <text style={{ fg: THEME.muted }}>{HELP_CONTENT}</text>
+            <Show
+              when={referenceSkills()}
+              fallback={<text style={{ fg: THEME.muted }}>{referenceContent()}</text>}
+            >
+              {(skills: () => SkillSummary[]) => (
+                <Show when={skills().length > 0} fallback={<text style={{ fg: THEME.muted }}>No skills found</text>}>
+                  <box flexDirection="column">
+                    <For each={skills()}>{(skill) => {
+                      const description = skill.description?.replace(/\s+/g, " ").trim()
+                      return (
+                        <box flexDirection="row" alignItems="center">
+                          <box
+                            border={["top", "right", "bottom", "left"]}
+                            borderColor={THEME.border}
+                            paddingLeft={1}
+                            paddingRight={1}
+                          >
+                            <text style={{ fg: THEME.text }}>{skill.name}</text>
+                          </box>
+                          <Show when={description}><text style={{ fg: THEME.muted }}> — {description}</text></Show>
+                        </box>
+                      )
+                    }}</For>
+                  </box>
+                </Show>
+              )}
+            </Show>
           </scrollbox>
         </box>
       </Show>
 
-      <Show when={showPalette() && paletteMode() !== "help"}>
+      <Show when={showPalette() && paletteMode() !== "reference"}>
         <box
           position="absolute"
           top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}

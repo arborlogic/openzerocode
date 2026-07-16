@@ -40,6 +40,8 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
+    openSkills: mock(() => {}),
+    openSkill: mock(() => {}),
     openUsageDashboard: mock(() => {}),
     compactSession: mock(() => Promise.resolve()),
     viewCompactionSummary: mock(() => {}),
@@ -404,10 +406,8 @@ describe("executeCommand", () => {
     })
     const result = await executeCommand("/skills", ctx)
     assert.ok(result)
-    const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-    assert.equal(args[0], "info")
-    assert.equal(args[1], "Skills")
-    assert.equal(args[2], "No skills found")
+    const args = (ctx.openSkills as any).mock.calls[0].arguments ?? (ctx.openSkills as any).mock.calls[0]
+    assert.deepEqual(args[0], [])
   })
 
   it("lists skills and displays an individual skill", async () => {
@@ -418,14 +418,14 @@ describe("executeCommand", () => {
     const ctx = stubCtx({ skillDirs: () => [root] })
 
     assert.ok(await executeCommand("/skills", ctx))
-    let args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-    assert.equal(args[1], "Skills (1)")
-    assert.match(args[2], /compose:demo — Demonstrate a workflow/)
+    let args = (ctx.openSkills as any).mock.calls[0].arguments ?? (ctx.openSkills as any).mock.calls[0]
+    assert.equal(args[0][0].name, "compose:demo")
+    assert.equal(args[0][0].description, "Demonstrate a workflow")
 
     assert.ok(await executeCommand("/skill compose:demo", ctx))
-    args = (ctx.showToast as any).mock.calls[1].arguments ?? (ctx.showToast as any).mock.calls[1]
-    assert.equal(args[1], "Skill: compose:demo")
-    assert.match(args[2], /# Demo/)
+    args = (ctx.openSkill as any).mock.calls[0].arguments ?? (ctx.openSkill as any).mock.calls[0]
+    assert.equal(args[0], "compose:demo")
+    assert.match(args[1], /# Demo/)
   })
 
   it("shows usage when /skill has no name", async () => {

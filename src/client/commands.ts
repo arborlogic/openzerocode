@@ -6,7 +6,7 @@ import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace
 import { getModelConfig } from "../provider/models"
 import type { PeerEntry } from "../peer/registry"
 import type { AutopilotMode } from "./autopilot"
-import { findSkill, listSkills, resolveSkillDirs } from "./skill-loader"
+import { findSkill, listSkills, resolveSkillDirs, type SkillSummary } from "./skill-loader"
 
 export type SlashCommandDef = {
   name: string
@@ -41,6 +41,8 @@ export type CommandContext = {
   openProviderList: () => void
   openModelList: () => void
   openHelp: () => void
+  openSkills: (skills: SkillSummary[]) => void
+  openSkill: (name: string, content: string) => void
   openUsageDashboard: () => void
   compactSession: () => Promise<void>
   viewCompactionSummary: () => void
@@ -97,14 +99,10 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
   if (cmd === "skills") {
     const skills = listSkills(ctx.skillDirs?.() ?? resolveSkillDirs())
     if (skills.length === 0) {
-      notifyCommand(ctx, "info", "Skills", "No skills found")
+      ctx.openSkills([])
       return true
     }
-    const lines = skills.map((skill) => {
-      const description = skill.description?.replace(/\s+/g, " ").trim()
-      return description ? `${skill.name} — ${description}` : skill.name
-    })
-    notifyCommand(ctx, "info", `Skills (${skills.length})`, lines.join("\n"), 12000)
+    ctx.openSkills(skills)
     return true
   }
 
@@ -120,7 +118,7 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     }
     const description = skill.frontmatter.description ?? skill.frontmatter.summary
     const details = [description, "", skill.body.trim()].filter((part) => part !== undefined).join("\n")
-    notifyCommand(ctx, "info", `Skill: ${skill.name}`, details, 20000)
+    ctx.openSkill(skill.name, details)
     return true
   }
 
