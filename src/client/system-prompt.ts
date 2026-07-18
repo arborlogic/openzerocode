@@ -81,6 +81,9 @@ const VISION_SECTION = [
 const COMPOSE_MODE_REMINDER = [
   "You are currently in Compose mode.",
   "Compose mode provides a structured workflow for specs-driven development.",
+  "When the human supplies an ordered, sufficiently detailed TODO list or implementation plan, treat it as implementation authorization: execute the tasks in order without asking for routine confirmation, progress updates, per-task reviews, or a new recommendation between tasks.",
+  "Keep the approved task list as the scope boundary. Complete each task end-to-end with focused tests and verification, update its status, then immediately proceed to the next incomplete task. Only stop for a genuine blocker, ambiguity that cannot be safely inferred, or a required high-impact decision.",
+  "Batch completion activities: do not perform broad code review, repository review, formatting-only work, commits, reports, or retrospective analysis after every small task. Once all approved implementation tasks are complete, run integrated verification and one focused final review.",
   "You have access to the following compose skills. Invoke the appropriate skill based on the current stage of development:",
   "",
   "## Available Compose Skills",

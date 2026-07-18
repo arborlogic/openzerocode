@@ -59,11 +59,13 @@ import {
   AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
   AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
   autopilotRateLimitDelayMs,
+  autopilotModeLabel,
   canScheduleAutopilotContinuation,
   buildAutopilotSupervisorPrompt,
   formatAutopilotNoticeTime,
   formatAutopilotRetryDelay,
   parseAutopilotDecision,
+  retriesAutopilotRateLimits,
   type AutopilotDecision,
   type AutopilotMode,
 } from "./autopilot"
@@ -519,7 +521,7 @@ function App() {
   }
 
   function scheduleAutopilotRateLimitRetry() {
-    if (autopilotRateLimitTimer || autopilotMode() !== "proactive") return
+    if (autopilotRateLimitTimer || !retriesAutopilotRateLimits(autopilotMode())) return
     const delayMs = autopilotRateLimitDelayMs(autopilotRateLimitRetryCount)
     if (delayMs === undefined) {
       const total = formatAutopilotRetryDelay(AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS)
@@ -543,13 +545,13 @@ function App() {
     setStatus(`autopilot rate-limited — retrying in ${delayText}`)
     setNotices((prev) => [
       ...prev,
-      { kind: "system", text: `⟳ Proactive Autopilot rate-limited; retry ${attempt}/${maxAttempts} in ${delayText}. (${noticeTime})` },
+      { kind: "system", text: `⟳ ${autopilotModeLabel(autopilotMode())} Autopilot rate-limited; retry ${attempt}/${maxAttempts} in ${delayText}. (${noticeTime})` },
     ])
     showToast("warning", "Autopilot rate-limited", `Retry ${attempt}/${maxAttempts} in ${delayText}.`, 6000)
     queueMicrotask(scrollBottom)
     autopilotRateLimitTimer = setTimeout(() => {
       autopilotRateLimitTimer = undefined
-      if (autopilotMode() !== "proactive") return
+      if (!retriesAutopilotRateLimits(autopilotMode())) return
       void queueAutopilotContinuation()
     }, delayMs)
   }
@@ -577,7 +579,7 @@ function App() {
     } catch (err) {
       const isAbort = err instanceof Error && (err.name === "AbortError" || err.message === "aborted")
       if (!isAbort && autopilotEnabled()) {
-        if (autopilotMode() === "proactive" && isRateLimitError(err)) {
+        if (retriesAutopilotRateLimits(autopilotMode()) && isRateLimitError(err)) {
           scheduleAutopilotRateLimitRetry()
           return
         }
@@ -1843,10 +1845,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setShowPalette(false)
       showToast(
         "success",
-        mode === "off" ? "Autopilot stopped" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+        mode === "off" ? "Autopilot stopped" : mode === "execute" ? "Execute Plan Autopilot enabled" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
         mode === "off"
           ? "AI will wait for your next message."
-          : mode === "proactive"
+          : mode === "execute"
+            ? "AI will execute your approved TODO list continuously, then verify and review once at the end."
+            : mode === "proactive"
             ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
             : "AI will answer routine continuation questions when the next step is clear and safe.",
       )
@@ -1866,6 +1870,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "Proactive",
         hint: "plan-aligned continuation",
         onSelect: () => selectMode("proactive"),
+      },
+      {
+        label: "Execute Plan",
+        hint: "continuous TODO execution",
+        onSelect: () => selectMode("execute"),
       },
       ...(current !== "off"
         ? [{ label: "Turn off", hint: "wait for input", onSelect: () => selectMode("off") } satisfies PaletteItem]
@@ -3637,7 +3646,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               </Show>
               <Show when={autopilotEnabled()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-                <text style={{ fg: "#d29922" }}>{autopilotMode() === "proactive" ? "PILOT+" : "PILOT"}</text>
+                <text style={{ fg: "#d29922" }}>{autopilotMode() === "execute" ? "PILOT▶" : autopilotMode() === "proactive" ? "PILOT+" : "PILOT"}</text>
               </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>

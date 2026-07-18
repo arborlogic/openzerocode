@@ -4,14 +4,23 @@ import {
   AUTOPILOT_RATE_LIMIT_BACKOFF_MS,
   AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS,
   autopilotRateLimitDelayMs,
+  autopilotModeLabel,
   canScheduleAutopilotContinuation,
   buildAutopilotSupervisorPrompt,
   formatAutopilotNoticeTime,
   formatAutopilotRetryDelay,
   parseAutopilotDecision,
+  retriesAutopilotRateLimits,
 } from "./autopilot"
 
 describe("autopilot helpers", () => {
+  it("uses distinct labels for each Autopilot mode", () => {
+    assert.equal(autopilotModeLabel("off"), "Off")
+    assert.equal(autopilotModeLabel("standard"), "Standard")
+    assert.equal(autopilotModeLabel("proactive"), "Proactive")
+    assert.equal(autopilotModeLabel("execute"), "Execute Plan")
+  })
+
   it("describes an event-driven continuation check", () => {
     const prompt = buildAutopilotSupervisorPrompt("standard")
     assert.ok(prompt.includes("routine replies"))
@@ -54,6 +63,16 @@ describe("autopilot helpers", () => {
     assert.ok(prompt.includes("Do not implement it yet"))
     assert.ok(prompt.includes("Never combine the recommendation request with permission to start implementation"))
     assert.ok(prompt.includes("either an aligned implementation prompt or a low-confidence pause"))
+  })
+
+  it("executes approved TODOs continuously and defers review until the end", () => {
+    const prompt = buildAutopilotSupervisorPrompt("execute")
+    assert.ok(prompt.includes("Autopilot mode: EXECUTE PLAN"))
+    assert.ok(prompt.includes("TODO list, implementation plan, roadmap, or ordered task list"))
+    assert.ok(prompt.includes("Do not ask the coding agent to recommend, discover, prioritize, explain, review, or re-plan"))
+    assert.ok(prompt.includes("next incomplete approved task"))
+    assert.ok(prompt.includes("Do not request per-task code review, broad repository review"))
+    assert.ok(prompt.includes("integrated verification and a single focused review"))
   })
 
   it("keeps proactive planning out of standard mode", () => {
@@ -126,6 +145,13 @@ describe("autopilot helpers", () => {
       [5, 20, 60, 80, 120, 240],
     )
     assert.equal(AUTOPILOT_RATE_LIMIT_TOTAL_WAIT_MS / 60_000, 525)
+  })
+
+  it("retries rate limits for plan-advancing modes only", () => {
+    assert.equal(retriesAutopilotRateLimits("off"), false)
+    assert.equal(retriesAutopilotRateLimits("standard"), false)
+    assert.equal(retriesAutopilotRateLimits("proactive"), true)
+    assert.equal(retriesAutopilotRateLimits("execute"), true)
   })
 
   it("adds bounded jitter to proactive rate-limit retry delays", () => {

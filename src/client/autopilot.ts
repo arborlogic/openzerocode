@@ -4,8 +4,23 @@ export type AutopilotDecision = {
   reason: string
 }
 
-export type AutopilotMode = "off" | "standard" | "proactive"
+export type AutopilotMode = "off" | "standard" | "proactive" | "execute"
 export type ActiveAutopilotMode = Exclude<AutopilotMode, "off">
+
+/** Human-readable mode name for status, notices, and compact UI indicators. */
+export function autopilotModeLabel(mode: AutopilotMode): string {
+  switch (mode) {
+    case "execute": return "Execute Plan"
+    case "proactive": return "Proactive"
+    case "standard": return "Standard"
+    case "off": return "Off"
+  }
+}
+
+/** Modes that keep retrying after a rate limit because they are advancing an approved plan. */
+export function retriesAutopilotRateLimits(mode: AutopilotMode): boolean {
+  return mode === "proactive" || mode === "execute"
+}
 
 export const AUTOPILOT_RATE_LIMIT_BACKOFF_MS = [
   5 * 60_000,
@@ -107,6 +122,17 @@ export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): strin
     `Use a verification-first prompt only when the latest response or repository state indicates unfinished local changes, failing tests, uncommitted work, or an interrupted implementation.`,
     `Do not use Proactive Autopilot to request a progress explanation, justification, retrospective, fresh plan, or speculative repository review.`,
   ]
+  const execute = [
+    `Autopilot mode: EXECUTE PLAN. The human has already supplied or approved a concrete TODO list, implementation plan, roadmap, or ordered task list and wants uninterrupted implementation. Treat that list as an authorization boundary and work through it continuously.`,
+    ``,
+    `This is execution, not planning. Do not ask the coding agent to recommend, discover, prioritize, explain, review, or re-plan the next task. Do not send a generic "continue" prompt when a concrete unfinished task can be identified from the approved list.`,
+    ``,
+    `After every bounded response, identify the next incomplete approved task from the conversation, task list, or plan document. If one exists, use "high" and instruct the coding agent to implement that exact task now. Preserve task order unless the approved plan explicitly permits parallel work or dependencies require a different order.`,
+    `In each continuation prompt, tell the coding agent to: complete the selected task end-to-end; make appropriately scoped changes and tests; run focused verification; mark the task complete; then immediately continue to the next approved task in the same response whenever possible. Do not stop for routine status updates, confirmation, or optional improvements.`,
+    `Do not request per-task code review, broad repository review, formatting-only work, commits, reports, or retrospective work. Those happen once at the end of the approved list, unless a task explicitly requires them.`,
+    `When all approved implementation tasks are complete, use "high" exactly once to request final integrated verification and a single focused review of the accumulated changes. After that response, use "low" unless it exposes a concrete defect required to satisfy an approved task.`,
+    `Use "low" and an empty instruction only when the plan is absent or exhausted, a genuine blocker or repeated verification failure needs human input, a task is ambiguous, or continuing would leave the approved scope. Do not invent work to keep the loop alive.`,
+  ]
   const safety = [
     `Use "low" and an empty instruction when any of these apply:`,
     `- The overall session objective is explicitly complete and no meaningful next repo-local work is evident`,
@@ -117,7 +143,7 @@ export function buildAutopilotSupervisorPrompt(mode: ActiveAutopilotMode): strin
     `- No further prompt is needed`,
     `Do not invent speculative features just to keep Autopilot running.`,
   ]
-  return [...common, ...(mode === "proactive" ? proactive : standard), ``, ...safety].join("\n")
+  return [...common, ...(mode === "execute" ? execute : mode === "proactive" ? proactive : standard), ``, ...safety].join("\n")
 }
 
 export function parseAutopilotDecision(text: string): AutopilotDecision {

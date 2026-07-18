@@ -329,6 +329,17 @@ describe("executeCommand", () => {
       assert.ok(args[2].includes("pause on uncertainty"))
     })
 
+    it("enables continuous execution for an approved TODO list", async () => {
+      const ctx = stubCtx()
+      const result = await executeCommand("/autopilot execute", ctx)
+      assert.ok(result)
+      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "execute")
+      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
+      assert.equal(args[1], "Execute Plan Autopilot enabled")
+      assert.ok(args[2].includes("approved TODO list continuously"))
+      assert.ok(args[2].includes("review once at the end"))
+    })
+
     it("shows status", async () => {
       const ctx = stubCtx({ getAutopilotMode: mock((): AutopilotMode => "proactive") })
       const result = await executeCommand("/autopilot", ctx)

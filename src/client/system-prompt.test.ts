@@ -69,6 +69,9 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /compose:plan/)
     assert.match(prompt, /compose:tdd/)
     assert.match(prompt, /compose:verify/)
+    assert.match(prompt, /ordered, sufficiently detailed TODO list or implementation plan/)
+    assert.match(prompt, /without asking for routine confirmation, progress updates, per-task reviews/)
+    assert.match(prompt, /Once all approved implementation tasks are complete, run integrated verification and one focused final review/)
     assert.doesNotMatch(prompt, /# Task List \(todowrite tool\)/)
   })
 
