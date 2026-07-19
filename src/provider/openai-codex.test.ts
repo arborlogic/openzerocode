@@ -1,8 +1,24 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { toCodexRequestBody } from "./openai-codex"
+import { Effect } from "effect"
+import { layer, toCodexRequestBody } from "./openai-codex"
+import { Provider } from "./types"
 
 describe("openai codex provider", () => {
+  it("includes all supported Codex models", async () => {
+    const models = await Effect.runPromise(
+      Effect.gen(function* () {
+        const provider = yield* Provider
+        return yield* provider.models()
+      }).pipe(Effect.provide(layer({}))),
+    )
+
+    const modelIds = models.map(({ id }) => id)
+    for (const id of ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      assert.ok(modelIds.includes(id), `expected Codex model list to include ${id}`)
+    }
+  })
+
   it("moves system messages into required instructions", () => {
     const body = toCodexRequestBody({
       model: "gpt-5.4",
