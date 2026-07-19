@@ -3,6 +3,7 @@ import { THEME, MARKDOWN_SYNTAX } from "./theme"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { formatToolCallInput, formatToolResultPreview, tryParseJSON, detectFiletype } from "./format-utils"
 import type { DisplayBlock } from "./display-block"
+import { responseEntryRenderKey } from "./display-block"
 
 export type { DisplayBlock } from "./display-block"
 
@@ -46,6 +47,22 @@ function detectFiletypeFromContent(content: string): string {
 }
 
 export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
+  // Parent lists use <Index> so text updates do not remount OpenTUI
+  // renderables on every streaming chunk. An index is not permanently tied to
+  // one block kind, though: hiding completed tools can move an assistant block
+  // into the slot previously occupied by the tool summary, and a streamed
+  // tool-call is replaced by its tool result in place. ResponseEntryBody uses
+  // initialization-time branching, so remount it whenever that discriminator
+  // changes instead of retaining the old renderer (for example, plain system
+  // text for a completed Markdown response).
+  return (
+    <Show when={responseEntryRenderKey(props.entry)} keyed>
+      {() => <ResponseEntryBody entry={props.entry} isFirst={props.isFirst} />}
+    </Show>
+  )
+}
+
+function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(
     collapsible() && !(props.entry.streaming ?? false)

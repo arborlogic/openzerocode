@@ -265,10 +265,10 @@ describe("parseDiffBlocks", () => {
     assert.ok(result[0]!.content.includes("@@ -1,3 +1,3 @@"))
   })
 
-  // The component skips parseDiffBlocks entirely while streaming, so
-  // the streaming chunk path updates one stable OpenTUI <markdown> renderable
-  // with streaming=true. After completion, parseDiffBlocks decides whether
-  // custom diff/table segments require the segmented <Index> renderer.
+  // The component skips parseDiffBlocks entirely while streaming. Ordinary
+  // Markdown is split into stable completed blocks plus one Markdown tail.
+  // After completion, parseDiffBlocks decides whether custom diff/table
+  // segments require the segmented <Index> renderer.
   // This test pins the call shape so a future refactor can't silently
   // re-introduce streaming-mode segment parsing (the original flicker).
   it("parses streaming and non-streaming content with consistent segment counts", () => {
@@ -277,7 +277,7 @@ describe("parseDiffBlocks", () => {
     // While streaming we still expect parseDiffBlocks to recognize the
     // closed diff fence (it returns markdown + diff + markdown). The key
     // contract is that the component does NOT call it during streaming —
-    // the streaming markdown branch bypasses the custom parser entirely.
+    // the stable-block branch bypasses the custom parser entirely.
     const streamingResult = parseDiffBlocks(content, true)
     assert.equal(streamingResult.length, 3)
     assert.equal(streamingResult[1]!.type, "diff")

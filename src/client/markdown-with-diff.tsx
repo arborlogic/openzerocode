@@ -6,19 +6,21 @@
  * highlighting, line numbers, and proper added/removed line colors.
  *
  * Rendering strategy:
- *  - The ordinary OpenTUI <markdown> renderable remains mounted when streaming
- *    completes. Only its `streaming` property changes, allowing OpenTUI to
- *    finalize trailing tokens without dropping heading/emphasis styles or
- *    rebuilding the whole response.
+ *  - During ordinary Markdown streaming, each completed top-level block gets
+ *    its own non-streaming Markdown renderable. Later chunks therefore update
+ *    only the unfinished tail instead of invalidating the completed prefix.
+ *  - The unfinished tail also uses Markdown, so headings and inline syntax do
+ *    not temporarily appear as raw text.
  *  - Content that actually contains a custom diff/table switches to segmented
  *    rendering after completion. <Index> then keeps those segment identities
  *    stable across reactive re-evaluations of the parent.
  */
 
-import { Index, Show, createMemo, type ComponentProps } from "solid-js"
+import { Index, Show, createMemo, type Accessor, type ComponentProps } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
 import { parseDiffBlocks, type MarkdownDiffSegment } from "./markdown-diff-parser"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
+import { partitionStreamingMarkdown } from "./streaming-markdown-blocks"
 import { THEME } from "./theme"
 import stringWidth from "string-width"
 
@@ -96,6 +98,24 @@ function MarkdownTable(props: {
   )
 }
 
+function StableMarkdownBlock(props: {
+  content: string
+  syntaxStyle: SyntaxStyle
+  fg?: string
+  bg?: string
+}) {
+  return (
+    <markdown
+      content={props.content}
+      syntaxStyle={props.syntaxStyle}
+      fg={props.fg}
+      bg={props.bg}
+      streaming={false}
+      internalBlockMode="top-level"
+    />
+  )
+}
+
 /**
  * Renders markdown content, replacing ```diff / ```patch blocks with
  * a native diff visualization.
@@ -105,20 +125,37 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
     props.streaming ? [] : parseDiffBlocks(props.content, false),
   )
   const hasCustomSegments = createMemo(() => requiresCustomMarkdownRenderer(segments()))
+  const ordinaryBlocks = createMemo(() =>
+    partitionStreamingMarkdown(props.content, props.streaming ?? false),
+  )
 
   return (
     <box flexDirection="column" width="100%">
       <Show
         when={hasCustomSegments()}
         fallback={
-          <markdown
-            content={props.content}
-            syntaxStyle={props.syntaxStyle}
-            fg={props.fg}
-            bg={props.bg}
-            streaming={props.streaming ?? false}
-            internalBlockMode="top-level"
-          />
+          <>
+            <Index each={ordinaryBlocks().completed}>
+              {(block) => (
+                <StableMarkdownBlock
+                  content={block()}
+                  syntaxStyle={props.syntaxStyle}
+                  fg={props.fg}
+                  bg={props.bg}
+                />
+              )}
+            </Index>
+            <Show when={ordinaryBlocks().pending}>
+              {(pending: Accessor<string>) => (
+                <StableMarkdownBlock
+                  content={pending()}
+                  syntaxStyle={props.syntaxStyle}
+                  fg={props.fg}
+                  bg={props.bg}
+                />
+              )}
+            </Show>
+          </>
         }
       >
         <Index each={segments()}>
