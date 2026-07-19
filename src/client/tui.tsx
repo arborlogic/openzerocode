@@ -1,5 +1,5 @@
-import { For, Index, Show, createEffect, createMemo, createSignal } from "solid-js"
-import { render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { For, Index, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { onFocus, onResize, render, useKeyboard, usePaste, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { ScrollBoxRenderable, TextareaRenderable, PasteEvent } from "@opentui/core"
 import { Effect, Layer } from "effect"
 import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, normalizeBigPickleModel, getCachedModelInfo, getCachedModels, setCachedModels } from "../provider/index"
@@ -76,6 +76,7 @@ import { configurePeerBudget, setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
+import { createStableRepaintScheduler } from "./tui-render-stability"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -202,6 +203,14 @@ function App() {
   const dimensions = useTerminalDimensions()
   const sessionStart = new Date()
   const renderer = useRenderer()
+  const stableRepaint = createStableRepaintScheduler(renderer)
+
+  // The terminal can be modified while its tab or pane is unfocused, leaving
+  // OpenTUI's differential framebuffer out of sync with the visible screen.
+  // Repaint the complete surface on return and after resize/layout settles.
+  onFocus(stableRepaint.repaint)
+  onResize(() => stableRepaint.repaint())
+  onCleanup(stableRepaint.dispose)
 
   let initialMessages: Message[] = []
   let initialMode: RunMode = "build"
@@ -382,7 +391,9 @@ function App() {
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   createEffect(() => {
     if (!running() && !compacting()) return
-    const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 80)
+    // 8fps is visually smooth in a terminal while avoiding full layout/render
+    // pressure during streaming and compaction.
+    const id = setInterval(() => setSpinnerFrame(f => (f + 1) % SPINNER_FRAMES.length), 125)
     return () => clearInterval(id)
   })
   createEffect(() => { saveUIPrefs({ showCompletedTools: showCompletedTools() }) })
@@ -3505,8 +3516,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(node) => {
           scroll = node
           node.verticalScrollBar.visible = false
+          node.horizontalScrollBar.visible = false
+          node.scrollLeft = 0
         }}
         flexGrow={1}
+        width="100%"
+        minWidth={0}
         minHeight={0}
         stickyScroll={true}
         stickyStart="bottom"
@@ -3515,13 +3530,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         paddingTop={1}
         paddingBottom={1}
         scrollY={true}
+        scrollX={false}
+        viewportCulling={false}
         backgroundColor={THEME.background}
       >
-        <For each={turns()}>
+        {/* Transcript turns are append-only. Index preserves already-painted
+            renderables when the memo rebuilds its lightweight view models. */}
+        <Index each={turns()}>
           {(turn, index) => (
             <TurnEntry
-              turn={turn}
-              isFirst={index() === 0}
+              turn={turn()}
+              isFirst={index === 0}
               onUserClick={(msgIndex, text) => {
                 setUserMsgActionTarget({ index: msgIndex, text })
                 setPaletteMode("userMessageActions")
@@ -3531,9 +3550,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               isRunning={running()}
             />
           )}
-        </For>
+        </Index>
         <Show when={running() && streamingEntries().length > 0}>
-          <box marginTop={1} flexDirection="column" backgroundColor={THEME.background}>
+          <box marginTop={1} flexDirection="column" backgroundColor={THEME.background} width="100%" minWidth={0}>
             <Index each={streamingEntries()}>
               {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
             </Index>

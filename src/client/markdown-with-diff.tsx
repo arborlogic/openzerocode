@@ -7,9 +7,10 @@
  *
  * Rendering strategy:
  *  - While `streaming` is true we render the raw content through a single
- *    <markdown> renderable. Running parseDiffBlocks on every chunk and
- *    remounting <markdown>/<diff> via <For> caused the chat response to
- *    flicker (new object identities → mapArray rebuilds the whole subtree).
+ *    <text> renderable. OpenTUI's streaming markdown parser reparses and
+ *    rebuilds its trailing blocks on every chunk; inside a sticky scrollbox
+ *    those transient height changes make the response visibly flicker.
+ *    A text renderable updates in place and keeps layout stable.
  *  - After streaming completes we parse diff blocks once and use <Index>
  *    (positional keys) so segment identities stay stable across reactive
  *    re-evaluations of the parent — completing a turn never remounts
@@ -147,12 +148,11 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
           </Index>
         }
       >
-        <markdown
+        <text
           content={props.content}
-          syntaxStyle={props.syntaxStyle}
           fg={props.fg}
           bg={props.bg}
-          streaming={true}
+          wrapMode="word"
         />
       </Show>
     </box>

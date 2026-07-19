@@ -255,8 +255,8 @@ describe("parseDiffBlocks", () => {
   })
 
   // The component skips parseDiffBlocks entirely while streaming, so
-  // the streaming chunk path renders the raw content through one
-  // <markdown> renderable. After completion, parseDiffBlocks is called
+  // the streaming chunk path renders the raw content through one stable
+  // <text> renderable. After completion, parseDiffBlocks is called
   // once with streaming=false and the result is rendered through <Index>.
   // This test pins the call shape so a future refactor can't silently
   // re-introduce streaming-mode segment parsing (the original flicker).
@@ -266,7 +266,7 @@ describe("parseDiffBlocks", () => {
     // While streaming we still expect parseDiffBlocks to recognize the
     // closed diff fence (it returns markdown + diff + markdown). The key
     // contract is that the component does NOT call it during streaming —
-    // the streaming branch bypasses the parser entirely.
+    // the streaming text branch bypasses the parser entirely.
     const streamingResult = parseDiffBlocks(content, true)
     assert.equal(streamingResult.length, 3)
     assert.equal(streamingResult[1]!.type, "diff")

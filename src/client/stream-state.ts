@@ -74,7 +74,7 @@ export function createStreamState() {
   const setToolResult = (input: { id?: string; tool?: string; output: string; error?: boolean }) => {
     const key = input.id
     setParts((prev) => {
-      const at = prev.findIndex((part) =>
+      const resultAt = prev.findIndex((part) =>
         part.type === "tool-result" && ((key && part.id === key) || (!key && part.tool === input.tool)),
       )
       const next: Extract<Part, { type: "tool-result" }> = {
@@ -84,7 +84,16 @@ export function createStreamState() {
         output: input.output,
         error: input.error,
       }
-      if (at >= 0) return [...prev.slice(0, at), next, ...prev.slice(at + 1)]
+      if (resultAt >= 0) return [...prev.slice(0, resultAt), next, ...prev.slice(resultAt + 1)]
+
+      // A tool call and its running/result state occupy the same visual slot.
+      // Replacing instead of appending prevents the live transcript from
+      // growing by another row and then shrinking again when completed tools
+      // are folded into their summary.
+      const callAt = prev.findIndex((part) =>
+        part.type === "tool-call" && ((key && part.id === key) || (!key && part.tool === input.tool)),
+      )
+      if (callAt >= 0) return [...prev.slice(0, callAt), next, ...prev.slice(callAt + 1)]
       return [...prev, next]
     })
   }
