@@ -6,25 +6,27 @@
  * highlighting, line numbers, and proper added/removed line colors.
  *
  * Rendering strategy:
- *  - While `streaming` is true we render the raw content through a single
- *    <text> renderable. OpenTUI's streaming markdown parser reparses and
- *    rebuilds its trailing blocks on every chunk; inside a sticky scrollbox
- *    those transient height changes make the response visibly flicker.
- *    A text renderable updates in place and keeps layout stable.
- *  - After streaming completes we parse diff blocks once and use <Index>
- *    (positional keys) so segment identities stay stable across reactive
- *    re-evaluations of the parent — completing a turn never remounts
- *    already-rendered diff/markdown blocks.
+ *  - The ordinary OpenTUI <markdown> renderable remains mounted when streaming
+ *    completes. Only its `streaming` property changes, allowing OpenTUI to
+ *    finalize trailing tokens without dropping heading/emphasis styles or
+ *    rebuilding the whole response.
+ *  - Content that actually contains a custom diff/table switches to segmented
+ *    rendering after completion. <Index> then keeps those segment identities
+ *    stable across reactive re-evaluations of the parent.
  */
 
 import { Index, Show, createMemo, type ComponentProps } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
-import { parseDiffBlocks } from "./markdown-diff-parser"
+import { parseDiffBlocks, type MarkdownDiffSegment } from "./markdown-diff-parser"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { THEME } from "./theme"
 import stringWidth from "string-width"
 
 export { parseDiffBlocks } from "./markdown-diff-parser"
+
+export function requiresCustomMarkdownRenderer(segments: MarkdownDiffSegment[]): boolean {
+  return segments.some((segment) => segment.type !== "markdown")
+}
 
 export interface MarkdownWithDiffProps extends ComponentProps<"div"> {
   content: string
@@ -102,58 +104,62 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
   const segments = createMemo(() =>
     props.streaming ? [] : parseDiffBlocks(props.content, false),
   )
+  const hasCustomSegments = createMemo(() => requiresCustomMarkdownRenderer(segments()))
 
   return (
     <box flexDirection="column" width="100%">
       <Show
-        when={props.streaming}
+        when={hasCustomSegments()}
         fallback={
-          <Index each={segments()}>
-            {(segment) => {
-              const seg = segment()
-              if (seg.type === "diff") {
-                return (
-                  <diff
-                    diff={seg.content}
-                    syntaxStyle={props.syntaxStyle}
-                    fg={props.fg}
-                    filetype="diff"
-                    view="split"
-                    showLineNumbers={true}
-                    lineNumberFg={THEME.diffLineNumberFg}
-                    addedBg={THEME.diffAddedBg}
-                    removedBg={THEME.diffRemovedBg}
-                    {...DIFF_RENDER_PROPS}
-                    addedSignColor={THEME.diffAddedSign}
-                    removedSignColor={THEME.diffRemovedSign}
-                    marginTop={1}
-                    marginBottom={1}
-                    wrapMode="none"
-                  />
-                )
-              }
-              if (seg.type === "table") {
-                return <MarkdownTable table={seg.table} fg={props.fg} bg={props.bg} />
-              }
-              return (
-                <markdown
-                  content={seg.content}
-                  syntaxStyle={props.syntaxStyle}
-                  fg={props.fg}
-                  bg={props.bg}
-                  streaming={false}
-                />
-              )
-            }}
-          </Index>
+          <markdown
+            content={props.content}
+            syntaxStyle={props.syntaxStyle}
+            fg={props.fg}
+            bg={props.bg}
+            streaming={props.streaming ?? false}
+            internalBlockMode="top-level"
+          />
         }
       >
-        <text
-          content={props.content}
-          fg={props.fg}
-          bg={props.bg}
-          wrapMode="word"
-        />
+        <Index each={segments()}>
+          {(segment) => {
+            const seg = segment()
+            if (seg.type === "diff") {
+              return (
+                <diff
+                  diff={seg.content}
+                  syntaxStyle={props.syntaxStyle}
+                  fg={props.fg}
+                  filetype="diff"
+                  view="split"
+                  showLineNumbers={true}
+                  lineNumberFg={THEME.diffLineNumberFg}
+                  addedBg={THEME.diffAddedBg}
+                  removedBg={THEME.diffRemovedBg}
+                  {...DIFF_RENDER_PROPS}
+                  addedSignColor={THEME.diffAddedSign}
+                  removedSignColor={THEME.diffRemovedSign}
+                  marginTop={1}
+                  marginBottom={1}
+                  wrapMode="none"
+                />
+              )
+            }
+            if (seg.type === "table") {
+              return <MarkdownTable table={seg.table} fg={props.fg} bg={props.bg} />
+            }
+            return (
+              <markdown
+                content={seg.content}
+                syntaxStyle={props.syntaxStyle}
+                fg={props.fg}
+                bg={props.bg}
+                streaming={false}
+                internalBlockMode="top-level"
+              />
+            )
+          }}
+        </Index>
       </Show>
     </box>
   )

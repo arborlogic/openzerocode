@@ -2,6 +2,7 @@ import assert from "node:assert"
 import { describe, it } from "bun:test"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { normalizeUnifiedDiffHunks, parseDiffBlocks, parseMarkdownTables } from "./markdown-diff-parser"
+import { requiresCustomMarkdownRenderer } from "./markdown-with-diff"
 
 describe("parseDiffBlocks", () => {
   it("returns a single markdown segment when there are no diff blocks", () => {
@@ -9,6 +10,15 @@ describe("parseDiffBlocks", () => {
     assert.equal(result.length, 1)
     assert.equal(result[0]!.type, "markdown")
     assert.equal(result[0]!.content, "Hello world")
+    assert.equal(requiresCustomMarkdownRenderer(result), false)
+  })
+
+  it("keeps headings on the ordinary markdown renderer after streaming", () => {
+    const result = parseDiffBlocks("## 10. 長段落測試\n\n### 驗收清單\n\n- 保留樣式")
+
+    assert.equal(result.length, 1)
+    assert.equal(result[0]!.type, "markdown")
+    assert.equal(requiresCustomMarkdownRenderer(result), false)
   })
 
   it("extracts a ```diff block", () => {
@@ -33,6 +43,7 @@ describe("parseDiffBlocks", () => {
     assert.ok(result[1]!.content.includes("+new"))
     assert.equal(result[2]!.type, "markdown")
     assert.ok(result[2]!.content.includes("After:"))
+    assert.equal(requiresCustomMarkdownRenderer(result), true)
   })
 
   it("extracts a ```patch block", () => {
@@ -255,9 +266,9 @@ describe("parseDiffBlocks", () => {
   })
 
   // The component skips parseDiffBlocks entirely while streaming, so
-  // the streaming chunk path renders the raw content through one stable
-  // <text> renderable. After completion, parseDiffBlocks is called
-  // once with streaming=false and the result is rendered through <Index>.
+  // the streaming chunk path updates one stable OpenTUI <markdown> renderable
+  // with streaming=true. After completion, parseDiffBlocks decides whether
+  // custom diff/table segments require the segmented <Index> renderer.
   // This test pins the call shape so a future refactor can't silently
   // re-introduce streaming-mode segment parsing (the original flicker).
   it("parses streaming and non-streaming content with consistent segment counts", () => {
@@ -266,13 +277,13 @@ describe("parseDiffBlocks", () => {
     // While streaming we still expect parseDiffBlocks to recognize the
     // closed diff fence (it returns markdown + diff + markdown). The key
     // contract is that the component does NOT call it during streaming —
-    // the streaming text branch bypasses the parser entirely.
+    // the streaming markdown branch bypasses the custom parser entirely.
     const streamingResult = parseDiffBlocks(content, true)
     assert.equal(streamingResult.length, 3)
     assert.equal(streamingResult[1]!.type, "diff")
 
-    // After streaming completes, the component calls parseDiffBlocks
-    // once with streaming=false and renders the result via <Index>.
+    // After streaming completes, the component calls parseDiffBlocks once
+    // with streaming=false and uses <Index> because this result has a diff.
     const doneResult = parseDiffBlocks(content, false)
     assert.equal(doneResult.length, 3)
     assert.equal(doneResult[0]!.type, "markdown")
