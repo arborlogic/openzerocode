@@ -79,7 +79,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
-  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|off", argumentOptions: ["standard", "proactive", "off", "status"] },
+  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|execute|off", argumentOptions: ["standard", "proactive", "execute", "off", "status"] },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
   { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)", argumentOptions: ["view"] },
@@ -233,16 +233,18 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     const mode = normalized === "on" || normalized === "start" || normalized === "enable"
       ? "standard"
       : normalized
-    if (mode !== "standard" && mode !== "proactive") {
-      notifyCommand(ctx, "error", "Invalid autopilot option", "Usage: /autopilot standard|proactive|off|status")
+    if (mode !== "standard" && mode !== "proactive" && mode !== "execute") {
+      notifyCommand(ctx, "error", "Invalid autopilot option", "Usage: /autopilot standard|proactive|execute|off|status")
       return true
     }
     ctx.setAutopilotMode(mode)
     notifyCommand(
       ctx,
       "success",
-      mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
-      mode === "proactive"
+      mode === "execute" ? "Execute Plan Autopilot enabled" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+      mode === "execute"
+        ? "AI will execute your approved TODO list continuously, then verify and review once at the end."
+        : mode === "proactive"
         ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
         : "AI will answer routine continuation questions when the next step is clear and safe.",
     )

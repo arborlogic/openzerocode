@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.0 - 2026-07-20
+
+### Added
+
+- Added **Execute Plan Autopilot** (`/autopilot execute`) to continuously implement an approved, ordered TODO list, then run integrated verification and one final review.
+- Added the latest OpenAI Codex model IDs: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.5`.
+- Added regression coverage for streamed markdown blocks, transcript rendering stability, response-entry transitions, and Execute Plan Autopilot behavior.
+
+### Changed
+
+- Upgraded OpenTUI core and Solid rendering dependencies to 0.4.5.
+- Improved streaming markdown parsing and TUI rendering so completed responses retain inline and block-level Markdown styles.
+- Refined the Compose execute workflow to complete approved tasks continuously, reserving broad verification and review until all tasks are complete.
+- Updated the terminal theme, including richer Markdown syntax highlighting and improved color contrast.
+
+### Fixed
+
+- Fixed streamed Markdown block boundaries and transcript updates that could cause flicker, duplicated content, or lost Markdown styling.
+- Stabilized TUI render updates while responses stream.
+
 ## 0.7.0 - 2026-07-16
 
 ### Added

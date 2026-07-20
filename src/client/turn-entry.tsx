@@ -1,4 +1,4 @@
-import { For, Show } from "solid-js"
+import { Index, Show } from "solid-js"
 import { THEME } from "./theme"
 import { ResponseEntry } from "./response-entry"
 import type { DisplayBlock } from "./response-entry"
@@ -20,7 +20,7 @@ export function TurnEntry(props: {
   const canClick = () => !props.isRunning && props.turn.userMsgIndex !== undefined && !!props.onUserClick
 
   return (
-    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1} backgroundColor={THEME.background}>
+    <box flexDirection="column" marginTop={props.isFirst ? 0 : 1} gap={1} backgroundColor={THEME.background} width="100%" minWidth={0}>
       <Show when={props.turn.user}>
         <box
           paddingLeft={2}
@@ -38,7 +38,7 @@ export function TurnEntry(props: {
           <Show when={props.turn.peerOrigin}>
             <text style={{ fg: THEME.peer }}>from: {props.turn.peerOrigin}</text>
           </Show>
-          <box flexDirection="row" gap={1}>
+          <box flexDirection="row" gap={1} width="100%" minWidth={0}>
             <text style={{ fg: THEME.text, flexGrow: 1 }}>{props.turn.user?.text ?? ""}</text>
             <Show when={canClick()}>
               <text style={{ fg: THEME.muted }}>⋯</text>
@@ -49,9 +49,11 @@ export function TurnEntry(props: {
 
       <Show when={props.turn.entries.length > 0}>
         <box flexDirection="column">
-          <For each={props.turn.entries}>
-            {(entry, index) => <ResponseEntry entry={entry} isFirst={index() === 0} />}
-          </For>
+          {/* Entries are append-only within a turn. Index keeps existing
+              renderables mounted when messageToBlocks returns fresh objects. */}
+          <Index each={props.turn.entries}>
+            {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
+          </Index>
           <Show when={props.turn.footer}>
             <box marginTop={1}>
               <text style={{ fg: THEME.muted }}>{props.turn.footer}</text>

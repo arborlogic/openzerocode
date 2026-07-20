@@ -35,4 +35,25 @@ describe("createStreamState", () => {
       },
     ])
   })
+
+  it("replaces a streamed tool call with its result in the same visual slot", () => {
+    const state = createStreamState()
+
+    state.streamToolCallChunk(0, {
+      id: "call_1",
+      tool: "read",
+      argumentsChunk: '{"filePath":"foo.ts"}',
+    })
+    state.setToolResult({ id: "call_1", tool: "read", output: "running..." })
+
+    assert.deepEqual(state.parts(), [
+      {
+        type: "tool-result",
+        id: "call_1",
+        tool: "read",
+        output: "running...",
+        error: undefined,
+      },
+    ])
+  })
 })

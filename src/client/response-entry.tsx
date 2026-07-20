@@ -3,6 +3,7 @@ import { THEME, MARKDOWN_SYNTAX } from "./theme"
 import { MarkdownWithDiff } from "./markdown-with-diff"
 import { formatToolCallInput, formatToolResultPreview, tryParseJSON, detectFiletype } from "./format-utils"
 import type { DisplayBlock } from "./display-block"
+import { responseEntryRenderKey } from "./display-block"
 
 export type { DisplayBlock } from "./display-block"
 
@@ -46,6 +47,22 @@ function detectFiletypeFromContent(content: string): string {
 }
 
 export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
+  // Parent lists use <Index> so text updates do not remount OpenTUI
+  // renderables on every streaming chunk. An index is not permanently tied to
+  // one block kind, though: hiding completed tools can move an assistant block
+  // into the slot previously occupied by the tool summary, and a streamed
+  // tool-call is replaced by its tool result in place. ResponseEntryBody uses
+  // initialization-time branching, so remount it whenever that discriminator
+  // changes instead of retaining the old renderer (for example, plain system
+  // text for a completed Markdown response).
+  return (
+    <Show when={responseEntryRenderKey(props.entry)} keyed>
+      {() => <ResponseEntryBody entry={props.entry} isFirst={props.isFirst} />}
+    </Show>
+  )
+}
+
+function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(
     collapsible() && !(props.entry.streaming ?? false)
@@ -161,7 +178,11 @@ export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) 
 
   // Whether to show expanded content
   const showExpanded = createMemo(() => {
-    if (props.entry.streaming) return true
+    // Keep live tools to a fixed-height status row. Tool arguments/results can
+    // be arbitrarily tall; showing them temporarily makes sticky scrolling
+    // move already-rendered text when the completed tool is collapsed/hidden.
+    // The full content remains available after completion when tools are shown.
+    if (props.entry.streaming) return props.entry.kind === "error"
     if (props.entry.kind === "tool-call") return !toolCallOverflow() || !collapsed()
     if (props.entry.kind === "tool") return !toolResultOverflow() || !collapsed()
     return true
@@ -178,7 +199,7 @@ export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) 
   const canToggle = createMemo(() => props.entry.kind === "reasoning" || showExpandHint())
 
   return (
-    <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1}>
+    <box marginTop={props.isFirst ? 0 : 1} flexDirection="column" gap={1} width="100%" minWidth={0}>
       {/* Header row */}
       <box
         flexDirection="row"
@@ -191,7 +212,7 @@ export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) 
         <text style={{ fg: labelColor() }}>{toolIcon}</text>
         <text style={{ fg: labelColor() }}>{toolLabel}</text>
         <Show when={props.entry.streaming}>
-          <text style={{ fg: THEME.muted }}> …</text>
+          <text style={{ fg: THEME.muted }}> · running…</text>
         </Show>
         <Show when={showExpandHint() && collapsed() && collapsedPreview()}>
           <text style={{ fg: THEME.muted }}>· {collapsedPreview()}</text>

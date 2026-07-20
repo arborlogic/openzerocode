@@ -22,8 +22,8 @@ Commands
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
-  /autopilot [standard|proactive|off]
-                         Continue routine prompts or propose the next task
+  /autopilot [standard|proactive|execute|off]
+                         Continue routine prompts, advance a plan, or execute an approved TODO list
   /usage                 Open token usage dashboard
   /compact               Summarize and compress earlier session history
   /commit                Generate a commit message from current changes
@@ -46,7 +46,7 @@ Command Palette  (Ctrl+P / F2)
   INPUT
     Focus input          Return focus to the composer
     Auto-approve         Toggle automatic tool approval
-    Autopilot            Choose standard or proactive continuation
+    Autopilot            Choose standard, proactive, or continuous TODO execution
 
   DISPLAY
     Display settings     Toggle tools, thinking, layout
