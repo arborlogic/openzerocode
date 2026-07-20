@@ -9,13 +9,27 @@ export const THEME = {
   muted: "#8b949e",
   accent: "#58a6ff",
   accentDim: "#1f6feb",
-  user: "#7ee787",
+  user: "#5bb863",
   peer: "#f0883e",
   tool: "#d2a8ff",
   error: "#f85149",
   warning: "#d29922",
   headerBg: "#161b22",
   headerBorder: "#21262d",
+  // Markdown colors
+  markdownHeading: "#e6edf3",
+  markdownLink: "#58a6ff",
+  markdownLinkText: "#a5d6ff",
+  markdownCode: "#5bb863",
+  markdownBlockQuote: "#d29922",
+  markdownEmph: "#ffa657",
+  markdownStrong: "#e6edf3",
+  markdownHorizontalRule: "#30363d",
+  markdownListItem: "#58a6ff",
+  markdownListEnumeration: "#8b949e",
+  markdownImage: "#58a6ff",
+  markdownImageText: "#a5d6ff",
+  markdownCodeBlock: "#e6edf3",
   // Diff colors
   diffAddedBg: "#1f3d2b",
   diffRemovedBg: "#4a1f25",
@@ -26,6 +40,7 @@ export const THEME = {
 }
 
 export const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
+  // Code syntax scopes
   { scope: ["default"], style: { foreground: THEME.text } },
   { scope: ["comment"], style: { foreground: THEME.muted, italic: true } },
   { scope: ["string"], style: { foreground: "#a5d6ff" } },
@@ -33,6 +48,28 @@ export const MARKDOWN_SYNTAX = SyntaxStyle.fromTheme([
   { scope: ["number"], style: { foreground: "#79c0ff" } },
   { scope: ["function"], style: { foreground: "#d2a8ff" } },
   { scope: ["type"], style: { foreground: "#ffa657" } },
+  // Markdown structural scopes
+  { scope: ["markup.heading"], style: { foreground: THEME.markdownHeading, bold: true } },
+  { scope: ["markup.heading.1"], style: { foreground: THEME.markdownHeading, bold: true, underline: true } },
+  { scope: ["markup.heading.2"], style: { foreground: THEME.markdownHeading, bold: true } },
+  { scope: ["markup.heading.3"], style: { foreground: THEME.markdownHeading, bold: true } },
+  { scope: ["markup.heading.4"], style: { foreground: THEME.markdownHeading, bold: true } },
+  { scope: ["markup.heading.5"], style: { foreground: THEME.markdownHeading, bold: true } },
+  { scope: ["markup.heading.6"], style: { foreground: THEME.markdownHeading, bold: true } },
+  { scope: ["markup.bold", "markup.strong"], style: { foreground: THEME.markdownStrong, bold: true } },
+  { scope: ["markup.italic"], style: { foreground: THEME.markdownEmph, italic: true } },
+  { scope: ["markup.strikethrough"], style: { foreground: THEME.muted } },
+  { scope: ["markup.list"], style: { foreground: THEME.markdownListItem } },
+  { scope: ["markup.list.numbered"], style: { foreground: THEME.markdownListEnumeration } },
+  { scope: ["markup.quote"], style: { foreground: THEME.markdownBlockQuote, italic: true } },
+  { scope: ["markup.raw", "markup.raw.inline"], style: { foreground: THEME.markdownCode } },
+  { scope: ["markup.raw.block"], style: { foreground: THEME.markdownCodeBlock } },
+  { scope: ["markup.link"], style: { foreground: THEME.markdownLink, underline: true } },
+  { scope: ["markup.link.url"], style: { foreground: THEME.markdownLink, underline: true } },
+  { scope: ["markup.link.label"], style: { foreground: THEME.markdownLinkText, underline: true } },
+  { scope: ["markup.image"], style: { foreground: THEME.markdownImage } },
+  { scope: ["markup.image.url"], style: { foreground: THEME.markdownImageText } },
+  { scope: ["markup.horizontal_rule"], style: { foreground: THEME.markdownHorizontalRule } },
 ])
 // Register a paste-marker style for extmarks (orange badge like opencode)
 MARKDOWN_SYNTAX.registerStyle("paste", {
