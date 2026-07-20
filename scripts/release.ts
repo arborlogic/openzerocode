@@ -2,7 +2,7 @@
 
 import { $ } from "bun"
 import { existsSync } from "node:fs"
-import { readFile } from "node:fs/promises"
+import { readFile, writeFile } from "node:fs/promises"
 import { basename } from "node:path"
 
 const HELP = `Usage: bun run scripts/release.ts <patch|minor|major|VERSION> [options]
