@@ -1,7 +1,7 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
 import { Effect } from "effect"
-import { layer, toCodexRequestBody } from "./openai-codex"
+import { collectCodexCompletion, layer, toCodexRequestBody } from "./openai-codex"
 import { Provider } from "./types"
 
 describe("openai codex provider", () => {
@@ -35,7 +35,7 @@ describe("openai codex provider", () => {
     ])
   })
 
-  it("uses fallback instructions when no system message exists", () => {
+  it("uses fallback instructions and streaming for non-streaming callers", () => {
     const body = toCodexRequestBody({
       model: "gpt-5.4",
       messages: [{ role: "user", content: "hello" }],
@@ -43,6 +43,7 @@ describe("openai codex provider", () => {
     })
 
     assert.equal(body.instructions, "You are a helpful coding assistant.")
+    assert.equal(body.stream, true)
   })
 
   it("omits unsupported temperature from Codex requests", () => {
@@ -54,5 +55,40 @@ describe("openai codex provider", () => {
     })
 
     assert.equal(Object.hasOwn(body, "temperature"), false)
+  })
+
+  it("omits unsupported max_output_tokens from Codex requests", () => {
+    const body = toCodexRequestBody({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+      max_tokens: 1_024,
+    })
+
+    assert.equal(Object.hasOwn(body, "max_output_tokens"), false)
+  })
+
+  it("collects a streaming Codex response for complete callers", async () => {
+    const encoder = new TextEncoder()
+    const response = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          "event: response.output_text.delta\n",
+          "data: {\"type\":\"response.output_text.delta\",\"delta\":\"summary\"}\n\n",
+          "event: response.completed\n",
+          "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n",
+        ].join("")))
+        controller.close()
+      },
+    })
+
+    const result = await collectCodexCompletion(
+      // Use the same parser as the provider's `complete()` implementation.
+      (await import("./responses-api")).createResponsesStream(response),
+      "gpt-5.4",
+    )
+
+    assert.equal(result.message.content, "summary")
+    assert.deepEqual(result.usage, { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3, cached_tokens: 0 })
   })
 })
