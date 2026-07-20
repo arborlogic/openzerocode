@@ -20,9 +20,18 @@ describe("getKnownModelConfig", () => {
     assert.equal(getKnownModelConfig("unknown-model"), undefined)
   })
 
-  it("does not hardcode provider-prefixed gpt-5.5 context", () => {
+  it("uses the 372K application budget for provider-prefixed Codex GPT-5.5", () => {
     const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
-    assert.equal(cfg, undefined)
+    assert.ok(cfg)
+    assert.equal(cfg.contextLimit, 372_000)
+  })
+
+  it("uses the 372K application budget for all Codex GPT-5.6 variants", () => {
+    for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      const cfg = getKnownModelConfig(`openaicodex/${model}`)
+      assert.ok(cfg, `expected config for ${model}`)
+      assert.equal(cfg.contextLimit, 372_000)
+    }
   })
 
   it("returns config for claude models with thinking suffix", () => {
@@ -138,6 +147,7 @@ describe("modelSupportsVision", () => {
   it("treats known gpt codex models as vision-capable", () => {
     assert.equal(modelSupportsVision("gpt-5.5-codex"), true)
     assert.equal(modelSupportsVision("openaicodex/gpt-5.5-codex"), true)
+    assert.equal(modelSupportsVision("openaicodex/gpt-5.6-sol"), true)
   })
 
   it("does not treat arbitrary unknown models as vision-capable", () => {

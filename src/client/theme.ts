@@ -14,6 +14,7 @@ export const THEME = {
   tool: "#d2a8ff",
   error: "#f85149",
   warning: "#d29922",
+  blockBg: "#161b22",
   headerBg: "#161b22",
   headerBorder: "#21262d",
   // Markdown colors
