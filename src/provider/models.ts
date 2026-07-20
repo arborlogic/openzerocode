@@ -37,6 +37,29 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     pricing: { input: 0, output: 0 },
     vision: true,
   },
+  // OpenAI documents a 1,050,000-token context window for the current
+  // ChatGPT Codex model family (GPT-5.5 and all GPT-5.6 variants). Keep the
+  // usable application budget at 372K to leave room for output and overhead.
+  "gpt-5.5": {
+    contextLimit: 372_000,
+    pricing: { input: 0, output: 0 },
+    vision: true,
+  },
+  "gpt-5.6-sol": {
+    contextLimit: 372_000,
+    pricing: { input: 0, output: 0 },
+    vision: true,
+  },
+  "gpt-5.6-terra": {
+    contextLimit: 372_000,
+    pricing: { input: 0, output: 0 },
+    vision: true,
+  },
+  "gpt-5.6-luna": {
+    contextLimit: 372_000,
+    pricing: { input: 0, output: 0 },
+    vision: true,
+  },
   "gpt-5.4-codex": {
     contextLimit: 400_000,
     pricing: { input: 0, output: 0 },
