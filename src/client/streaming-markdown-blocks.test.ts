@@ -16,11 +16,14 @@ describe("looksLikeMarkdown", () => {
     assert.equal(looksLikeMarkdown("# Hello"), true)
     assert.equal(looksLikeMarkdown("## World"), true)
     assert.equal(looksLikeMarkdown("###### Deep"), true)
+    assert.equal(looksLikeMarkdown("Setext heading\n==="), true)
   })
 
   it("detects fenced code blocks", () => {
     assert.equal(looksLikeMarkdown("```ts"), true)
     assert.equal(looksLikeMarkdown("```"), true)
+    assert.equal(looksLikeMarkdown("~~~python"), true)
+    assert.equal(looksLikeMarkdown("    const value = 1"), true)
   })
 
   it("detects lists", () => {
@@ -46,6 +49,10 @@ describe("looksLikeMarkdown", () => {
     assert.equal(looksLikeMarkdown("`code`"), true)
     assert.equal(looksLikeMarkdown("~~strikethrough~~"), true)
     assert.equal(looksLikeMarkdown("[link](url)"), true)
+    assert.equal(looksLikeMarkdown("![alt text](image.png)"), true)
+    assert.equal(looksLikeMarkdown("<https://example.com>"), true)
+    assert.equal(looksLikeMarkdown("Visit www.example.com"), true)
+    assert.equal(looksLikeMarkdown("<kbd>Ctrl</kbd>"), true)
   })
 
   it("detects reference links", () => {

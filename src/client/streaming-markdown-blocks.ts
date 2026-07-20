@@ -41,9 +41,13 @@ function hasDocumentScopedReference(content: string): boolean {
  */
 export function looksLikeMarkdown(content: string): boolean {
   // Heading
-  if (/^#{1,6}\s/.test(content)) return true
+  if (/^ {0,3}#{1,6}\s/.test(content)) return true
+  // Setext heading
+  if (/^.+\n {0,3}(?:=+|-+)\s*$/m.test(content)) return true
   // Fenced code block
-  if (/^```/.test(content)) return true
+  if (/^ {0,3}(?:`{3,}|~{3,})/.test(content)) return true
+  // Indented code block
+  if (/^(?: {4}|\t)\S/m.test(content)) return true
   // Unordered list
   if (/^[\s]*[-*+]\s/.test(content)) return true
   // Ordered list
@@ -55,7 +59,11 @@ export function looksLikeMarkdown(content: string): boolean {
   // Table (pipe + separator line)
   if (/\|/.test(content) && /^\|?\s*[-:]+[-|:\s]*$/m.test(content)) return true
   // Inline markdown (bold, italic, code, links)
-  if (/\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|~~[^~]+~~|\[[^\]]+\]\([^)]+\)/.test(content)) return true
+  if (/\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|~~[^~]+~~|!?\[[^\]]*\]\([^)]+\)/.test(content)) return true
+  // Autolinks and bare URLs are parsed as links by marked.
+  if (/<(?:https?:\/\/|mailto:)[^ >]+>|\b(?:https?:\/\/|www\.)[^\s<]+/.test(content)) return true
+  // Inline/block HTML needs the Markdown renderer rather than a literal text node.
+  if (/<\/?[A-Za-z][^>]*>/.test(content)) return true
   // Reference links [text][id] or [text][]
   if (/\[[^\]]+\]\[[^\]]*\]/.test(content)) return true
   // Reference definitions [id]: url
