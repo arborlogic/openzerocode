@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1 - 2026-07-20
+
+### Fixed
+
+- Optimize Codex streaming and fix markdown rendering issues
+
 ## 0.8.0 - 2026-07-20
 
 ### Added
