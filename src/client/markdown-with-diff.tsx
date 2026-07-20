@@ -20,7 +20,7 @@ import { Index, Show, createMemo, type Accessor, type ComponentProps } from "sol
 import type { SyntaxStyle } from "@opentui/core"
 import { parseDiffBlocks, type MarkdownDiffSegment } from "./markdown-diff-parser"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
-import { partitionStreamingMarkdown } from "./streaming-markdown-blocks"
+import { partitionStreamingMarkdown, type MarkdownBlock } from "./streaming-markdown-blocks"
 import { THEME } from "./theme"
 import stringWidth from "string-width"
 
@@ -105,14 +105,16 @@ function StableMarkdownBlock(props: {
   bg?: string
 }) {
   return (
-    <markdown
-      content={props.content}
-      syntaxStyle={props.syntaxStyle}
-      fg={props.fg}
-      bg={props.bg}
-      streaming={false}
-      internalBlockMode="top-level"
-    />
+    <box backgroundColor={THEME.blockBg} padding={1} width="100%">
+      <markdown
+        content={props.content}
+        syntaxStyle={props.syntaxStyle}
+        fg={props.fg}
+        bg={props.bg}
+        streaming={false}
+        internalBlockMode="top-level"
+      />
+    </box>
   )
 }
 
@@ -124,79 +126,113 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
   const segments = createMemo(() =>
     props.streaming ? [] : parseDiffBlocks(props.content, false),
   )
-  const hasCustomSegments = createMemo(() => requiresCustomMarkdownRenderer(segments()))
+
   const ordinaryBlocks = createMemo(() =>
     partitionStreamingMarkdown(props.content, props.streaming ?? false),
   )
 
+  // During streaming, detect diff/table blocks in completed blocks so
+  // hasCustomSegments is stable before streaming ends. This prevents the
+  // <Show> condition from flipping at the streaming→completed transition.
+  const streamingHasCustomSegments = createMemo(() => {
+    if (!props.streaming) return false
+    return ordinaryBlocks().completed.some((block) => {
+      const trimmed = block.content.trimStart()
+      if (/^```(?:diff|patch)\b/.test(trimmed)) return true
+      if (/\|/.test(block.content) && /^\|?\s*[-:]+[-|:\s]*$/m.test(block.content)) return true
+      return false
+    })
+  })
+
+  const hasCustomSegments = createMemo(() =>
+    props.streaming ? streamingHasCustomSegments() : requiresCustomMarkdownRenderer(segments()),
+  )
+
+  // Always use the ordinary-blocks path during streaming so that the
+  // hasCustomSegments=true state does not hide content while segments()
+  // is still empty. The switch to the segments path happens atomically
+  // when streaming ends.
+  const showOrdinaryPath = createMemo(() => props.streaming || !hasCustomSegments())
+
   return (
-    <box flexDirection="column" width="100%">
+    <box flexDirection="column" width="100%" gap={1}>
       <Show
-        when={hasCustomSegments()}
+        when={showOrdinaryPath()}
         fallback={
-          <>
-            <Index each={ordinaryBlocks().completed}>
-              {(block) => (
-                <StableMarkdownBlock
-                  content={block()}
-                  syntaxStyle={props.syntaxStyle}
-                  fg={props.fg}
-                  bg={props.bg}
-                />
-              )}
-            </Index>
-            <Show when={ordinaryBlocks().pending}>
-              {(pending: Accessor<string>) => (
-                <StableMarkdownBlock
-                  content={pending()}
-                  syntaxStyle={props.syntaxStyle}
-                  fg={props.fg}
-                  bg={props.bg}
-                />
-              )}
-            </Show>
-          </>
+          <Index each={segments()}>
+            {(segment) => {
+              const seg = segment()
+              if (seg.type === "diff") {
+                return (
+                  <diff
+                    diff={seg.content}
+                    syntaxStyle={props.syntaxStyle}
+                    fg={props.fg}
+                    filetype="diff"
+                    view="split"
+                    showLineNumbers={true}
+                    lineNumberFg={THEME.diffLineNumberFg}
+                    addedBg={THEME.diffAddedBg}
+                    removedBg={THEME.diffRemovedBg}
+                    {...DIFF_RENDER_PROPS}
+                    addedSignColor={THEME.diffAddedSign}
+                    removedSignColor={THEME.diffRemovedSign}
+                    marginTop={1}
+                    marginBottom={1}
+                    wrapMode="none"
+                  />
+                )
+              }
+              if (seg.type === "table") {
+                return <MarkdownTable table={seg.table} fg={props.fg} bg={props.bg} />
+              }
+              return (
+                <box backgroundColor={THEME.blockBg} padding={1} width="100%">
+                  <markdown
+                    content={seg.content}
+                    syntaxStyle={props.syntaxStyle}
+                    fg={props.fg}
+                    bg={props.bg}
+                    streaming={false}
+                    internalBlockMode="top-level"
+                  />
+                </box>
+              )
+            }}
+          </Index>
         }
       >
-        <Index each={segments()}>
-          {(segment) => {
-            const seg = segment()
-            if (seg.type === "diff") {
-              return (
-                <diff
-                  diff={seg.content}
+        <>
+          <Index each={ordinaryBlocks().completed}>
+            {(block) => (
+              <Show
+                when={block().type === "markdown"}
+                fallback={
+                  <box backgroundColor={THEME.blockBg} padding={1} width="100%">
+                    <text content={block().content} fg={props.fg} bg={props.bg} />
+                  </box>
+                }
+              >
+                <StableMarkdownBlock
+                  content={block().content}
                   syntaxStyle={props.syntaxStyle}
                   fg={props.fg}
-                  filetype="diff"
-                  view="split"
-                  showLineNumbers={true}
-                  lineNumberFg={THEME.diffLineNumberFg}
-                  addedBg={THEME.diffAddedBg}
-                  removedBg={THEME.diffRemovedBg}
-                  {...DIFF_RENDER_PROPS}
-                  addedSignColor={THEME.diffAddedSign}
-                  removedSignColor={THEME.diffRemovedSign}
-                  marginTop={1}
-                  marginBottom={1}
-                  wrapMode="none"
+                  bg={props.bg}
                 />
-              )
-            }
-            if (seg.type === "table") {
-              return <MarkdownTable table={seg.table} fg={props.fg} bg={props.bg} />
-            }
-            return (
-              <markdown
-                content={seg.content}
+              </Show>
+            )}
+          </Index>
+          <Show when={ordinaryBlocks().pending}>
+            {(pending: Accessor<MarkdownBlock>) => (
+              <StableMarkdownBlock
+                content={pending().content}
                 syntaxStyle={props.syntaxStyle}
                 fg={props.fg}
                 bg={props.bg}
-                streaming={false}
-                internalBlockMode="top-level"
               />
-            )
-          }}
-        </Index>
+            )}
+          </Show>
+        </>
       </Show>
     </box>
   )
