@@ -25,7 +25,7 @@ import { createSession, deleteSession, getCurrentSessionId, loadSessionState, sa
 import { getModelConfig } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
-import { buildCompactionTranscript, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
+import { buildCompactionTranscript, cumulativeCompactionSourceCount, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
 import { formatProviderError, isRateLimitError } from "./errors"
 import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
@@ -2438,7 +2438,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     showToast("info", opts.automatic ? "Auto compression started" : "Compaction started", "Summarizing earlier session history…", 2000)
     queueMicrotask(scrollBottom)
 
-    const transcript = buildCompactionTranscript(head)
+    // A previous summary is not part of `messages()`, but it is part of every
+    // model request. Include it in the next summary so repeated compaction
+    // does not silently discard the already-compressed portion of the session.
+    const previousSummary = compaction()?.summary
+    const transcript = [
+      previousSummary ? `[PREVIOUS COMPACTION SUMMARY]\n${previousSummary}` : "",
+      buildCompactionTranscript(head),
+    ].filter(Boolean).join("\n\n---\n\n")
     const prompt = [
       "You are compacting a coding assistant session for future continuation.",
       "Summarize only the provided history.",
@@ -2475,7 +2482,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       const newCompaction: CompactionInfo = {
         summary,
         createdAt: new Date().toISOString(),
-        sourceMessageCount: head.length,
+        sourceMessageCount: cumulativeCompactionSourceCount(head.length, compaction()?.sourceMessageCount),
       }
       setMessages(tail)
       setCompaction(newCompaction)
@@ -2496,7 +2503,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
     const cfg = getModelConfig(currentModel, currentModelInfo)
-    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit, autoCompressionThreshold())
+    const nearContextLimit = shouldAutoCompactContext(
+      messages(),
+      extraInput,
+      cfg.contextLimit,
+      autoCompressionThreshold(),
+      compaction()?.summary,
+    )
     if (nearContextLimit && autoCompressionEnabled()) {
       await compactCurrentSession({ automatic: true })
     } else if (nearContextLimit && opts.warnWhenDisabled) {
@@ -3823,6 +3836,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           cwd={currentCwd()}
           version={VERSION}
           sessionId={sessionId()}
+          compactionSummary={compaction()?.summary}
           gitRefreshKey={gitRefreshRevision()}
           geassRevision={geassRevision()}
           onFileClick={(file) => { void handleFileDiffRequest(file) }}
@@ -3853,6 +3867,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             cwd={currentCwd()}
             version={VERSION}
             sessionId={sessionId()}
+            compactionSummary={compaction()?.summary}
             gitRefreshKey={gitRefreshRevision()}
             geassRevision={geassRevision()}
             onFileClick={(file) => { void handleFileDiffRequest(file) }}

@@ -6,6 +6,7 @@ import {
   stripCompactSummaryMessages,
   selectCompactionTail,
   buildCompactionTranscript,
+  cumulativeCompactionSourceCount,
   createCompactSummaryMessage,
   estimateContextTokens,
   shouldAutoCompactContext,
@@ -76,6 +77,16 @@ describe("createCompactSummaryMessage", () => {
   })
 })
 
+describe("cumulativeCompactionSourceCount", () => {
+  it("uses only the newly summarized count for the first compaction", () => {
+    assert.equal(cumulativeCompactionSourceCount(12), 12)
+  })
+
+  it("includes messages represented by a previous compaction summary", () => {
+    assert.equal(cumulativeCompactionSourceCount(8, 12), 20)
+  })
+})
+
 describe("estimateContextTokens", () => {
   it("counts serialized message fields, not just content", () => {
     const withToolPayload: Message[] = [
@@ -95,6 +106,16 @@ describe("estimateContextTokens", () => {
 
     assert.equal(estimateContextTokens(msgs), estimateContextTokens([user("hello")]))
     assert.ok(estimateContextTokens(msgs, "next prompt".repeat(100)) > estimateContextTokens(msgs))
+  })
+
+  it("includes the separately stored current compaction summary", () => {
+    const msgs = [user("hello")]
+    const summary = "important prior work ".repeat(100)
+
+    assert.ok(
+      estimateContextTokens(msgs, "", summary) > estimateContextTokens(msgs),
+      "the summary is sent to the provider even though it is absent from message history",
+    )
   })
 
   it("ignores parts that duplicate assistant and tool provider fields", () => {
@@ -137,6 +158,15 @@ describe("shouldAutoCompactContext", () => {
 
     assert.equal(shouldAutoCompactContext(messages, "", contextLimit, 0.6), true)
     assert.equal(shouldAutoCompactContext(messages, "", contextLimit, 0.8), false)
+  })
+
+  it("considers a separately stored compaction summary for the warning threshold", () => {
+    const messages = [user("short")]
+    const summary = "prior context ".repeat(100)
+    const estimate = estimateContextTokens(messages, "", summary)
+
+    assert.equal(shouldAutoCompactContext(messages, "", estimate + 1, 1, summary), false)
+    assert.equal(shouldAutoCompactContext(messages, "", estimate - 1, 1, summary), true)
   })
 })
 

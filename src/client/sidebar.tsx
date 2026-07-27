@@ -112,6 +112,8 @@ export function Sidebar(props: {
   provider: string
   sessionTitle?: string
   sessionId?: string
+  /** Compaction summary injected into provider requests but not stored in messages. */
+  compactionSummary?: string
   cwd?: string
   version?: string
   /** Increment to force a git snapshot refresh from outside the component. */
@@ -225,7 +227,7 @@ export function Sidebar(props: {
   // Context total must match the compaction-warning trigger: JSON.stringify the
   // full message objects (parts, tool calls, reasoning) so tool-heavy sessions
   // are not under-reported as 1% while the warning fires.
-  const totalTokens = createMemo(() => estimateContextTokens(props.messages()))
+  const totalTokens = createMemo(() => estimateContextTokens(props.messages(), "", props.compactionSummary))
   const contextPercent = createMemo(() => {
     const limit = modelCfg().contextLimit
     if (!limit) return 0

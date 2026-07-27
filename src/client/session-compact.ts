@@ -42,9 +42,21 @@ export function stripCompactSummaryMessages(messages: Message[]): Message[] {
 /** Default context utilization at which automatic session compaction begins. */
 export const CONTEXT_WARNING_THRESHOLD = 0.6
 
-export function estimateContextTokens(messages: Message[], extraInput: string = ""): number {
+/**
+ * Estimate the prompt-sized session context. The current compacted summary is
+ * stored separately from the visible message history, but is still sent as a
+ * system message on every request, so callers must include it here.
+ */
+export function estimateContextTokens(
+  messages: Message[],
+  extraInput: string = "",
+  compactionSummary: string = "",
+): number {
   const clean = stripCompactSummaryMessages(messages)
-  return estimateMessageTokens(clean) + estimateTokens(extraInput)
+  const summaryMessages: Message[] = compactionSummary
+    ? [{ role: "system", content: `[Compaction Summary]\n${compactionSummary}` }]
+    : []
+  return estimateMessageTokens([...summaryMessages, ...clean]) + estimateTokens(extraInput)
 }
 
 export function shouldAutoCompactContext(
@@ -52,8 +64,9 @@ export function shouldAutoCompactContext(
   extraInput: string,
   contextLimit: number,
   threshold: number = CONTEXT_WARNING_THRESHOLD,
+  compactionSummary: string = "",
 ): boolean {
-  return estimateContextTokens(messages, extraInput) > contextLimit * threshold
+  return estimateContextTokens(messages, extraInput, compactionSummary) > contextLimit * threshold
 }
 
 export function selectCompactionTail(messages: Message[], contextLimit: number): { head: Message[]; tail: Message[] } {
@@ -88,6 +101,17 @@ export function selectCompactionTail(messages: Message[], contextLimit: number):
 
 export function buildCompactionTranscript(messages: Message[]): string {
   return messages.map(messageToTranscript).filter(Boolean).join("\n\n---\n\n")
+}
+
+/**
+ * Count all original messages represented by a replacement summary. Repeated
+ * compaction summarizes both a previous summary and a new slice of history.
+ */
+export function cumulativeCompactionSourceCount(
+  newlySummarizedCount: number,
+  previousSourceCount: number = 0,
+): number {
+  return previousSourceCount + newlySummarizedCount
 }
 
 export function createCompactSummaryMessage(summary: string): Message {
