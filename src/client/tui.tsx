@@ -306,7 +306,9 @@ function App() {
   const [providerModels, setProviderModels] = createSignal<Record<string, ModelInfo[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
-  const streamState = createStreamState()
+  // Text chunks are batched by streamState. Scroll only after that batch is
+  // committed, rather than forcing a layout/repaint for every SSE delta.
+  const streamState = createStreamState(() => queueMicrotask(scrollBottom))
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [toasts, setToasts] = createSignal<ToastItem[]>([])
   let nextToastId = 1
@@ -2020,22 +2022,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     let hiddenToolCount = 0
     const hiddenToolNames = new Set<string>()
 
-    const shouldShowEntry = (entry: DisplayBlock): boolean => {
+    const withDisplayVisibility = (entry: DisplayBlock): DisplayBlock => {
       // Always show streaming entries
-      if (entry.streaming) return true
+      if (entry.streaming) return entry
       // Always show user, assistant, system, error
-      if (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "system" || entry.kind === "error") return true
+      if (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "system" || entry.kind === "error") return entry
       // Hide completed tool-call and tool entries when showCompletedTools is off
       if ((entry.kind === "tool-call" || entry.kind === "tool") && !showCompletedTools()) {
         if (entry.title) hiddenToolNames.add(entry.title)
         hiddenToolCount++
-        return false
+        return { ...entry, hidden: true }
       }
       // Hide completed thinking blocks when showThinkingBlocks is off
       if (entry.kind === "reasoning" && !showThinkingBlocks()) {
-        return false
+        return { ...entry, hidden: true }
       }
-      return true
+      return entry
     }
 
     const ensureTurn = () => {
@@ -2064,7 +2066,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         continue
       }
 
-      const entries = messageToBlocks(msg).filter(shouldShowEntry)
+      // Do not filter hidden blocks out of this array. TurnEntry uses indexed
+      // slots to retain existing OpenTUI renderables while streaming; removing
+      // a block before a visible one shifts those slots and causes flicker.
+      const entries = messageToBlocks(msg).map(withDisplayVisibility)
       if (entries.length === 0) continue
       ensureTurn().entries.push(...entries)
     }
@@ -2097,13 +2102,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
 
     for (const turn of result) {
-      if (turn.entries.some((entry) =>
+      if (turn.entries.some((entry) => !entry.hidden && (
         entry.kind === "assistant"
         || entry.kind === "reasoning"
         || entry.kind === "tool"
         || entry.kind === "tool-call"
-        || entry.kind === "error",
-      )) {
+        || entry.kind === "error"
+      ))) {
         turn.footer = footerText()
       }
     }

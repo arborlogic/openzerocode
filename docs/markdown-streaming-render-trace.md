@@ -2,7 +2,7 @@
 
 > 建立日期：2026-07-26
 > 狀態：已修復（待使用者實機驗證）
-> 相關檔案：`src/client/markdown-with-diff.tsx`、`src/client/streaming-markdown-blocks.ts`、`src/client/stream-state.ts`、`src/client/session-runner.ts`、`src/client/response-entry.tsx`
+> 相關檔案：`src/client/markdown-with-diff.tsx`、`src/client/stream-state.ts`、`src/client/session-runner.ts`、`src/client/response-entry.tsx`
 > 關鍵依賴：`@opentui/core@0.4.5`、`@opentui/solid@0.4.5`、`marked@^17.0.5`
 
 ---
@@ -152,7 +152,7 @@ completed[]（已完成的 block）→ 各自的 <markdown streaming={false}>
 pending（最後一個未完成的 block）→ 另一個 <markdown streaming={false}>
 ```
 
-`partitionStreamingMarkdown` 以 blank line 為邊界，最後一個 group 在串流中永遠是 pending。
+`partitionStreamingMarkdown`（已移除）以 blank line 為邊界，最後一個 group 在串流中永遠是 pending。
 
 ### 4.2 閃爍觸發鏈
 
@@ -223,7 +223,7 @@ T+32ms： completed = [..., "段落 A 完整"], pending = ""（或新段落開�
 // markdown-with-diff.tsx（修改後）
 export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
   const segments = createMemo(() =>
-    props.streaming ? [] : parseDiffBlocks(props.content, false)
+    props.streaming ? [] : parseDiffBlocks(props.content)
   )
   const hasCustomSegments = createMemo(() =>
     requiresCustomMarkdownRenderer(segments())
@@ -376,10 +376,10 @@ set content(value: string) {
 }
 ```
 
-### 9.3 `partitionStreamingMarkdown`（應用層）
+### 9.3 `partitionStreamingMarkdown`（已移除的舊應用層）
 
 ```typescript
-// src/client/streaming-markdown-blocks.ts
+// 已移除：src/client/streaming-markdown-blocks.ts
 export function partitionStreamingMarkdown(source: string, streaming: boolean) {
   const tokens = marked.lexer(source)
   // 以 blank line 分割 block group

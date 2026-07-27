@@ -135,26 +135,6 @@ describe("parseDiffBlocks", () => {
     assert.equal(diffSeg.file, "src/hello.ts")
   })
 
-  it("treats an unclosed trailing diff fence as diff while streaming", () => {
-    const md = [
-      "Before:",
-      "```diff src/hello.ts",
-      "--- a/src/hello.ts",
-      "+++ b/src/hello.ts",
-      "@@ -1 +1 @@",
-      "-old",
-      "+new",
-    ].join("\n")
-
-    const result = parseDiffBlocks(md, true)
-    assert.equal(result.length, 2)
-    assert.equal(result[0]!.type, "markdown")
-    assert.equal(result[1]!.type, "diff")
-    const diffSeg = result[1] as { type: "diff"; content: string; file?: string }
-    assert.equal(diffSeg.file, "src/hello.ts")
-    assert.ok(diffSeg.content.includes("+new"))
-  })
-
   it("keeps an unclosed trailing diff fence as markdown when not streaming", () => {
     const md = "```diff\n-old\n+new"
     const result = parseDiffBlocks(md)
@@ -265,30 +245,16 @@ describe("parseDiffBlocks", () => {
     assert.ok(result[0]!.content.includes("@@ -1,3 +1,3 @@"))
   })
 
-  // The component skips parseDiffBlocks entirely while streaming. Ordinary
-  // Markdown is split into stable completed blocks plus one Markdown tail.
-  // After completion, parseDiffBlocks decides whether custom diff/table
-  // segments require the segmented <Index> renderer.
-  // This test pins the call shape so a future refactor can't silently
-  // re-introduce streaming-mode segment parsing (the original flicker).
-  it("parses streaming and non-streaming content with consistent segment counts", () => {
+  // The component skips parseDiffBlocks entirely while streaming. Once the
+  // response is complete, this parser finds custom segments for <Index>.
+  it("parses completed content into custom segments", () => {
     const content = "Some text\n```diff\n--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-old\n+new\n```\nTail"
 
-    // While streaming we still expect parseDiffBlocks to recognize the
-    // closed diff fence (it returns markdown + diff + markdown). The key
-    // contract is that the component does NOT call it during streaming —
-    // the stable-block branch bypasses the custom parser entirely.
-    const streamingResult = parseDiffBlocks(content, true)
-    assert.equal(streamingResult.length, 3)
-    assert.equal(streamingResult[1]!.type, "diff")
-
-    // After streaming completes, the component calls parseDiffBlocks once
-    // with streaming=false and uses <Index> because this result has a diff.
-    const doneResult = parseDiffBlocks(content, false)
-    assert.equal(doneResult.length, 3)
-    assert.equal(doneResult[0]!.type, "markdown")
-    assert.equal(doneResult[1]!.type, "diff")
-    assert.equal(doneResult[2]!.type, "markdown")
+    const result = parseDiffBlocks(content)
+    assert.equal(result.length, 3)
+    assert.equal(result[0]!.type, "markdown")
+    assert.equal(result[1]!.type, "diff")
+    assert.equal(result[2]!.type, "markdown")
   })
 
   it("keeps diff row colors enabled while leaving context rows transparent", () => {

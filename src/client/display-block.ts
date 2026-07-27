@@ -3,6 +3,12 @@ export type DisplayBlock = {
   text: string
   title?: string
   streaming?: boolean
+  /**
+   * Keep a block's slot in the transcript while omitting it from the layout.
+   * This prevents hiding a preceding tool/reasoning block from shifting every
+   * later indexed renderable and briefly painting stale content.
+   */
+  hidden?: boolean
   /** Extra metadata (e.g. file path for write/read_file tool results) */
   meta?: Record<string, unknown>
 }

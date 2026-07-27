@@ -3,7 +3,11 @@ import type { Part } from "../provider/types"
 
 const FLUSH_INTERVAL_MS = 32 // ~30fps
 
-export function createStreamState() {
+/**
+ * Buffers streamed text so rendering (and any dependent layout work) happens
+ * at a bounded rate instead of once for every provider SSE delta.
+ */
+export function createStreamState(onTextFlush?: () => void) {
   const [parts, setParts] = createSignal<Part[]>([])
 
   // Pending buffers — flushed on next tick rather than on every chunk
@@ -40,6 +44,7 @@ export function createStreamState() {
         }
         return next
       })
+      onTextFlush?.()
     }, FLUSH_INTERVAL_MS)
   }
 

@@ -50,9 +50,16 @@ export function TurnEntry(props: {
       <Show when={props.turn.entries.length > 0}>
         <box flexDirection="column">
           {/* Entries are append-only within a turn. Index keeps existing
-              renderables mounted when messageToBlocks returns fresh objects. */}
+              renderables mounted when messageToBlocks returns fresh objects.
+              Hidden entries must remain in this indexed list: filtering them
+              would shift later slots and make OpenTUI briefly repaint them
+              with the preceding entry's content. */}
           <Index each={props.turn.entries}>
-            {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
+            {(entry, index) => (
+              <Show when={!entry().hidden}>
+                <ResponseEntry entry={entry()} isFirst={index === 0} />
+              </Show>
+            )}
           </Index>
           <Show when={props.turn.footer}>
             <box marginTop={1}>

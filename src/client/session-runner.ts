@@ -552,11 +552,9 @@ export async function runSession(
       switch (chunk.type) {
         case "text":
           ui.streamAssistantChunk(chunk.content)
-          ui.scrollBottom()
           break
         case "reasoning":
           ui.streamReasoningChunk(chunk.content)
-          ui.scrollBottom()
           break
         case "tool_call_delta":
           ui.streamToolCallChunk(chunk.index, { id: chunk.id, tool: chunk.tool, argumentsChunk: chunk.argumentsChunk })
