@@ -12,6 +12,7 @@ import { listSelectableGroups, toggleGroup, TOOL_GROUPS } from "../tool/selectio
 import { loadMcpConfig, mcpGroupId } from "../mcp/config"
 import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpServer, isServerLoaded, isServerLoading, unloadAllMcpServers } from "../mcp/store"
 import { createStreamState } from "./stream-state"
+import { STREAM_TEST_RESPONSE, streamTestChunks } from "./stream-test"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import { cycleCommandArgument } from "./autocomplete-logic"
@@ -2141,6 +2142,55 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }).filter(Boolean) as DisplayBlock[],
   )
 
+  const runStreamTest = () => {
+    if (running() || compacting()) {
+      showToast("warning", "Stream test unavailable", "Wait for the current response or compaction to finish.")
+      return
+    }
+
+    const chunks = streamTestChunks()
+    let chunkIndex = 0
+    runAbort = new AbortController()
+    const abort = runAbort.signal
+    streamState.reset()
+    setNotices([])
+    setRunning(true)
+    setStatus("streaming local test response...")
+
+    const emit = () => {
+      if (abort.aborted) {
+        streamState.reset()
+        setStatus("local stream test cancelled")
+        runAbort = undefined
+        setRunning(false)
+        return
+      }
+      const chunk = chunks[chunkIndex++]
+      if (chunk !== undefined) {
+        streamState.streamAssistantChunk(chunk)
+        setTimeout(emit, 45)
+        return
+      }
+      // Let stream-state's final 32 ms flush commit before moving the text to
+      // durable history, just as a real provider response does.
+      setTimeout(() => {
+        if (abort.aborted) {
+          streamState.reset()
+          setStatus("local stream test cancelled")
+        } else {
+          streamState.reset()
+          setMessages((prev) => [...prev, { role: "assistant", content: STREAM_TEST_RESPONSE }])
+          setStatus("waiting for input")
+          showToast("success", "Stream test complete", "Local response completed without using a model.")
+          queueMicrotask(scrollBottom)
+        }
+        runAbort = undefined
+        setRunning(false)
+      }, 40)
+    }
+    emit()
+  }
+
   const scrollBottom = () => {
     if (!scroll) return
     scroll.scrollTo(scroll.scrollHeight)
@@ -2769,6 +2819,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           }
           inputQueue?.enqueue(encodeReviewRequest(target))
         },
+        runStreamTest,
         peerName: activePeerName,
         listPeers: activePeerName ? listLivePeers : undefined,
         callPeer: activePeerName
