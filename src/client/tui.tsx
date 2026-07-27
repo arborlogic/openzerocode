@@ -12,6 +12,7 @@ import { listSelectableGroups, toggleGroup, TOOL_GROUPS } from "../tool/selectio
 import { loadMcpConfig, mcpGroupId } from "../mcp/config"
 import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpServer, isServerLoaded, isServerLoading, unloadAllMcpServers } from "../mcp/store"
 import { createStreamState } from "./stream-state"
+import { STREAM_TEST_RESPONSE, streamTestChunks } from "./stream-test"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
 import { SlashAutocomplete } from "./autocomplete"
 import { cycleCommandArgument } from "./autocomplete-logic"
@@ -77,7 +78,7 @@ import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
-import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
+import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
 import pkg from "../../package.json" with { type: "json" }
@@ -275,7 +276,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "reference" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "autoCompressionThreshold" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "reference" | "codexKeyname">("actions")
   const [referenceTitle, setReferenceTitle] = createSignal("Help")
   const [referenceContent, setReferenceContent] = createSignal(HELP_CONTENT)
   const [referenceSkills, setReferenceSkills] = createSignal<SkillSummary[] | undefined>()
@@ -306,7 +307,9 @@ function App() {
   const [providerModels, setProviderModels] = createSignal<Record<string, ModelInfo[]>>({})
   const [providerModelsLoading, setProviderModelsLoading] = createSignal<string | null>(null)
   const [providerModelsError, setProviderModelsError] = createSignal<Record<string, string>>({})
-  const streamState = createStreamState()
+  // Text chunks are batched by streamState. Scroll only after that batch is
+  // committed, rather than forcing a layout/repaint for every SSE delta.
+  const streamState = createStreamState(() => queueMicrotask(scrollBottom))
   const [notices, setNotices] = createSignal<DisplayBlock[]>([])
   const [toasts, setToasts] = createSignal<ToastItem[]>([])
   let nextToastId = 1
@@ -353,6 +356,7 @@ function App() {
       .catch((e) => setStatus(`MCP ${server.id} failed: ${e instanceof Error ? e.message : String(e)}`))
   }
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
+  const [autoCompressionThreshold, setAutoCompressionThreshold] = createSignal(_uiPrefs.autoCompressionThreshold)
   const [autopilotMode, setAutopilotMode] = createSignal<AutopilotMode>("off")
   const autopilotEnabled = () => autopilotMode() !== "off"
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
@@ -362,7 +366,7 @@ function App() {
   const [showSplash, setShowSplash] = createSignal(true)
   const [showUsageDashboard, setShowUsageDashboard] = createSignal(false)
   const [usageDashboardView, setUsageDashboardView] = createSignal<ViewMode>("sessions")
-  const [diffOverlay, setDiffOverlay] = createSignal<{ file: string; content: string } | null>(null)
+  const [diffOverlay, setDiffOverlay] = createSignal<{ file: GitFile; content: string; cwd: string } | null>(null)
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
   const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
   const currentCwd = createMemo(() => {
@@ -400,6 +404,7 @@ function App() {
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
   createEffect(() => { saveUIPrefs({ autoCompressionEnabled: autoCompressionEnabled() }) })
+  createEffect(() => { saveUIPrefs({ autoCompressionThreshold: autoCompressionThreshold() }) })
   createEffect(() => {
     const endpoint = localVlmEndpoint()
     const model = localVlmModel()
@@ -422,8 +427,14 @@ function App() {
     }
   })
   async function handleFileDiffRequest(file: GitFile) {
+    const cwd = currentCwd()
     const normalized = await getFileDiff(file.path)
-    setDiffOverlay({ file: file.path, content: normalized || "(no diff available)" })
+    setDiffOverlay({ file, content: normalized || "(no diff available)", cwd })
+  }
+
+  function handleRevealFileRequest(file: GitFile, cwd = currentCwd()) {
+    const ok = revealFileInFolder(file.path, cwd)
+    setStatus(ok ? `opened folder for ${file.path}` : `folder not found: ${file.path}`)
   }
 
   let scroll: ScrollBoxRenderable | undefined
@@ -632,7 +643,7 @@ function App() {
 
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
   const PALETTE_INPUT_WIDTH = createMemo(() => Math.min(128, Math.max(PALETTE_WIDTH(), dimensions().width - 8)))
-  const isPaletteTextEntryMode = () => paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL"
+  const isPaletteTextEntryMode = () => paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL"
   const activePaletteWidth = () => isPaletteTextEntryMode() ? PALETTE_INPUT_WIDTH() : PALETTE_WIDTH()
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
@@ -1091,13 +1102,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Auto compression",
-        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        hint: autoCompressionEnabled() ? `ON · at ${Math.round(autoCompressionThreshold() * 100)}% context` : "OFF",
         onSelect: () => {
           const nextEnabled = !autoCompressionEnabled()
           setAutoCompressionEnabled(nextEnabled)
           saveUIPrefs({ autoCompressionEnabled: nextEnabled })
           setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
           setShowPalette(false)
+        },
+      },
+      {
+        label: "Auto compression threshold",
+        hint: `${Math.round(autoCompressionThreshold() * 100)}%`,
+        onSelect: () => {
+          setPaletteInput(String(Math.round(autoCompressionThreshold() * 100)))
+          setPaletteMode("autoCompressionThreshold")
+          setPaletteIndex(0)
         },
       },
       ...(compaction()?.summary
@@ -1899,6 +1919,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           { label: `Current max steps: ${maxSteps()}`, kind: "section" as const, onSelect: () => {} },
           { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
         ]
+      : paletteMode() === "autoCompressionThreshold"
+      ? [
+          { label: `Current auto compression threshold: ${Math.round(autoCompressionThreshold() * 100)}%`, kind: "section" as const, onSelect: () => {} },
+          { label: "Enter a percentage from 1 to 99 · Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
       : paletteMode() === "editProviderBaseURL"
       ? [
           { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
@@ -1944,7 +1969,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
     // queuedMessages is intentionally unfiltered; the queue is small and simpler without search input
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1958,14 +1983,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "localVlmEndpoint" && mode !== "localVlmModel" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "autoCompressionThreshold" && mode !== "localVlmEndpoint" && mode !== "localVlmModel" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -1998,22 +2023,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     let hiddenToolCount = 0
     const hiddenToolNames = new Set<string>()
 
-    const shouldShowEntry = (entry: DisplayBlock): boolean => {
+    const withDisplayVisibility = (entry: DisplayBlock): DisplayBlock => {
       // Always show streaming entries
-      if (entry.streaming) return true
+      if (entry.streaming) return entry
       // Always show user, assistant, system, error
-      if (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "system" || entry.kind === "error") return true
+      if (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "system" || entry.kind === "error") return entry
       // Hide completed tool-call and tool entries when showCompletedTools is off
       if ((entry.kind === "tool-call" || entry.kind === "tool") && !showCompletedTools()) {
         if (entry.title) hiddenToolNames.add(entry.title)
         hiddenToolCount++
-        return false
+        return { ...entry, hidden: true }
       }
       // Hide completed thinking blocks when showThinkingBlocks is off
       if (entry.kind === "reasoning" && !showThinkingBlocks()) {
-        return false
+        return { ...entry, hidden: true }
       }
-      return true
+      return entry
     }
 
     const ensureTurn = () => {
@@ -2042,7 +2067,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         continue
       }
 
-      const entries = messageToBlocks(msg).filter(shouldShowEntry)
+      // Do not filter hidden blocks out of this array. TurnEntry uses indexed
+      // slots to retain existing OpenTUI renderables while streaming; removing
+      // a block before a visible one shifts those slots and causes flicker.
+      const entries = messageToBlocks(msg).map(withDisplayVisibility)
       if (entries.length === 0) continue
       ensureTurn().entries.push(...entries)
     }
@@ -2075,13 +2103,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
 
     for (const turn of result) {
-      if (turn.entries.some((entry) =>
+      if (turn.entries.some((entry) => !entry.hidden && (
         entry.kind === "assistant"
         || entry.kind === "reasoning"
         || entry.kind === "tool"
         || entry.kind === "tool-call"
-        || entry.kind === "error",
-      )) {
+        || entry.kind === "error"
+      ))) {
         turn.footer = footerText()
       }
     }
@@ -2113,6 +2141,55 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }).filter(Boolean) as DisplayBlock[],
   )
+
+  const runStreamTest = () => {
+    if (running() || compacting()) {
+      showToast("warning", "Stream test unavailable", "Wait for the current response or compaction to finish.")
+      return
+    }
+
+    const chunks = streamTestChunks()
+    let chunkIndex = 0
+    runAbort = new AbortController()
+    const abort = runAbort.signal
+    streamState.reset()
+    setNotices([])
+    setRunning(true)
+    setStatus("streaming local test response...")
+
+    const emit = () => {
+      if (abort.aborted) {
+        streamState.reset()
+        setStatus("local stream test cancelled")
+        runAbort = undefined
+        setRunning(false)
+        return
+      }
+      const chunk = chunks[chunkIndex++]
+      if (chunk !== undefined) {
+        streamState.streamAssistantChunk(chunk)
+        setTimeout(emit, 45)
+        return
+      }
+      // Let stream-state's final 32 ms flush commit before moving the text to
+      // durable history, just as a real provider response does.
+      setTimeout(() => {
+        if (abort.aborted) {
+          streamState.reset()
+          setStatus("local stream test cancelled")
+        } else {
+          streamState.reset()
+          setMessages((prev) => [...prev, { role: "assistant", content: STREAM_TEST_RESPONSE }])
+          setStatus("waiting for input")
+          showToast("success", "Stream test complete", "Local response completed without using a model.")
+          queueMicrotask(scrollBottom)
+        }
+        runAbort = undefined
+        setRunning(false)
+      }, 40)
+    }
+    emit()
+  }
 
   const scrollBottom = () => {
     if (!scroll) return
@@ -2419,7 +2496,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
     const cfg = getModelConfig(currentModel, currentModelInfo)
-    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit)
+    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit, autoCompressionThreshold())
     if (nearContextLimit && autoCompressionEnabled()) {
       await compactCurrentSession({ automatic: true })
     } else if (nearContextLimit && opts.warnWhenDisabled) {
@@ -2742,6 +2819,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           }
           inputQueue?.enqueue(encodeReviewRequest(target))
         },
+        runStreamTest,
         peerName: activePeerName,
         listPeers: activePeerName ? listLivePeers : undefined,
         callPeer: activePeerName
@@ -3020,6 +3098,33 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setMaxSteps(next)
           saveUIPrefs({ maxSteps: next })
           setStatus(`max steps set to ${next}`)
+          setPaletteInput("")
+          setShowPalette(false)
+          setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "autoCompressionThreshold") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const rawPercent = paletteInput().trim()
+          const percent = Number.parseInt(rawPercent, 10)
+          if (!/^\d+$/.test(rawPercent) || percent <= 0 || percent >= 100) {
+            setStatus("auto compression threshold must be an integer from 1 to 99 percent")
+            event.preventDefault()
+            return
+          }
+          const next = percent / 100
+          setAutoCompressionThreshold(next)
+          saveUIPrefs({ autoCompressionThreshold: next })
+          setStatus(`auto compression threshold set to ${percent}%`)
           setPaletteInput("")
           setShowPalette(false)
           setPaletteMode("actions")
@@ -3850,7 +3955,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "reference"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - activePaletteWidth()) / 2)
             : 2
@@ -3907,7 +4012,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <Show when={paletteMode() !== "queuedMessages" && paletteMode() !== "autopilot"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                   <text style={{ fg: THEME.muted }}>
-                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "autoCompressionThreshold" ? "Auto compression threshold (%):" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                   </text>
                   <box
                     backgroundColor={THEME.background}
@@ -3922,7 +4027,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   </box>
                 </box>
             </Show>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "localVlmEndpoint" && paletteMode() !== "localVlmModel" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "autoCompressionThreshold" && paletteMode() !== "localVlmEndpoint" && paletteMode() !== "localVlmModel" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3977,7 +4082,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
-                : paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel"
+                : paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel"
                   ? "Enter save  •  Esc cancel"
                   : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
                   ? "Enter confirm  •  Esc back"
@@ -4035,7 +4140,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               flexDirection="column"
             >
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
-                <text style={{ fg: THEME.accent, flexGrow: 1 }}>{overlay.file}</text>
+                <box flexDirection="row" gap={1} flexGrow={1}>
+                  <text style={{ fg: THEME.accent }} wrapMode="none">{overlay.file.path}</text>
+                  <text
+                    style={{ fg: THEME.accent }}
+                    onMouseDown={() => handleRevealFileRequest(overlay.file, overlay.cwd)}
+                  >
+                    ⧉
+                  </text>
+                </box>
                 <text
                   style={{ fg: THEME.muted }}
                   onMouseDown={() => setDiffOverlay(null)}

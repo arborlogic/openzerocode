@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.2 - 2026-07-27
+
+### Added
+
+- Added a **Reveal** action to the diff overlay for opening the affected file at the relevant line.
+- Added a configurable automatic context-compression threshold in the TUI preferences.
+- Added the local `/stream-test` command to exercise and inspect streamed Markdown rendering.
+
+### Fixed
+
+- Fixed message-metadata token accounting so metadata tokens are not counted twice during context compaction.
+- Eliminated Markdown flicker during streamed assistant responses and stabilized the final rendered output.
+
+### Changed
+
+- Simplified streamed Markdown rendering around a persistent incremental renderer, improving display stability while content arrives.
+- Removed the obsolete OpenCode git submodule.
+
 ## 0.8.1 - 2026-07-20
 
 ### Fixed

@@ -30,7 +30,7 @@ This document reviews OpenZeroCode's working memory implementation, comparing de
 
 | Aspect | opencode | OpenZeroCode (implemented) |
 |--------|----------|----------------------------|
-| Trigger | Context overflow | Auto (80% threshold) or `/compact` manual |
+| Trigger | Context overflow | Auto (60% default, configurable) or `/compact` manual |
 | Summary format | Anchored summary | Structured (Goal / Progress / Decisions / Files / Next Steps) |
 | Storage location | DB | `session.compaction.summary` in JSON |
 | Retain tail | ✅ | ✅ Retains most recent N messages |
@@ -71,7 +71,7 @@ This document reviews OpenZeroCode's working memory implementation, comparing de
 ### Task 4: Context Budget Auto-Trigger ✅
 
 - [x] Estimate token count before each submit
-- [x] Auto-trigger compaction when exceeding 80% of model context limit
+- [x] Auto-trigger compaction when exceeding 60% of model context limit by default (configurable in the command palette)
 
 **Verification:** Long conversations don't need manual compaction; auto-compression triggers near the limit.
 

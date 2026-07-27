@@ -3,6 +3,23 @@ import assert from "node:assert"
 import { createStreamState } from "./stream-state"
 
 describe("createStreamState", () => {
+  it("notifies once when buffered text is committed", async () => {
+    let flushes = 0
+    const state = createStreamState(() => { flushes++ })
+
+    state.streamAssistantChunk("hel")
+    state.streamAssistantChunk("lo")
+    state.streamReasoningChunk("think")
+
+    assert.equal(flushes, 0)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(flushes, 1)
+    assert.deepEqual(state.parts(), [
+      { type: "reasoning", text: "think" },
+      { type: "text", text: "hello" },
+    ])
+  })
+
   it("accumulates tool call chunks by stream index", () => {
     const state = createStreamState()
 

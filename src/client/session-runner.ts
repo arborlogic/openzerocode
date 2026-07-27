@@ -8,7 +8,7 @@ import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectPlanModeTools } from "../tool/selection"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
-import { estimateTokens, getModelConfig, modelSupportsVision } from "../provider/models"
+import { estimateMessageTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
@@ -47,7 +47,7 @@ type SessionRuntime = {
 }
 
 function estimateMessagesTokens(messages: Message[]): number {
-  return estimateTokens(JSON.stringify(messages))
+  return estimateMessageTokens(messages)
 }
 
 function compactCurrentTurnForRequest(
@@ -176,7 +176,7 @@ export async function* streamSession(
     let used = 0
     let start = history.length
     for (let i = history.length - 1; i >= 0; i--) {
-      const cost = estimateTokens(JSON.stringify(history[i]))
+      const cost = estimateMessageTokens([history[i]!])
       if (used + cost > budget) break
       used += cost
       start = i
@@ -552,11 +552,9 @@ export async function runSession(
       switch (chunk.type) {
         case "text":
           ui.streamAssistantChunk(chunk.content)
-          ui.scrollBottom()
           break
         case "reasoning":
           ui.streamReasoningChunk(chunk.content)
-          ui.scrollBottom()
           break
         case "tool_call_delta":
           ui.streamToolCallChunk(chunk.index, { id: chunk.id, tool: chunk.tool, argumentsChunk: chunk.argumentsChunk })

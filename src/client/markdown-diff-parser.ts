@@ -204,7 +204,7 @@ function looksLikeUnifiedDiff(code: string): boolean {
  * Parse markdown content into segments: normal markdown vs ```diff/```patch blocks.
  * Also detects ```bash/```sh blocks that contain unified diff content.
  */
-export function parseDiffBlocks(content: string, streaming = false): MarkdownDiffSegment[] {
+export function parseDiffBlocks(content: string): MarkdownDiffSegment[] {
   const segments: MarkdownDiffSegment[] = []
   // Matches fenced code blocks. Group 1: language, Group 2: filename hint, Group 3: content
   const pattern = /```(\w+)\s*(\S*)\n([\s\S]*?)```/g
@@ -243,26 +243,11 @@ export function parseDiffBlocks(content: string, streaming = false): MarkdownDif
     lastIndex = match.index + match[0].length
   }
 
-  // Remaining text after last diff block. While streaming, treat an unclosed
-  // trailing diff/patch fence as a diff segment so assistant output can render
-  // progressively instead of falling back to raw markdown text until close.
+  // An unclosed trailing fence remains ordinary markdown. This parser runs
+  // only after streaming has finished; live output uses one native <markdown>
+  // renderable so OpenTUI can update it incrementally without flicker.
   const remaining = content.slice(lastIndex)
-  if (remaining) {
-    const openDiff = streaming ? remaining.match(/```(diff|patch)\s*(\S*)\n([\s\S]*)$/) : null
-    if (openDiff && openDiff.index !== undefined) {
-      const before = remaining.slice(0, openDiff.index)
-      if (before) pushMarkdownSegments(segments, before)
-      const filename = openDiff[2] ?? ""
-      const diffContent = openDiff[3] ?? ""
-      segments.push({
-        type: "diff",
-        content: normalizeUnifiedDiffHunks(diffContent.trimEnd()),
-        file: filename || undefined,
-      })
-    } else {
-      pushMarkdownSegments(segments, remaining)
-    }
-  }
+  if (remaining) pushMarkdownSegments(segments, remaining)
 
   return segments
 }

@@ -53,6 +53,7 @@ export type CommandContext = {
   getAutopilotMode: () => AutopilotMode
   setAutopilotMode: (mode: AutopilotMode) => void
   runReview: (target: string) => void
+  runStreamTest: () => void
   peerName?: string
   listPeers?: () => PeerEntry[]
   callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
@@ -73,6 +74,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "skills", description: "List available skills" },
   { name: "skill", description: "Show a skill's instructions: /skill <name>" },
   { name: "review", description: "Review changes using the review-helper skill: /review [target]" },
+  { name: "stream-test", description: "Replay a local Markdown response as a simulated stream (no model usage)" },
   { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
@@ -126,6 +128,11 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "review") {
     ctx.runReview(arg || "Review the current working-tree changes.")
+    return true
+  }
+
+  if (cmd === "stream-test") {
+    ctx.runStreamTest()
     return true
   }
 

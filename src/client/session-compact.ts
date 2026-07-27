@@ -1,6 +1,6 @@
 import type { Message, Part } from "../provider/types"
 import { contentToText } from "../provider/content"
-import { estimateTokens } from "../provider/models"
+import { estimateMessageTokens, estimateTokens } from "../provider/models"
 
 export const COMPACT_SUMMARY_PREFIX = "[Session Summary]"
 
@@ -39,15 +39,21 @@ export function stripCompactSummaryMessages(messages: Message[]): Message[] {
   return messages.filter((msg) => !isCompactSummaryMessage(msg))
 }
 
-export const CONTEXT_WARNING_THRESHOLD = 0.8
+/** Default context utilization at which automatic session compaction begins. */
+export const CONTEXT_WARNING_THRESHOLD = 0.6
 
 export function estimateContextTokens(messages: Message[], extraInput: string = ""): number {
   const clean = stripCompactSummaryMessages(messages)
-  return estimateTokens(JSON.stringify(clean) + extraInput)
+  return estimateMessageTokens(clean) + estimateTokens(extraInput)
 }
 
-export function shouldAutoCompactContext(messages: Message[], extraInput: string, contextLimit: number): boolean {
-  return estimateContextTokens(messages, extraInput) > contextLimit * CONTEXT_WARNING_THRESHOLD
+export function shouldAutoCompactContext(
+  messages: Message[],
+  extraInput: string,
+  contextLimit: number,
+  threshold: number = CONTEXT_WARNING_THRESHOLD,
+): boolean {
+  return estimateContextTokens(messages, extraInput) > contextLimit * threshold
 }
 
 export function selectCompactionTail(messages: Message[], contextLimit: number): { head: Message[]; tail: Message[] } {

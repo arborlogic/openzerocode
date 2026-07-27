@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext } from "./commands"
+import { STREAM_TEST_RESPONSE, streamTestChunks } from "./stream-test"
 import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 import type { AutopilotMode } from "./autopilot"
@@ -52,6 +53,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     getAutopilotMode: mock((): AutopilotMode => "off"),
     setAutopilotMode: mock(() => {}),
     runReview: mock(() => {}),
+    runStreamTest: mock(() => {}),
     ...overrides,
   }
 }
@@ -69,6 +71,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("skills"))
     assert.ok(names.includes("skill"))
     assert.ok(names.includes("review"))
+    assert.ok(names.includes("stream-test"))
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("queue"))
@@ -97,6 +100,14 @@ describe("BUILTIN_COMMANDS", () => {
     })
   })
 
+  describe("/stream-test", () => {
+    it("starts the local simulated stream", async () => {
+      const ctx = stubCtx()
+      assert.ok(await executeCommand("/stream-test", ctx))
+      assert.equal((ctx.runStreamTest as any).mock.calls.length, 1)
+    })
+  })
+
   it("does not include removed commands", () => {
     const names = BUILTIN_COMMANDS.map((c) => c.name)
     assert.ok(!names.includes("info"))
@@ -118,6 +129,28 @@ describe("BUILTIN_COMMANDS", () => {
     for (const cmd of BUILTIN_COMMANDS) {
       assert.ok(cmd.description.length > 0)
     }
+  })
+})
+
+describe("streamTestChunks", () => {
+  it("includes long Markdown, TypeScript, and a unified diff fixture", () => {
+    assert.ok(STREAM_TEST_RESPONSE.length > 3_000)
+    assert.match(STREAM_TEST_RESPONSE, /```ts/)
+    assert.match(STREAM_TEST_RESPONSE, /```diff/)
+    assert.match(STREAM_TEST_RESPONSE, /@@ -104,14 \+104,27 @@/)
+    assert.match(STREAM_TEST_RESPONSE, /^-  return <markdown/m)
+    assert.match(STREAM_TEST_RESPONSE, /^\+  if \(props\.streaming\)/m)
+  })
+
+  it("splits the complete deterministic response without changing it", () => {
+    const chunks = streamTestChunks(STREAM_TEST_RESPONSE, 48)
+    assert.ok(chunks.length > 1)
+    assert.ok(chunks.every((chunk) => chunk.length <= 48))
+    assert.equal(chunks.join(""), STREAM_TEST_RESPONSE)
+  })
+
+  it("rejects invalid chunk sizes", () => {
+    assert.throws(() => streamTestChunks("test", 0), /positive integer/)
   })
 })
 
