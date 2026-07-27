@@ -1,4 +1,4 @@
-import type { ModelInfo } from "./types"
+import type { Message, ModelInfo } from "./types"
 
 export type ModelConfig = {
   contextLimit: number
@@ -238,6 +238,12 @@ export function estimateTokens(text: string): number {
   // CJK characters typically take 1–2 tokens per char (~0.5 token each)
   // ASCII/non-CJK typically average 4 chars per token (~0.25 token each)
   return Math.max(0, Math.round(cjkCount / 2 + otherCount / 4))
+}
+
+/** Estimate the request cost of messages without counting local display metadata. */
+export function estimateMessageTokens(messages: Message[]): number {
+  const wireMessages = messages.map(({ parts: _parts, ...message }) => message)
+  return estimateTokens(JSON.stringify(wireMessages))
 }
 
 export function estimateCost(model: string, inputTokens: number, outputTokens: number, cachedInputTokens?: number): number {

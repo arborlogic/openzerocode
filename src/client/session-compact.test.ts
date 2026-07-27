@@ -96,6 +96,23 @@ describe("estimateContextTokens", () => {
     assert.equal(estimateContextTokens(msgs), estimateContextTokens([user("hello")]))
     assert.ok(estimateContextTokens(msgs, "next prompt".repeat(100)) > estimateContextTokens(msgs))
   })
+
+  it("ignores parts that duplicate assistant and tool provider fields", () => {
+    const output = "large output ".repeat(200)
+    const messages: Message[] = [
+      {
+        ...assistantWithTools([{ id: "c1", name: "read", args: '{"filePath":"a.ts"}' }]),
+        parts: [{ type: "tool-call", id: "c1", tool: "read", input: '{"filePath":"a.ts"}' }],
+      },
+      {
+        ...toolMsg("c1", output),
+        parts: [{ type: "tool-result", id: "c1", tool: "read", output }],
+      },
+    ]
+    const withoutParts = messages.map(({ parts: _parts, ...message }) => message)
+
+    assert.equal(estimateContextTokens(messages), estimateContextTokens(withoutParts))
+  })
 })
 
 describe("shouldAutoCompactContext", () => {

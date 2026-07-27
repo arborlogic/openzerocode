@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { getKnownModelConfig, getModelConfig, estimateTokens, estimateCost, modelSupportsVision } from "./models"
+import { getKnownModelConfig, getModelConfig, estimateTokens, estimateMessageTokens, estimateCost, modelSupportsVision } from "./models"
 import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
@@ -171,6 +171,42 @@ describe("estimateTokens", () => {
   it("returns at least 0 for negative rounding", () => {
     const result = estimateTokens("a")
     assert.ok(result >= 0)
+  })
+})
+
+describe("estimateMessageTokens", () => {
+  it("does not double-count local parts that mirror provider fields", () => {
+    const message = {
+      role: "assistant" as const,
+      content: "answer ".repeat(100),
+      reasoning_content: "thinking ".repeat(100),
+      tool_calls: [{
+        id: "call_1",
+        type: "function" as const,
+        function: { name: "read", arguments: '{"filePath":"large.ts"}' },
+      }],
+    }
+    const withMirroredParts = {
+      ...message,
+      parts: [
+        { type: "reasoning" as const, text: message.reasoning_content },
+        { type: "text" as const, text: message.content },
+        { type: "tool-call" as const, id: "call_1", tool: "read", input: '{"filePath":"large.ts"}' },
+      ],
+    }
+
+    assert.equal(estimateMessageTokens([withMirroredParts]), estimateMessageTokens([message]))
+  })
+
+  it("counts tool output once when parts mirror content", () => {
+    const output = "result ".repeat(200)
+    const message = { role: "tool" as const, tool_call_id: "call_1", content: output }
+    const withMirroredParts = {
+      ...message,
+      parts: [{ type: "tool-result" as const, id: "call_1", tool: "read", output }],
+    }
+
+    assert.equal(estimateMessageTokens([withMirroredParts]), estimateMessageTokens([message]))
   })
 })
 
