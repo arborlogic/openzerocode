@@ -77,7 +77,7 @@ import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
-import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl } from "./process-utils"
+import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
 import pkg from "../../package.json" with { type: "json" }
@@ -362,7 +362,7 @@ function App() {
   const [showSplash, setShowSplash] = createSignal(true)
   const [showUsageDashboard, setShowUsageDashboard] = createSignal(false)
   const [usageDashboardView, setUsageDashboardView] = createSignal<ViewMode>("sessions")
-  const [diffOverlay, setDiffOverlay] = createSignal<{ file: string; content: string } | null>(null)
+  const [diffOverlay, setDiffOverlay] = createSignal<{ file: GitFile; content: string; cwd: string } | null>(null)
   const [splashSelectedIndex, setSplashSelectedIndex] = createSignal(-1)
   const [sessionScope, setSessionScope] = createSignal<"cwd" | "global">("cwd")
   const currentCwd = createMemo(() => {
@@ -422,8 +422,14 @@ function App() {
     }
   })
   async function handleFileDiffRequest(file: GitFile) {
+    const cwd = currentCwd()
     const normalized = await getFileDiff(file.path)
-    setDiffOverlay({ file: file.path, content: normalized || "(no diff available)" })
+    setDiffOverlay({ file, content: normalized || "(no diff available)", cwd })
+  }
+
+  function handleRevealFileRequest(file: GitFile, cwd = currentCwd()) {
+    const ok = revealFileInFolder(file.path, cwd)
+    setStatus(ok ? `opened folder for ${file.path}` : `folder not found: ${file.path}`)
   }
 
   let scroll: ScrollBoxRenderable | undefined
@@ -4035,7 +4041,15 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               flexDirection="column"
             >
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="row">
-                <text style={{ fg: THEME.accent, flexGrow: 1 }}>{overlay.file}</text>
+                <box flexDirection="row" gap={1} flexGrow={1}>
+                  <text style={{ fg: THEME.accent }} wrapMode="none">{overlay.file.path}</text>
+                  <text
+                    style={{ fg: THEME.accent }}
+                    onMouseDown={() => handleRevealFileRequest(overlay.file, overlay.cwd)}
+                  >
+                    ⧉
+                  </text>
+                </box>
                 <text
                   style={{ fg: THEME.muted }}
                   onMouseDown={() => setDiffOverlay(null)}

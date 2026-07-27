@@ -1,6 +1,8 @@
 import { spawn, execFile } from "node:child_process"
 import { platform } from "os"
 import { promisify } from "node:util"
+import { existsSync } from "node:fs"
+import path from "node:path"
 
 const execFileAsync = promisify(execFile)
 
@@ -72,4 +74,25 @@ export function openExternalUrl(url: string) {
   if (p === "darwin") spawn("open", [url], { stdio: "ignore", detached: true }).unref()
   else if (p === "win32") spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true }).unref()
   else spawn("xdg-open", [url], { stdio: "ignore", detached: true }).unref()
+}
+
+export function revealFileInFolder(filePath: string, cwd = process.cwd()): boolean {
+  if (!filePath) return false
+
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath)
+  const targetPath = existsSync(absolutePath) ? absolutePath : path.dirname(absolutePath)
+  if (!existsSync(targetPath)) return false
+
+  const p = platform()
+  if (p === "darwin") {
+    spawn("open", existsSync(absolutePath) ? ["-R", absolutePath] : [targetPath], { stdio: "ignore", detached: true }).unref()
+  } else if (p === "win32") {
+    spawn("explorer.exe", existsSync(absolutePath) ? ["/select,", absolutePath] : [targetPath], {
+      stdio: "ignore",
+      detached: true,
+    }).unref()
+  } else {
+    spawn("xdg-open", [targetPath], { stdio: "ignore", detached: true }).unref()
+  }
+  return true
 }
