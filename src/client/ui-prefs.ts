@@ -8,6 +8,7 @@ type UIPrefs = {
   showThinkingBlocks: boolean
   layoutMode: "horizontal" | "vertical"
   autoCompressionEnabled: boolean
+  autoCompressionThreshold: number
   maxSteps: number
   /**
    * Force visual image/screenshot analysis through a configured local VLM even
@@ -38,6 +39,7 @@ const DEFAULTS: UIPrefs = {
   showThinkingBlocks: true,
   layoutMode: "horizontal",
   autoCompressionEnabled: true,
+  autoCompressionThreshold: 0.6,
   maxSteps: 50,
   forceLocalVlm: false,
   localVlmEndpoint: "",
@@ -66,6 +68,11 @@ export function loadUIPrefs(): UIPrefs {
         ...DEFAULT_DISABLED_TOOL_GROUPS,
       ])].filter((group) => group !== "peer")
       migrated.toolDefaultsVersion = TOOL_DEFAULTS_VERSION
+    }
+    // Reject malformed or stale hand-edited values while keeping preferences
+    // files from older releases compatible with the new setting.
+    if (typeof migrated.autoCompressionThreshold !== "number" || migrated.autoCompressionThreshold <= 0 || migrated.autoCompressionThreshold >= 1) {
+      migrated.autoCompressionThreshold = DEFAULTS.autoCompressionThreshold
     }
     return migrated
   } catch {

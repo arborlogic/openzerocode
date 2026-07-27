@@ -275,7 +275,7 @@ function App() {
   const [pendingApproval, setPendingApproval] = createSignal<PendingApproval | undefined>(undefined)
   const [showPalette, setShowPalette] = createSignal(false)
   const [paletteIndex, setPaletteIndex] = createSignal(0)
-  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "reference" | "codexKeyname">("actions")
+  const [paletteMode, setPaletteMode] = createSignal<"actions" | "autopilot" | "sessions" | "directories" | "rename" | "providers" | "models" | "providerKeyProviders" | "providerKeys" | "timeline" | "queuedMessages" | "display" | "experiments" | "maxSteps" | "autoCompressionThreshold" | "localVlmEndpoint" | "localVlmModel" | "addProviderKeyName" | "addProviderKeyValue" | "editProviderBaseURL" | "userMessageActions" | "reference" | "codexKeyname">("actions")
   const [referenceTitle, setReferenceTitle] = createSignal("Help")
   const [referenceContent, setReferenceContent] = createSignal(HELP_CONTENT)
   const [referenceSkills, setReferenceSkills] = createSignal<SkillSummary[] | undefined>()
@@ -353,6 +353,7 @@ function App() {
       .catch((e) => setStatus(`MCP ${server.id} failed: ${e instanceof Error ? e.message : String(e)}`))
   }
   const [autoCompressionEnabled, setAutoCompressionEnabled] = createSignal(_uiPrefs.autoCompressionEnabled)
+  const [autoCompressionThreshold, setAutoCompressionThreshold] = createSignal(_uiPrefs.autoCompressionThreshold)
   const [autopilotMode, setAutopilotMode] = createSignal<AutopilotMode>("off")
   const autopilotEnabled = () => autopilotMode() !== "off"
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
@@ -400,6 +401,7 @@ function App() {
   createEffect(() => { saveUIPrefs({ showThinkingBlocks: showThinkingBlocks() }) })
   createEffect(() => { saveUIPrefs({ layoutMode: layoutMode() }) })
   createEffect(() => { saveUIPrefs({ autoCompressionEnabled: autoCompressionEnabled() }) })
+  createEffect(() => { saveUIPrefs({ autoCompressionThreshold: autoCompressionThreshold() }) })
   createEffect(() => {
     const endpoint = localVlmEndpoint()
     const model = localVlmModel()
@@ -638,7 +640,7 @@ function App() {
 
   const PALETTE_WIDTH = createMemo(() => Math.min(90, Math.max(52, Math.floor(dimensions().width * 0.38))))
   const PALETTE_INPUT_WIDTH = createMemo(() => Math.min(128, Math.max(PALETTE_WIDTH(), dimensions().width - 8)))
-  const isPaletteTextEntryMode = () => paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL"
+  const isPaletteTextEntryMode = () => paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL"
   const activePaletteWidth = () => isPaletteTextEntryMode() ? PALETTE_INPUT_WIDTH() : PALETTE_WIDTH()
   const PALETTE_LABEL_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.65))
   const PALETTE_HINT_MAX = createMemo(() => Math.floor(PALETTE_WIDTH() * 0.22))
@@ -1097,13 +1099,22 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Auto compression",
-        hint: autoCompressionEnabled() ? "ON · compact before context gets full" : "OFF",
+        hint: autoCompressionEnabled() ? `ON · at ${Math.round(autoCompressionThreshold() * 100)}% context` : "OFF",
         onSelect: () => {
           const nextEnabled = !autoCompressionEnabled()
           setAutoCompressionEnabled(nextEnabled)
           saveUIPrefs({ autoCompressionEnabled: nextEnabled })
           setStatus(nextEnabled ? "auto compression enabled" : "auto compression disabled")
           setShowPalette(false)
+        },
+      },
+      {
+        label: "Auto compression threshold",
+        hint: `${Math.round(autoCompressionThreshold() * 100)}%`,
+        onSelect: () => {
+          setPaletteInput(String(Math.round(autoCompressionThreshold() * 100)))
+          setPaletteMode("autoCompressionThreshold")
+          setPaletteIndex(0)
         },
       },
       ...(compaction()?.summary
@@ -1905,6 +1916,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           { label: `Current max steps: ${maxSteps()}`, kind: "section" as const, onSelect: () => {} },
           { label: "Press Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
         ]
+      : paletteMode() === "autoCompressionThreshold"
+      ? [
+          { label: `Current auto compression threshold: ${Math.round(autoCompressionThreshold() * 100)}%`, kind: "section" as const, onSelect: () => {} },
+          { label: "Enter a percentage from 1 to 99 · Enter to save · Esc to cancel", kind: "section" as const, onSelect: () => {} },
+        ]
       : paletteMode() === "editProviderBaseURL"
       ? [
           { label: `Provider: ${paletteProviderKeyTarget()}`, kind: "section" as const, onSelect: () => {} },
@@ -1950,7 +1966,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     // rename mode: paletteInput is the name text, not a filter
     // models mode: handles its own filtering internally
     // queuedMessages is intentionally unfiltered; the queue is small and simpler without search input
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "queuedMessages" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return items
     const filter = paletteInput().trim().toLowerCase()
     if (!filter) return items
     return items.filter((item) => {
@@ -1964,14 +1980,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // Reset filter when switching to modes that need a clean state
   createEffect(() => {
     const mode = paletteMode()
-    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "localVlmEndpoint" && mode !== "localVlmModel" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
+    if (mode !== "rename" && mode !== "directories" && mode !== "models" && mode !== "maxSteps" && mode !== "autoCompressionThreshold" && mode !== "localVlmEndpoint" && mode !== "localVlmModel" && mode !== "addProviderKeyName" && mode !== "addProviderKeyValue" && mode !== "codexKeyname" && mode !== "editProviderBaseURL") {
       setPaletteInput("")
     }
   })
 
   // Keep palette index valid when filter narrows the visible items
   createEffect(() => {
-    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
+    if (paletteMode() === "rename" || paletteMode() === "directories" || paletteMode() === "models" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" || paletteMode() === "editProviderBaseURL") return
     paletteInput() // depend on filter text
     const items = displayItems()
     const idx = paletteIndex()
@@ -2425,7 +2441,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
 
   const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
     const cfg = getModelConfig(currentModel, currentModelInfo)
-    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit)
+    const nearContextLimit = shouldAutoCompactContext(messages(), extraInput, cfg.contextLimit, autoCompressionThreshold())
     if (nearContextLimit && autoCompressionEnabled()) {
       await compactCurrentSession({ automatic: true })
     } else if (nearContextLimit && opts.warnWhenDisabled) {
@@ -3026,6 +3042,33 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setMaxSteps(next)
           saveUIPrefs({ maxSteps: next })
           setStatus(`max steps set to ${next}`)
+          setPaletteInput("")
+          setShowPalette(false)
+          setPaletteMode("actions")
+          event.preventDefault()
+          return
+        }
+      }
+      if (paletteMode() === "autoCompressionThreshold") {
+        if (event.name === "escape") {
+          setPaletteInput("")
+          setPaletteMode("actions")
+          setPaletteIndex(firstSelectablePaletteIndex(actionPaletteItems()))
+          event.preventDefault()
+          return
+        }
+        if (event.name === "return") {
+          const rawPercent = paletteInput().trim()
+          const percent = Number.parseInt(rawPercent, 10)
+          if (!/^\d+$/.test(rawPercent) || percent <= 0 || percent >= 100) {
+            setStatus("auto compression threshold must be an integer from 1 to 99 percent")
+            event.preventDefault()
+            return
+          }
+          const next = percent / 100
+          setAutoCompressionThreshold(next)
+          saveUIPrefs({ autoCompressionThreshold: next })
+          setStatus(`auto compression threshold set to ${percent}%`)
           setPaletteInput("")
           setShowPalette(false)
           setPaletteMode("actions")
@@ -3856,7 +3899,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       <Show when={showPalette() && paletteMode() !== "reference"}>
         <box
           position="absolute"
-          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
+          top={Math.floor((dimensions().height - (paletteMode() === "rename" || paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel" || paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue" || paletteMode() === "codexKeyname" ? 7 : (paletteMode() === "models" ? paletteItems().length : filteredPaletteItems().length) + 6)) / 2)}
           left={layoutMode() === "horizontal"
             ? Math.floor((dimensions().width - 2 - activePaletteWidth()) / 2)
             : 2
@@ -3913,7 +3956,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <Show when={paletteMode() !== "queuedMessages" && paletteMode() !== "autopilot"}>
               <box paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} flexDirection="column" gap={1}>
                   <text style={{ fg: THEME.muted }}>
-                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
+                    {paletteMode() === "rename" ? "Enter new name:" : paletteMode() === "maxSteps" ? "Max steps:" : paletteMode() === "autoCompressionThreshold" ? "Auto compression threshold (%):" : paletteMode() === "localVlmEndpoint" ? "Local VLM endpoint:" : paletteMode() === "localVlmModel" ? "Local VLM model:" : paletteMode() === "directories" ? "Directory:" : paletteMode() === "models" ? "Filter models:" : paletteMode() === "addProviderKeyName" ? "Enter key name:" : paletteMode() === "addProviderKeyValue" ? "Enter key value:" : paletteMode() === "codexKeyname" ? "Key name (leave blank to clear):" : paletteMode() === "editProviderBaseURL" ? "Enter base URL (blank = default):" : "Filter:"}
                   </text>
                   <box
                     backgroundColor={THEME.background}
@@ -3928,7 +3971,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                   </box>
                 </box>
             </Show>
-            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "localVlmEndpoint" && paletteMode() !== "localVlmModel" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
+            <Show when={paletteMode() !== "rename" && paletteMode() !== "maxSteps" && paletteMode() !== "autoCompressionThreshold" && paletteMode() !== "localVlmEndpoint" && paletteMode() !== "localVlmModel" && paletteMode() !== "addProviderKeyName" && paletteMode() !== "addProviderKeyValue" && paletteMode() !== "codexKeyname"}>
               <For each={paletteMode() === "models" ? paletteItems() : filteredPaletteItems()}>
                 {(item, index) => (
                   <box
@@ -3983,7 +4026,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <text style={{ fg: THEME.muted }}>
               {paletteMode() === "rename"
                 ? "Enter confirm  •  Esc cancel"
-                : paletteMode() === "maxSteps" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel"
+                : paletteMode() === "maxSteps" || paletteMode() === "autoCompressionThreshold" || paletteMode() === "localVlmEndpoint" || paletteMode() === "localVlmModel"
                   ? "Enter save  •  Esc cancel"
                   : paletteMode() === "addProviderKeyName" || paletteMode() === "addProviderKeyValue"
                   ? "Enter confirm  •  Esc back"

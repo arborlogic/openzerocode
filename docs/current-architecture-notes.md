@@ -30,7 +30,7 @@ Multi-session JSON structure (stable):
 | `AGENTS.md` loaded as workspace instruction | ✅ Implemented (`workspace-memory.ts`) |
 | `SESSION_SUMMARY.md` not in automatic loop | ✅ No auto read/write |
 | Compaction summary stored in session JSON | ✅ Not written to repo files |
-| Context budget auto-triggers compaction | ✅ 80% threshold |
+| Context budget auto-triggers compaction | ✅ 60% default threshold (user configurable) |
 
 See [memory-architecture.md](memory-architecture.md) for detailed design.
 

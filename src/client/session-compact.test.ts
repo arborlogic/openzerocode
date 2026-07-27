@@ -116,6 +116,10 @@ describe("estimateContextTokens", () => {
 })
 
 describe("shouldAutoCompactContext", () => {
+  it("uses a 60% default threshold", () => {
+    assert.equal(CONTEXT_WARNING_THRESHOLD, 0.6)
+  })
+
   it("returns true only after estimated context crosses the warning threshold", () => {
     const messages = [user("hello ".repeat(200))]
     const estimate = estimateContextTokens(messages)
@@ -124,6 +128,15 @@ describe("shouldAutoCompactContext", () => {
 
     assert.equal(shouldAutoCompactContext(messages, "", limitAboveThreshold), false)
     assert.equal(shouldAutoCompactContext(messages, "", limitBelowThreshold), true)
+  })
+
+  it("accepts a user-configured threshold", () => {
+    const messages = [user("hello ".repeat(200))]
+    const estimate = estimateContextTokens(messages)
+    const contextLimit = Math.ceil(estimate / 0.7)
+
+    assert.equal(shouldAutoCompactContext(messages, "", contextLimit, 0.6), true)
+    assert.equal(shouldAutoCompactContext(messages, "", contextLimit, 0.8), false)
   })
 })
 
