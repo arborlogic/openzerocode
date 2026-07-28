@@ -2,6 +2,7 @@ import { Effect, Layer } from "effect"
 import { Provider, type Chunk, type CompletionRequest, type CompletionResult, type ModelInfo, type ToolCall, type Usage } from "./types"
 import { createAssistantMessage } from "./message-parts"
 import type { ProviderDef } from "./registry"
+import { modelSupportsVision } from "./models"
 // Zero-API streams using the OpenAI Responses API SSE format,
 // but non-streaming responses use the standard Chat Completions format.
 
@@ -85,21 +86,46 @@ function responseTextFromResponse(response: any): string {
   return response.output.map(responseTextFromOutputItem).join("")
 }
 
+function isTextContentPart(part: any): boolean {
+  return typeof part?.text === "string"
+}
+
+function isImageContentPart(part: any): boolean {
+  if (!part || typeof part !== "object") return false
+  if (part.type === "image_url" && part.image_url?.url) return true
+  if (part.type === "input_image" && (part.image_url || part.file_id || part.image_file || part.detail)) return true
+  return false
+}
+
 function contentPartsText(content: any): string {
   if (typeof content === "string") return content
   if (!Array.isArray(content)) return ""
   return content
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .filter(isTextContentPart)
     .map((part) => part.text)
     .join("\n")
 }
 
 function hasImageContentParts(content: any): boolean {
-  return Array.isArray(content) && content.some((part) => part?.type === "image_url" && part.image_url?.url)
+  return Array.isArray(content) && content.some(isImageContentPart)
 }
 
-function sanitizeMessages(messages: CompletionRequest["messages"]) {
+function stripImageContent(message: any) {
+  if (!hasImageContentParts(message.content)) return message
+  if (!Array.isArray(message.content)) return message
+
+  const content = message.content.filter((part: any) => !isImageContentPart(part))
+  if (message.role === "tool") return { ...message, content: contentPartsText(content) }
+  return { ...message, content }
+}
+
+function sanitizeMessages(messages: CompletionRequest["messages"], model: string) {
+  const supportsVision = modelSupportsVision(model)
   return messages.flatMap(({ parts, ...rest }: any) => {
+    if (!supportsVision) {
+      return [stripImageContent(rest)]
+    }
+
     // OpenAI-compatible chat APIs generally accept image_url parts only on
     // user messages. Tool outputs in OpenZeroCode can contain screenshots or
     // analyze_image attachments, so keep the tool result text as the required
@@ -171,7 +197,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
           const model = req.model || defaultModel
           // Strip non-wire fields (max_tokens duplicated below if needed; signal is local-only).
           const { max_tokens, signal, ...rest } = req as any
-          const body = { ...rest, messages: sanitizeMessages(req.messages), model, stream: false }
+          const body = { ...rest, messages: sanitizeMessages(req.messages, model), model, stream: false }
 
           const res = yield* Effect.promise(() =>
             fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal })
@@ -199,7 +225,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
         Effect.gen(function* () {
           const model = req.model || defaultModel
           const { max_tokens, signal, ...rest } = req as any
-          const body = { ...rest, messages: sanitizeMessages(req.messages), model, stream: true }
+          const body = { ...rest, messages: sanitizeMessages(req.messages, model), model, stream: true }
 
           const res = yield* Effect.promise(() =>
             fetch(`${baseURL}/chat/completions`, { method: "POST", headers: headers(), body: JSON.stringify(body), signal })

@@ -72,6 +72,59 @@ describe("zero-api provider request serialization", () => {
     ])
   })
 
+  it("strips image content for non-vision models after local VLM fallback text remains", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "some-text-model",
+      messages: [{
+        role: "tool",
+        tool_call_id: "call_img",
+        content: [
+          { type: "text", text: "Local VLM analysis: button is visible" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAECAw==" } },
+        ],
+        parts: [
+          { type: "tool-result", id: "call_img", tool: "browser_observe_visual", output: "Local VLM analysis: button is visible" },
+          { type: "image", mimeType: "image/png", base64: "AAECAw==" },
+        ],
+      }],
+      stream: false,
+    })
+
+    assert.equal(requestBody.model, "some-text-model")
+    assert.deepEqual(requestBody.messages, [{
+      role: "tool",
+      tool_call_id: "call_img",
+      content: "Local VLM analysis: button is visible",
+    }])
+  })
+
+  it("strips only image parts for non-vision user messages", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "some-text-model",
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: "plain text" },
+          { type: "input_text", text: "responses text" },
+          { type: "custom_text", text: "custom text" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAECAw==" } },
+          { type: "input_image", image_url: "data:image/png;base64,BAUGBw==" },
+        ] as any,
+      }],
+      stream: false,
+    })
+
+    assert.equal(requestBody.model, "some-text-model")
+    assert.deepEqual(requestBody.messages, [{
+      role: "user",
+      content: [
+        { type: "text", text: "plain text" },
+        { type: "input_text", text: "responses text" },
+        { type: "custom_text", text: "custom text" },
+      ],
+    }])
+  })
+
   it("moves tool image attachments into a follow-up user multimodal message", async () => {
     const requestBody = await captureCompleteRequest({
       model: "openaicodex/gpt-5.5",
