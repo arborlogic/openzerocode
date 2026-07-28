@@ -101,6 +101,62 @@ function compactCurrentTurnForRequest(
   return [...permanentPrefix, summary, ...tail]
 }
 
+function messageText(message: Message): string {
+  if (typeof message.content === "string") return message.content
+  if (Array.isArray(message.content)) {
+    return message.content
+      .map((part) => part.type === "text" ? part.text : "[image]")
+      .join(" ")
+  }
+  if (message.tool_calls?.length) {
+    return message.tool_calls
+      .map((call) => `tool call: ${call.function.name ?? "unknown"} ${call.function.arguments ?? ""}`.trim())
+      .join("; ")
+  }
+  return ""
+}
+
+function compactLine(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
+}
+
+export function createRecentContextAnchor(history: Message[], maxMessages = 8): Message | undefined {
+  const recent = history
+    .filter((message) => message.role !== "system")
+    .slice(-maxMessages)
+
+  const lines = recent.flatMap((message) => {
+    if (message.role === "assistant" && message.tool_calls?.length && !message.content) {
+      return message.tool_calls.map((call) => `- assistant: requested tool ${call.function.name ?? "unknown"}`)
+    }
+
+    const text = messageText(message)
+    if (!text) return []
+    if (message.role === "tool") {
+      const toolName = message.parts?.find((part) => part.type === "tool-result")?.tool
+      return [`- tool${toolName ? ` (${toolName})` : ""}: ${compactLine(text, 220)}`]
+    }
+    return [`- ${message.role}: ${compactLine(text, 240)}`]
+  })
+
+  if (lines.length === 0) return undefined
+
+  return {
+    role: "system",
+    content: [
+      "[Recent Context Anchor]",
+      "Use this compact anchor to preserve continuity with the immediately preceding conversation. It is not a user request; answer the latest user message below.",
+      ...lines,
+    ].join("\n"),
+  }
+}
+
+function recentContextAnchorEnabled(): boolean {
+  return !["false", "0", "no", "off"].includes((process.env.OPENZEROCODE_RECENT_CONTEXT_ANCHOR ?? "true").toLowerCase())
+}
+
 export type StreamOptions = {
   abort: AbortSignal
   model: string
@@ -118,6 +174,8 @@ export type StreamOptions = {
   origin?: { peer: string }
   /** Selectable tool groups to hide from the model (denylist; core tools always on). */
   disabledToolGroups?: string[]
+  /** Inject a short request-time summary of recent history. Defaults to true. */
+  recentContextAnchor?: boolean
 }
 
 /**
@@ -168,6 +226,10 @@ export async function* streamSession(
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
+  const recentContextAnchor = (options.recentContextAnchor ?? recentContextAnchorEnabled())
+    ? createRecentContextAnchor(history)
+    : undefined
+  const recentContextAnchorMessages: Message[] = recentContextAnchor ? [recentContextAnchor] : []
 
   const sendHistory = (() => {
     if (history.length === 0) return history
@@ -185,7 +247,7 @@ export async function* streamSession(
     return history.slice(start)
   })()
 
-  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...sendHistory, userMessage]
+  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
   const turnProgressStart = resultHistory.length
   yield { type: "message", message: userMessage }
@@ -200,7 +262,7 @@ export async function* streamSession(
   const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
   const toolDefs = convertToolsToDefs(tools)
 
-  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
+  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
   const currentTurnStart = allMessages.length
   const { contextLimit } = getModelConfig(options.model, options.modelInfo)
 
@@ -537,6 +599,7 @@ export async function runSession(
     maxSteps: ui.maxSteps,
     origin: ui.origin,
     disabledToolGroups: ui.disabledToolGroups,
+    recentContextAnchor: recentContextAnchorEnabled(),
   }, runtime)
   const resultHistory: Message[] = [...history]
 
