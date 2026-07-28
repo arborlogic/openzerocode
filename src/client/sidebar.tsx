@@ -355,7 +355,7 @@ export function Sidebar(props: {
                 </text>
                 <Show when={getConfiguredSessionId()}>
                   <text style={{ fg: props.theme.muted }} wrapMode="none">
-                    window {truncateStart(getConfiguredSessionId()!, Math.max(1, props.width - 11))}
+                    {truncateStart(getConfiguredSessionId()!, Math.max(1, props.width - 4))}
                   </text>
                 </Show>
               </box>
