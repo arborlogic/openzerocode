@@ -4,7 +4,7 @@ import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage, estimateContextTokens } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
-import { isEnabled, isConnected } from "../browser/geass-client"
+import { isEnabled, isConnected, getConfiguredSessionId } from "../browser/geass-client"
 import { readGitSnapshot, type GitCommit, type GitFile } from "./git-snapshot"
 import stringWidth from "string-width"
 
@@ -291,6 +291,11 @@ export function Sidebar(props: {
               </Show>
             </box>
             <text style={{ fg: props.theme.muted }}>{props.sessionTitle}</text>
+            <Show when={props.sessionId}>
+              <text style={{ fg: props.theme.muted }} wrapMode="none">
+                {truncateStart(props.sessionId!, Math.max(1, props.width - 4))}
+              </text>
+            </Show>
             <Show when={compacted()}>
               <text style={{ fg: props.theme.accent }}>Compacted</text>
             </Show>
@@ -348,6 +353,11 @@ export function Sidebar(props: {
                 <text style={{ fg: isConnected() ? "#7ee787" : "#f85149" }}>
                   {isConnected() ? "● Online" : "○ Offline"}
                 </text>
+                <Show when={getConfiguredSessionId()}>
+                  <text style={{ fg: props.theme.muted }} wrapMode="none">
+                    window {truncateStart(getConfiguredSessionId()!, Math.max(1, props.width - 11))}
+                  </text>
+                </Show>
               </box>
             )
           })()}
