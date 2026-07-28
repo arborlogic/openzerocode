@@ -17,7 +17,7 @@ export function setRuntimeSessionId(rawId: string | null | undefined): void {
   _runtimeSessionId = trimmed && trimmed !== 'default' ? `ozc-${trimmed}` : undefined;
 }
 
-const configuredSessionId = (): string | undefined => {
+export const getConfiguredSessionId = (): string | undefined => {
   if (_runtimeSessionId) return _runtimeSessionId;
   const value = env('OPENZEROCODE_GEASS_SESSION_ID') ?? env('GEASS_SESSION_ID');
   const trimmed = value?.trim();
@@ -25,7 +25,7 @@ const configuredSessionId = (): string | undefined => {
 };
 
 const apiPath = (path: string): string => {
-  const sessionId = configuredSessionId();
+  const sessionId = getConfiguredSessionId();
   const normalizedPath = path.replace(/^\/+/, '');
   return sessionId ? `sessions/${encodeURIComponent(sessionId)}/${normalizedPath}` : normalizedPath;
 };

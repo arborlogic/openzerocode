@@ -1,3 +1,8 @@
+import { execFileSync } from 'child_process';
+import { writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 export interface LocalVlmRequest {
   endpoint?: string;
   model?: string;
@@ -6,6 +11,14 @@ export interface LocalVlmRequest {
   imageFormat?: 'png' | 'jpeg';
   timeoutMs?: number;
 }
+
+// Keep local VLM image payloads modest without degrading screenshots that are
+// already within the byte budget produced by browser_screenshot/analyze_image.
+// Oversized payloads are adaptively downscaled until they fit the target budget.
+const DEFAULT_MAX_LONG_EDGE = 1280;
+const DEFAULT_MIN_LONG_EDGE = 320;
+const DEFAULT_JPEG_QUALITY = 72;
+const DEFAULT_MAX_BASE64_LENGTH = 500_000;
 
 export interface LocalVlmResult {
   text: string;
@@ -99,6 +112,12 @@ function parseLlamaCompletionResponse(data: unknown): string | undefined {
   return typeof content === 'string' ? cleanVlmText(content) : undefined;
 }
 
+function clampInt(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 async function postJson(url: string, body: unknown, timeoutMs: number): Promise<unknown> {
   const res = await fetch(url, {
     method: 'POST',
@@ -140,12 +159,78 @@ export function shouldForceLocalVlm(): boolean {
   return value === '1' || value === 'true' || value === 'yes' || value === 'on';
 }
 
+/**
+ * Prepare a base64-encoded image for llama.cpp VLM APIs.
+ *
+ * browser_screenshot already captures bandwidth-conscious images. Preserve those
+ * payloads as-is to avoid losing OCR/UI detail. If a payload is too large, create
+ * progressively smaller JPEG candidates until one fits the configured byte budget.
+ */
+export function prepareVlmImage(base64: string, inputFormat: 'png' | 'jpeg'): { base64: string; format: 'jpeg' | 'png' } {
+  const maxLongEdge = clampInt(env('OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE'), DEFAULT_MAX_LONG_EDGE, 64, 4096);
+  const minLongEdge = clampInt(env('OPENZEROCODE_VLM_IMAGE_MIN_LONG_EDGE'), DEFAULT_MIN_LONG_EDGE, 64, maxLongEdge);
+  const jpegQuality = clampInt(env('OPENZEROCODE_VLM_IMAGE_QUALITY'), DEFAULT_JPEG_QUALITY, 1, 100);
+  const maxBase64Length = clampInt(env('OPENZEROCODE_VLM_MAX_BASE64_LENGTH'), DEFAULT_MAX_BASE64_LENGTH, 16_000, 5_000_000);
+
+  if (base64.length <= maxBase64Length) {
+    return { base64, format: inputFormat };
+  }
+
+  const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const tmpIn = join(tmpdir(), `vlm-resize-in-${stamp}`);
+  const tmpOut = join(tmpdir(), `vlm-resize-out-${stamp}.jpg`);
+
+  try {
+    writeFileSync(tmpIn, Buffer.from(base64, 'base64'));
+
+    const edgeCandidates = Array.from(new Set([
+      maxLongEdge,
+      Math.round(maxLongEdge * 0.75),
+      Math.round(maxLongEdge * 0.5),
+      minLongEdge,
+    ]))
+      .filter((edge) => edge >= minLongEdge && edge <= maxLongEdge)
+      .sort((a, b) => b - a);
+    const qualityCandidates = Array.from(new Set([jpegQuality, 60, 45, 30, 20]))
+      .map((quality) => Math.min(jpegQuality, quality))
+      .filter((quality) => quality >= 1 && quality <= 100);
+
+    let best: { base64: string; format: 'jpeg' } | undefined;
+    for (const edge of edgeCandidates) {
+      for (const quality of qualityCandidates) {
+        execFileSync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', String(quality), '-Z', String(edge), tmpIn, '--out', tmpOut], { timeout: 15_000, stdio: 'ignore' });
+        const converted = readFileSync(tmpOut).toString('base64');
+        if (!best || converted.length < best.base64.length) {
+          best = { base64: converted, format: 'jpeg' };
+        }
+        if (converted.length <= maxBase64Length) {
+          return best;
+        }
+      }
+    }
+
+    return best ?? { base64, format: inputFormat };
+  } catch {
+    // Fall back to the original payload. This keeps non-macOS environments usable
+    // when `sips` is unavailable; callers may still point to a stronger VLM.
+  } finally {
+    for (const file of [tmpIn, tmpOut]) {
+      try { unlinkSync(file); } catch { /* ignore */ }
+    }
+  }
+
+  return { base64, format: inputFormat };
+}
+
 export async function analyzeImageWithLocalVlm(request: LocalVlmRequest): Promise<LocalVlmResult> {
   const endpoint = normalizeEndpoint(request.endpoint ?? getDefaultLocalVlmEndpoint());
   const model = request.model ?? getDefaultLocalVlmModel();
   const timeoutMs = request.timeoutMs ?? Number(env('OPENZEROCODE_VLM_TIMEOUT_MS') ?? DEFAULT_TIMEOUT_MS);
-  const mimeType = request.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/png';
-  const imageUrl = `data:${mimeType};base64,${request.imageBase64}`;
+  const inputFormat = request.imageFormat ?? 'png';
+  const preparedImage = prepareVlmImage(request.imageBase64, inputFormat);
+  const imageBase64 = preparedImage.base64;
+  const mimeType = preparedImage.format === 'jpeg' ? 'image/jpeg' : 'image/png';
+  const imageUrl = `data:${mimeType};base64,${imageBase64}`;
 
   const openAiBody = {
     model,
@@ -175,7 +260,7 @@ export async function analyzeImageWithLocalVlm(request: LocalVlmRequest): Promis
 
   const llamaBody = {
     prompt: `${request.prompt}\n\n[img-1]`,
-    image_data: [{ data: request.imageBase64, id: 1 }],
+    image_data: [{ data: imageBase64, id: 1 }],
     temperature: 0,
     n_predict: 220,
     stop: ['\n\n\n', '<|im_end|>', '</s>', 'User:', 'Assistant:'],

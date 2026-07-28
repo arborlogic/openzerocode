@@ -87,7 +87,6 @@ Part-based messages supported:
 |--------|-----------|
 | Workspace memory | `workspace-memory.test.ts` |
 | Permission rules | `permission-rules.test.ts` |
-| Session state | `session-state.test.ts` |
 | Session persistence | `sessions.test.ts` |
 | Session compaction | `session-compact.test.ts` |
 | Message sanitization | `message-sanitize.test.ts` |

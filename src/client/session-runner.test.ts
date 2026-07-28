@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { Effect, Layer, Schema } from "effect"
-import { runSession, streamSession } from "./session-runner"
+import { createRecentContextAnchor, runSession, streamSession } from "./session-runner"
 import { Provider } from "../provider/types"
 import { ToolRegistry } from "../tool/registry"
 import { Def, Result } from "../tool/types"
@@ -76,6 +76,86 @@ function createUi(overrides: Partial<Parameters<typeof runSession>[2]> = {}): Pa
     ...overrides,
   }
 }
+
+test("createRecentContextAnchor summarizes recent non-system messages", () => {
+  const anchor = createRecentContextAnchor([
+    { role: "system", content: "old system note" },
+    { role: "user", content: "please inspect the failing test" },
+    { role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "call_1", content: "line 1\nline 2", parts: [{ type: "tool-result", id: "call_1", tool: "read", output: "line 1\nline 2" }] },
+    { role: "assistant", content: "The issue is in session-runner." },
+  ])
+
+  assert.ok(anchor)
+  assert.equal(anchor.role, "system")
+  const content = String(anchor.content)
+  assert.match(content, /\[Recent Context Anchor\]/)
+  assert.match(content, /user: please inspect the failing test/)
+  assert.match(content, /assistant: requested tool read/)
+  assert.match(content, /tool \(read\): line 1 line 2/)
+  assert.match(content, /assistant: The issue is in session-runner\./)
+  assert.doesNotMatch(content, /old system note/)
+})
+
+test("streamSession injects a recent context anchor into provider requests without persisting it", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const history: Message[] = [
+    { role: "user", content: "previous task" },
+    { role: "assistant", content: "previous answer" },
+  ]
+
+  const gen = streamSession("new request", history, {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+  let done: IteratorResult<any, Message[]>
+  do {
+    done = await gen.next()
+  } while (!done.done)
+
+  const anchorMessages = requests[0]!.messages.filter((message) =>
+    message.role === "system"
+    && typeof message.content === "string"
+    && message.content.includes("[Recent Context Anchor]"),
+  )
+  assert.equal(anchorMessages.length, 1)
+  assert.match(String(anchorMessages[0]!.content), /previous task/)
+  assert.deepEqual(done.value.map((message) => message.role), ["user", "assistant", "user", "assistant"])
+  assert.equal(done.value.some((message) => String(message.content ?? "").includes("[Recent Context Anchor]")), false)
+})
+
+test("streamSession can disable recent context anchors per request", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("new request", [{ role: "user", content: "previous task" }], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    recentContextAnchor: false,
+  }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.equal(requests[0]!.messages.some((message) => String(message.content ?? "").includes("[Recent Context Anchor]")), false)
+})
 
 test("streamSession surfaces non-abort provider stream read errors", async () => {
   const stream = new ReadableStream({

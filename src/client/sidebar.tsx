@@ -4,7 +4,7 @@ import { getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage, estimateContextTokens } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
-import { isEnabled, isConnected } from "../browser/geass-client"
+import { isEnabled, isConnected, getConfiguredSessionId } from "../browser/geass-client"
 import { readGitSnapshot, type GitCommit, type GitFile } from "./git-snapshot"
 import stringWidth from "string-width"
 
@@ -112,6 +112,8 @@ export function Sidebar(props: {
   provider: string
   sessionTitle?: string
   sessionId?: string
+  /** Compaction summary injected into provider requests but not stored in messages. */
+  compactionSummary?: string
   cwd?: string
   version?: string
   /** Increment to force a git snapshot refresh from outside the component. */
@@ -225,11 +227,15 @@ export function Sidebar(props: {
   // Context total must match the compaction-warning trigger: JSON.stringify the
   // full message objects (parts, tool calls, reasoning) so tool-heavy sessions
   // are not under-reported as 1% while the warning fires.
-  const totalTokens = createMemo(() => estimateContextTokens(props.messages()))
+  const totalTokens = createMemo(() => estimateContextTokens(props.messages(), "", props.compactionSummary))
   const contextPercent = createMemo(() => {
     const limit = modelCfg().contextLimit
     if (!limit) return 0
-    return Math.round((totalTokens() / limit) * 100)
+    const percent = (totalTokens() / limit) * 100
+    // Preserve visibility after compaction: a non-empty context can be below
+    // 0.5%, which rounds to 0 and would otherwise hide this indicator.
+    if (percent > 0 && percent < 1) return Math.max(0.1, Number(percent.toFixed(1)))
+    return Math.round(percent)
   })
   const sessionCost = createMemo(() => estimateCost(props.model, totalInputTokens(), totalOutputTokens()))
 
@@ -285,6 +291,11 @@ export function Sidebar(props: {
               </Show>
             </box>
             <text style={{ fg: props.theme.muted }}>{props.sessionTitle}</text>
+            <Show when={props.sessionId}>
+              <text style={{ fg: props.theme.muted }} wrapMode="none">
+                {truncateStart(props.sessionId!, Math.max(1, props.width - 4))}
+              </text>
+            </Show>
             <Show when={compacted()}>
               <text style={{ fg: props.theme.accent }}>Compacted</text>
             </Show>
@@ -342,6 +353,11 @@ export function Sidebar(props: {
                 <text style={{ fg: isConnected() ? "#7ee787" : "#f85149" }}>
                   {isConnected() ? "● Online" : "○ Offline"}
                 </text>
+                <Show when={getConfiguredSessionId()}>
+                  <text style={{ fg: props.theme.muted }} wrapMode="none">
+                    {truncateStart(getConfiguredSessionId()!, Math.max(1, props.width - 4))}
+                  </text>
+                </Show>
               </box>
             )
           })()}

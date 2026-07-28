@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.3 - 2026-07-28
+
+### Added
+
+- Added the active GEASS session context to the sidebar, making it easier to identify the browser session associated with the current agent.
+- Added a recent-context anchor to session requests so agents retain concise awareness of recent work and instructions across longer sessions.
+
+### Changed
+
+- Simplified client session handling by removing the unused legacy session-state module.
+
+### Fixed
+
+- Hardened session compaction: preserve compaction context across summaries, correctly handle recovery and queued input, and surface clearer compaction failures.
+- Downscale oversized images before sending them to local VLM endpoints, with configurable size and quality limits.
+- Strip image content before sending requests to Zero API models that do not support vision.
+- Removed redundant window labels from sidebar session identifiers.
+- Overrode vulnerable transitive dependencies, including `brace-expansion`, `glob`, `minimatch`, and `@babel/core`.
+
 ## 0.8.2 - 2026-07-27
 
 ### Added
