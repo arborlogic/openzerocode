@@ -22,11 +22,11 @@ import { HELP_CONTENT } from "./help-content"
 import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSummary } from "./skill-loader"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { getModelConfig } from "../provider/models"
+import { estimateMessageTokens, getModelConfig } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
-import { buildCompactionTranscript, cumulativeCompactionSourceCount, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
-import { formatProviderError, isRateLimitError } from "./errors"
+import { buildPrioritizedCompactionTranscript, compactionRetryTokenBudget, compactionTranscriptTokenBudget, COMPACTION_SUMMARY_TOKEN_BUDGET, cumulativeCompactionSourceCount, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
+import { formatProviderError, isCompactionRetryableError, isRateLimitError } from "./errors"
 import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
@@ -2422,7 +2422,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     const currentMessages = messages()
-    const { head, tail } = selectCompactionTail(currentMessages, getModelConfig(currentModel, currentModelInfo).contextLimit)
+    const contextLimit = getModelConfig(currentModel, currentModelInfo).contextLimit
+    const { head, tail } = selectCompactionTail(currentMessages, contextLimit)
     if (head.length === 0) {
       if (!opts.automatic) {
         setStatus("session too short to compact")
@@ -2442,10 +2443,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     // model request. Include it in the next summary so repeated compaction
     // does not silently discard the already-compressed portion of the session.
     const previousSummary = compaction()?.summary
-    const transcript = [
-      previousSummary ? `[PREVIOUS COMPACTION SUMMARY]\n${previousSummary}` : "",
-      buildCompactionTranscript(head),
-    ].filter(Boolean).join("\n\n---\n\n")
     const prompt = [
       "You are compacting a coding assistant session for future continuation.",
       "Summarize only the provided history.",
@@ -2453,30 +2450,56 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       "Capture these sections when present: goals, current state, files changed, code decisions, tools used, constraints, remaining work, risks, and next steps.",
       "For files changed, list concrete paths when available.",
       "For tools used, mention only meaningful tool usage that affects continuation.",
+      "For image attachments, retain the image type/size marker and any image analysis or visual conclusions present in the history.",
       "For remaining work, emphasize what still needs to be implemented, verified, or decided.",
       "Do not invent facts.",
       "Do not include filler prose.",
     ].join("\n")
 
     try {
-      const result = await runSync(Effect.gen(function* () {
-        const provider = yield* Provider
-        return yield* provider.complete({
-          model: currentModel,
-          stream: false,
-          max_tokens: 1200,
-          messages: [
-            { role: "system", content: prompt },
-            { role: "user", content: `Summarize this earlier session history for compaction:\n\n${transcript}` },
-          ],
-        })
-      }))
+      const requestSummary = async (tokenBudget: number): Promise<string> => {
+        const buildSummaryMessages = (transcript: string): Message[] => [
+          { role: "system", content: prompt },
+          { role: "user", content: `Summarize this earlier session history for compaction:\n\n${transcript}` },
+        ]
+        const requestTokenLimit = contextLimit - COMPACTION_SUMMARY_TOKEN_BUDGET
+        const transcript = buildPrioritizedCompactionTranscript(
+          previousSummary,
+          head,
+          tokenBudget,
+          (candidate) => estimateMessageTokens(buildSummaryMessages(candidate)) <= requestTokenLimit,
+        )
+        const result = await runSync(Effect.gen(function* () {
+          const provider = yield* Provider
+          const summaryMessages = buildSummaryMessages(transcript)
+          // The transcript is capped before this point. This guard catches any
+          // estimator drift or future prompt growth before issuing a request
+          // that could exceed the model context window.
+          if (estimateMessageTokens(summaryMessages) > requestTokenLimit) {
+            throw new Error("Compaction summary request exceeds its context budget")
+          }
+          return yield* provider.complete({
+            model: currentModel,
+            stream: false,
+            max_tokens: 1200,
+            messages: summaryMessages,
+          })
+        }))
+        const summary = contentToText(result.message.content).trim()
+        if (!summary) throw new Error("The provider returned an empty compaction summary")
+        return summary
+      }
 
-      const summary = contentToText(result.message.content).trim()
-      if (!summary) {
-        setStatus("compaction failed")
-        showToast("error", "Compaction failed", "The provider returned an empty summary.")
-        return
+      let summary: string
+      try {
+        summary = await requestSummary(compactionTranscriptTokenBudget(contextLimit))
+      } catch (error) {
+        if (!isCompactionRetryableError(error)) throw error
+        // Retry once with much less source context. This handles transient
+        // timeouts and tokenizer/context-limit differences without modifying
+        // the session until a valid replacement summary exists.
+        setStatus(opts.automatic ? "auto compression retrying..." : "compaction retrying...")
+        summary = await requestSummary(compactionRetryTokenBudget(contextLimit))
       }
 
       const newCompaction: CompactionInfo = {

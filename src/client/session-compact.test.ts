@@ -1,16 +1,24 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
+import { estimateTokens } from "../provider/models"
 import type { Message } from "../provider/types"
 import {
   isCompactSummaryMessage,
   stripCompactSummaryMessages,
   selectCompactionTail,
   buildCompactionTranscript,
+  buildPrioritizedCompactionTranscript,
+  compactionRetryTokenBudget,
+  compactionTranscriptTokenBudget,
+  truncateCompactionTranscript,
   cumulativeCompactionSourceCount,
   createCompactSummaryMessage,
   estimateContextTokens,
   shouldAutoCompactContext,
   CONTEXT_WARNING_THRESHOLD,
+  COMPACTION_RETRY_TOKEN_CAP,
+  COMPACTION_SUMMARY_TOKEN_BUDGET,
+  COMPACTION_TRANSCRIPT_TOKEN_CAP,
   COMPACT_SUMMARY_PREFIX,
 } from "./session-compact"
 
@@ -200,6 +208,164 @@ describe("buildCompactionTranscript", () => {
     assert.ok(transcript.includes("[tool-result:read]"))
     assert.ok(transcript.includes("# README"))
   })
+
+  it("preserves a lightweight marker for multimodal image attachments", () => {
+    const msgs: Message[] = [{
+      role: "tool",
+      tool_call_id: "call_1",
+      content: [
+        { type: "text", text: "Screenshot captured" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(16_000)}` } },
+      ],
+    }]
+
+    const transcript = buildCompactionTranscript(msgs)
+    assert.ok(transcript.includes("Screenshot captured"))
+    assert.ok(transcript.includes("[image attachment (image/png, 12 KiB)]"))
+    assert.ok(!transcript.includes("A".repeat(100)))
+  })
+
+  it("does not duplicate an image marker represented in content and display parts", () => {
+    const base64 = "A".repeat(16_000)
+    const msgs: Message[] = [{
+      role: "user",
+      content: [{ type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } }],
+      parts: [{ type: "image", mimeType: "image/png", base64 }],
+    }]
+
+    const transcript = buildCompactionTranscript(msgs)
+    assert.equal(transcript.match(/\[image attachment \(image\/png, 12 KiB\)\]/g)?.length, 1)
+  })
+
+  it("keeps markers for distinct images that have the same type and size", () => {
+    const first = "A".repeat(16_000)
+    const second = "B".repeat(16_000)
+    const msgs: Message[] = [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: `data:image/png;base64,${first}` } },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${second}` } },
+      ],
+      parts: [
+        { type: "image", mimeType: "image/png", base64: first },
+        { type: "image", mimeType: "image/png", base64: second },
+      ],
+    }]
+
+    const transcript = buildCompactionTranscript(msgs)
+    assert.equal(transcript.match(/\[image attachment \(image\/png, 12 KiB\)\]/g)?.length, 2)
+    assert.ok(!transcript.includes("A".repeat(100)))
+    assert.ok(!transcript.includes("B".repeat(100)))
+  })
+})
+
+describe("truncateCompactionTranscript", () => {
+  it("caps source history while retaining the newest transcript content", () => {
+    const transcript = `old history ${"x".repeat(8_000)}\nnewest state: preserve this`
+    const result = truncateCompactionTranscript(transcript, 400)
+
+    assert.ok(estimateContextTokens([user(result)]) <= 430)
+    assert.ok(result.startsWith("[Earlier compaction history omitted"))
+    assert.ok(result.includes("newest state: preserve this"))
+  })
+
+  it("reserves both completion and request overhead within the context window", () => {
+    assert.equal(compactionTranscriptTokenBudget(10_000), 7_200)
+    assert.equal(compactionTranscriptTokenBudget(1_000), 0)
+  })
+
+  it("caps large-window compaction requests to avoid gateway timeouts", () => {
+    assert.equal(compactionTranscriptTokenBudget(400_000), COMPACTION_TRANSCRIPT_TOKEN_CAP)
+  })
+
+  it("uses a smaller transcript budget when retrying after provider failure", () => {
+    assert.equal(compactionRetryTokenBudget(10_000), 4_320)
+    assert.equal(compactionRetryTokenBudget(1_000), 0)
+    assert.equal(compactionRetryTokenBudget(400_000), COMPACTION_RETRY_TOKEN_CAP)
+  })
+})
+
+describe("buildPrioritizedCompactionTranscript", () => {
+  it("retains the complete previous summary when repeated compaction truncates new history", () => {
+    const previousSummary = "Critical prior state: migration is half complete; do not discard this."
+    const result = buildPrioritizedCompactionTranscript(
+      previousSummary,
+      [user(`old new history ${"x".repeat(8_000)}`), user("latest new state: run tests")],
+      400,
+    )
+
+    assert.ok(result.includes(`[PREVIOUS COMPACTION SUMMARY]\n${previousSummary}`))
+    assert.ok(result.includes("latest new state: run tests"))
+    assert.ok(result.includes("[Earlier compaction history omitted"))
+  })
+
+  it("retains a previous summary even when no budget remains for new history", () => {
+    const previousSummary = "Keep this older context."
+    const result = buildPrioritizedCompactionTranscript(previousSummary, [user("new history")], 14)
+
+    assert.equal(result, `[PREVIOUS COMPACTION SUMMARY]\n${previousSummary}`)
+  })
+
+  it("truncates against the fully serialized request budget", () => {
+    const messages = [user(`old escaped history ${"\\\"".repeat(4_000)} latest state`)]
+    const requestFits = (transcript: string) => estimateContextTokens([
+      { role: "system", content: "Compaction prompt" },
+      { role: "user", content: `Summarize:\n\n${transcript}` },
+    ]) <= 300
+
+    const result = buildPrioritizedCompactionTranscript(undefined, messages, 300, requestFits)
+
+    assert.ok(requestFits(result))
+    assert.ok(result.includes("latest state"))
+    assert.ok(result.startsWith("[Earlier compaction history omitted"))
+  })
+
+  it("bounds an oversized legacy summary so repeated compaction can continue", () => {
+    const previousSummary = `legacy state ${"x".repeat(8_000)} newest prior fact`
+    const requestFits = (transcript: string) => estimateContextTokens([user(transcript)]) <= 300
+
+    const result = buildPrioritizedCompactionTranscript(previousSummary, [user("new history")], 300, requestFits)
+
+    assert.ok(requestFits(result))
+    assert.ok(result.includes("newest prior fact"))
+    assert.ok(result.startsWith("[Earlier compaction history omitted"))
+  })
+
+  it("applies the transcript cap even when the full request has ample room", () => {
+    const previousSummary = `legacy state ${"x".repeat(40_000)} newest prior fact`
+    const tokenBudget = 300
+
+    const result = buildPrioritizedCompactionTranscript(
+      previousSummary,
+      [user("new history")],
+      tokenBudget,
+      () => true,
+    )
+
+    assert.ok(estimateTokens(result) <= tokenBudget)
+    assert.ok(result.includes("newest prior fact"))
+    assert.ok(result.startsWith("[Earlier compaction history omitted"))
+  })
+
+  it("keeps the retry cap while also shrinking for serialized request overhead", () => {
+    const previousSummary = `legacy escaped state ${"\\\"".repeat(12_000)} newest prior fact`
+    const requestFits = (transcript: string) => estimateContextTokens([
+      { role: "system", content: "Compaction prompt" },
+      { role: "user", content: `Summarize:\n\n${transcript}` },
+    ]) <= 600
+
+    const result = buildPrioritizedCompactionTranscript(
+      previousSummary,
+      [user("new history")],
+      300,
+      requestFits,
+    )
+
+    assert.ok(estimateTokens(result) <= 300)
+    assert.ok(requestFits(result))
+    assert.ok(result.includes("newest prior fact"))
+    assert.ok(result.startsWith("[Earlier compaction history omitted"))
+  })
 })
 
 describe("selectCompactionTail", () => {
@@ -216,27 +382,71 @@ describe("selectCompactionTail", () => {
       msgs.push(user("Tell me about programming language design. ".repeat(15)))
       msgs.push(assistant("Languages have evolved significantly. ".repeat(15)))
     }
-    const result = selectCompactionTail(msgs, 1000) // tiny budget → tailBudget = 1200
+    const result = selectCompactionTail(msgs, 1000) // tiny context → no tail budget after summary reserve
     // Compact summaries are stripped
     assert.ok(!result.head.some((m) => isCompactSummaryMessage(m)))
     assert.ok(!result.tail.some((m) => isCompactSummaryMessage(m)))
-    // At least some messages land in head and tail
+    // The head is summarized; for a tiny context limit it is valid for the
+    // tail to be empty rather than retaining an oversized recent message.
     assert.ok(result.head.length > 0, "expected head to have messages")
-    assert.ok(result.tail.length > 0, "expected tail to have messages")
     // All non-summary messages are accounted for
     assert.equal(result.head.length + result.tail.length, msgs.length - 1)
   })
 
-  it("keeps at least 6 messages in tail even with tiny budget", () => {
-    // Create 10 user/assistant pairs
+  it("keeps the retained tail within its token budget", () => {
+    // Create 10 user/assistant pairs.
     const msgs: Message[] = []
     for (let i = 0; i < 10; i++) {
       msgs.push(user(`q${i}`), assistant(`a${i}`))
     }
-    const result = selectCompactionTail(msgs, 1000) // tiny budget
-    // Should keep minTailMessages (6) in tail: at least 6 messages
-    assert.ok(result.tail.length >= 6)
-    assert.ok(result.head.length + result.tail.length <= msgs.length)
+    const contextLimit = 10_000
+    const result = selectCompactionTail(msgs, contextLimit)
+    const tailBudget = Math.floor(contextLimit * 0.2) - COMPACTION_SUMMARY_TOKEN_BUDGET
+
+    assert.ok(estimateContextTokens(result.tail) <= tailBudget)
+    assert.equal(result.head.length + result.tail.length, msgs.length)
+  })
+
+  it("summarizes oversized recent tool output instead of retaining an over-limit tail", () => {
+    const contextLimit = 10_000
+    const msgs: Message[] = [
+      user("inspect the build log"),
+      assistantWithTools([{ id: "c1", name: "bash", args: "{}" }]),
+      toolMsg("c1", "log line\n".repeat(20_000)),
+      assistant("the build failed"),
+      user("find the cause"),
+      assistant("I will inspect it"),
+      user("continue"),
+    ]
+
+    const result = selectCompactionTail(msgs, contextLimit)
+
+    assert.ok(result.head.length > 0)
+    assert.ok(estimateContextTokens(result.tail) < contextLimit * CONTEXT_WARNING_THRESHOLD)
+    assert.ok(!result.tail.some((message) => message.role === "tool" && typeof message.content === "string" && message.content.length > 10_000))
+  })
+
+  it("summarizes a short session that contains an oversized image attachment", () => {
+    const contextLimit = 10_000
+    const imageDataUrl = `data:image/png;base64,${"A".repeat(80_000)}`
+    const msgs: Message[] = [
+      assistantWithTools([{ id: "c1", name: "analyze_image", args: "{}" }]),
+      {
+        role: "tool",
+        tool_call_id: "c1",
+        content: [
+          { type: "text", text: "Image analysis completed" },
+          { type: "image_url", image_url: { url: imageDataUrl } },
+        ],
+      },
+      assistant("The screenshot looks correct."),
+      user("Please continue."),
+    ]
+
+    const result = selectCompactionTail(msgs, contextLimit)
+
+    assert.ok(result.head.length > 0, "the oversized image should be summarized")
+    assert.ok(estimateContextTokens(result.tail) <= contextLimit * 0.2 - COMPACTION_SUMMARY_TOKEN_BUDGET)
   })
 
   it("does not split in the middle of a tool call cycle", () => {

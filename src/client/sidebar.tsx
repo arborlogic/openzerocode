@@ -231,7 +231,11 @@ export function Sidebar(props: {
   const contextPercent = createMemo(() => {
     const limit = modelCfg().contextLimit
     if (!limit) return 0
-    return Math.round((totalTokens() / limit) * 100)
+    const percent = (totalTokens() / limit) * 100
+    // Preserve visibility after compaction: a non-empty context can be below
+    // 0.5%, which rounds to 0 and would otherwise hide this indicator.
+    if (percent > 0 && percent < 1) return Math.max(0.1, Number(percent.toFixed(1)))
+    return Math.round(percent)
   })
   const sessionCost = createMemo(() => estimateCost(props.model, totalInputTokens(), totalOutputTokens()))
 

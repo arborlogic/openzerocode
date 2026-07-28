@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { formatProviderError, isRateLimitError, delay } from "./errors"
+import { formatProviderError, isCompactionRetryableError, isRateLimitError, delay } from "./errors"
 
 describe("formatProviderError", () => {
   it("formats rate limit errors (429)", () => {
@@ -86,6 +86,22 @@ describe("isRateLimitError", () => {
 
   it("returns false for non-Error input without rate-limit keywords", () => {
     assert.ok(!isRateLimitError("random error"))
+  })
+})
+
+describe("isCompactionRetryableError", () => {
+  it("retries timeouts and context-limit errors", () => {
+    assert.ok(isCompactionRetryableError(new Error("Request timed out after 300000ms")))
+    assert.ok(isCompactionRetryableError(new DOMException("The operation was aborted", "AbortError")))
+    assert.ok(isCompactionRetryableError(new Error("context_length_exceeded: too many tokens")))
+    assert.ok(isCompactionRetryableError(new Error("Compaction summary request exceeds its context budget")))
+  })
+
+  it("does not retry permanent or unrelated provider failures", () => {
+    assert.ok(!isCompactionRetryableError(new Error("401 Invalid API key")))
+    assert.ok(!isCompactionRetryableError(new Error("429 Rate limit exceeded")))
+    assert.ok(!isCompactionRetryableError(new Error("500 Internal Server Error")))
+    assert.ok(!isCompactionRetryableError(new Error("The provider returned an empty compaction summary")))
   })
 })
 
