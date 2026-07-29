@@ -149,7 +149,20 @@ export const GrepTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "grep",
-    description: "Search file contents using a regex pattern",
+    description: [
+      "Search file contents for a regex pattern (powered by ripgrep when available, with a built-in fallback).",
+      "",
+      "Results are `file:line:content` lines, like ripgrep's `-n` output. Skips dotfiles and node_modules.",
+      "",
+      "Parameters:",
+      "- pattern (string | string[], required): one or more regex patterns. Multiple patterns are searched independently and combined.",
+      `- path (string, optional): directory to search in, relative to session cwd. Defaults to ".".`,
+      `- include (string | string[], optional): glob filter(s) for file paths, e.g. "*.ts" or "src/**/*.ts".`,
+      "",
+      "Tips:",
+      "- Use `include` to narrow by file type and keep output small.",
+      "- Output is capped at 1MB; narrow the pattern/include if truncated.",
+    ].join("\n"),
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {
