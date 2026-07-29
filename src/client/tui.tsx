@@ -78,6 +78,7 @@ import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
+import { createTuiRendererConfig, mountedTranscriptWindow } from "./tui-runtime"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -2121,6 +2122,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return result
   })
 
+  // Solid/OpenTUI keeps every mounted renderable alive. Retain the complete
+  // transcript in session state, but only mount the recent window so long-lived
+  // sessions release old markdown, diff, and syntax-highlight renderables.
+  const mountedTurns = createMemo(() => mountedTranscriptWindow(turns()))
+
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
   const sidebarWidth = createMemo(() => sidebarWidthForTerminal(dimensions().width))
   const overlaySidebarWidth = createMemo(() => Math.max(24, Math.min(sidebarWidth(), dimensions().width - 4)))
@@ -3675,9 +3681,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         viewportCulling={false}
         backgroundColor={THEME.background}
       >
-        {/* Transcript turns are append-only. Index preserves already-painted
-            renderables when the memo rebuilds its lightweight view models. */}
-        <Index each={turns()}>
+        <Show when={mountedTurns().omitted > 0}>
+          <text style={{ fg: THEME.muted }}>{`… ${mountedTurns().omitted} older turns kept in session but unmounted from the UI`}</text>
+        </Show>
+        {/* Index preserves already-painted renderables within the bounded
+            transcript window. Turns that leave the window are unmounted and
+            destroyed by Solid/OpenTUI instead of accumulating forever. */}
+        <Index each={mountedTurns().turns}>
           {(turn, index) => (
             <TurnEntry
               turn={turn()}
@@ -4219,7 +4229,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   )
 }
 
-render(() => <App />).catch((error) => {
+render(() => <App />, createTuiRendererConfig(copyToClipboard)).catch((error) => {
   console.error(error)
   process.exit(1)
 })

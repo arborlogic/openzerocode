@@ -6,6 +6,7 @@ import {
   createStableRepaintScheduler,
   forceFullTerminalRepaint,
 } from "./tui-render-stability"
+import { createTuiRendererConfig, MAX_MOUNTED_TRANSCRIPT_TURNS, mountedTranscriptWindow } from "./tui-runtime"
 
 function rendererStub() {
   let renders = 0
@@ -63,5 +64,45 @@ describe("terminal repaint stability", () => {
     assert.deepEqual(cancelled, [1, 2])
     scheduler.dispose()
     assert.deepEqual(cancelled, [1, 2, 3, 4])
+  })
+})
+
+describe("OpenTUI runtime helpers", () => {
+  it("configures TerminalConsole copy selection for the focused console", () => {
+    const copied: string[] = []
+    const config = createTuiRendererConfig((text) => { copied.push(text) })
+
+    config.consoleOptions?.onCopySelection?.("selected console text")
+
+    assert.equal(config.openConsoleOnError, true)
+    assert.deepEqual(copied, ["selected console text"])
+  })
+})
+
+describe("mountedTranscriptWindow", () => {
+  it("keeps short transcripts mounted without aliasing the caller array", () => {
+    const turns = ["a", "b"]
+
+    const window = mountedTranscriptWindow(turns, 5)
+
+    assert.deepEqual(window, { turns: ["a", "b"], omitted: 0 })
+    assert.notEqual(window.turns, turns)
+  })
+
+  it("unmounts older turns so TextBuffer/TextBufferView renderables cannot accumulate forever", () => {
+    const turns = Array.from({ length: MAX_MOUNTED_TRANSCRIPT_TURNS + 2 }, (_, index) => `turn-${index}`)
+
+    const window = mountedTranscriptWindow(turns)
+
+    assert.equal(window.omitted, 2)
+    assert.equal(window.turns.length, MAX_MOUNTED_TRANSCRIPT_TURNS)
+    assert.equal(window.turns[0], "turn-2")
+    assert.equal(window.turns.at(-1), `turn-${MAX_MOUNTED_TRANSCRIPT_TURNS + 1}`)
+  })
+
+  it("normalizes invalid limits to at least one mounted turn", () => {
+    const window = mountedTranscriptWindow(["old", "new"], 0)
+
+    assert.deepEqual(window, { turns: ["new"], omitted: 1 })
   })
 })
