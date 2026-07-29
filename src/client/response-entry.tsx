@@ -11,10 +11,29 @@ export type { DisplayBlock } from "./display-block"
 const TOOL_COLLAPSE_MAX_LINES = 3
 const TOOL_COLLAPSE_MAX_LINE_LENGTH = 120
 const BASH_COLLAPSE_MAX_LINES = 10
+const MAX_RENDERED_TOOL_CHARS = 80_000
+const MAX_RENDERED_TOOL_LINES = 2_000
 
 function displayLines(content: string) {
   if (!content) return []
   return content.replace(/\n$/, "").split("\n")
+}
+
+function truncateForRenderable(content: string) {
+  if (!content) return content
+  const lines = content.replace(/\n$/, "").split("\n")
+  let truncated = false
+  let rendered = content
+  if (lines.length > MAX_RENDERED_TOOL_LINES) {
+    rendered = lines.slice(0, MAX_RENDERED_TOOL_LINES).join("\n")
+    truncated = true
+  }
+  if (rendered.length > MAX_RENDERED_TOOL_CHARS) {
+    rendered = rendered.slice(0, MAX_RENDERED_TOOL_CHARS)
+    truncated = true
+  }
+  if (!truncated) return content
+  return `${rendered}\n\n[output truncated in UI: ${content.length.toLocaleString()} chars, ${lines.length.toLocaleString()} lines. Full text remains in the saved session/tool result.]`
 }
 
 function hasLongDisplayLine(content: string) {
@@ -164,15 +183,18 @@ function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
   })
 
   // Tool result: detect filetype from content heuristics
+  const renderedToolResult = createMemo(() =>
+    props.entry.kind === "tool" ? truncateForRenderable(props.entry.text) : ""
+  )
   const toolResultFiletype = createMemo(() => {
     if (props.entry.kind !== "tool") return "none"
-    return detectFiletypeFromContent(props.entry.text)
+    return detectFiletypeFromContent(renderedToolResult())
   })
 
   // Tool result collapse: >3 lines or long lines
-  const toolResultLines = createMemo(() => displayLines(props.entry.text))
+  const toolResultLines = createMemo(() => displayLines(renderedToolResult()))
   const toolResultOverflow = createMemo(() =>
-    toolResultLines().length > TOOL_COLLAPSE_MAX_LINES || hasLongDisplayLine(props.entry.text)
+    toolResultLines().length > TOOL_COLLAPSE_MAX_LINES || hasLongDisplayLine(renderedToolResult())
   )
 
   // Whether to show expanded content
@@ -251,7 +273,7 @@ function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
           {/* Tool result: show output with syntax highlighting */}
           <Show when={props.entry.kind === "tool" && !props.entry.streaming}>
             <code
-              content={props.entry.text}
+              content={renderedToolResult()}
               filetype={toolResultFiletype()}
               syntaxStyle={MARKDOWN_SYNTAX}
               fg={THEME.muted}
