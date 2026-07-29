@@ -8,7 +8,7 @@ import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectPlanModeTools } from "../tool/selection"
 import { delay, formatProviderError, isRateLimitError } from "./errors"
-import { estimateMessageTokens, getModelConfig, modelSupportsVision } from "../provider/models"
+import { estimateMessageRequestTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
@@ -47,7 +47,32 @@ type SessionRuntime = {
 }
 
 function estimateMessagesTokens(messages: Message[]): number {
-  return estimateMessageTokens(messages)
+  return estimateMessageRequestTokens(messages)
+}
+
+function trimHistoryForInitialRequest(
+  permanentPrefix: Message[],
+  history: Message[],
+  contextLimit: number,
+): Message[] {
+  if (history.length === 0) return history
+
+  const targetTotal = Math.floor(contextLimit * 0.72)
+  const prefixCost = estimateMessagesTokens(permanentPrefix)
+  const historyBudget = Math.max(0, targetTotal - prefixCost)
+  let used = 0
+  let start = history.length
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const cost = estimateMessagesTokens([history[i]!])
+    if (used + cost > historyBudget) break
+    used += cost
+    start = i
+  }
+
+  // Avoid sending orphaned tool results without their assistant tool call.
+  while (start < history.length && history[start]?.role === "tool") start++
+  return history.slice(start)
 }
 
 function compactCurrentTurnForRequest(
@@ -231,21 +256,9 @@ export async function* streamSession(
     : undefined
   const recentContextAnchorMessages: Message[] = recentContextAnchor ? [recentContextAnchor] : []
 
-  const sendHistory = (() => {
-    if (history.length === 0) return history
-    const { contextLimit } = getModelConfig(options.model, options.modelInfo)
-    const budget = Math.floor(contextLimit * 0.55)
-    let used = 0
-    let start = history.length
-    for (let i = history.length - 1; i >= 0; i--) {
-      const cost = estimateMessageTokens([history[i]!])
-      if (used + cost > budget) break
-      used += cost
-      start = i
-    }
-    while (start < history.length && history[start]?.role === "tool") start++
-    return history.slice(start)
-  })()
+  const { contextLimit } = getModelConfig(options.model, options.modelInfo)
+  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
+  const sendHistory = trimHistoryForInitialRequest(permanentPrefix, history, contextLimit)
 
   const allMessages: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
@@ -262,9 +275,7 @@ export async function* streamSession(
   const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
   const toolDefs = convertToolsToDefs(tools)
 
-  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
   const currentTurnStart = allMessages.length
-  const { contextLimit } = getModelConfig(options.model, options.modelInfo)
 
   for (let step = 0; step < maxSteps; step++) {
     yield { type: "status", text: `thinking (step ${step + 1}/${maxSteps})...` }

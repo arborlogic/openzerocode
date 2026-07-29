@@ -426,7 +426,7 @@ describe("selectCompactionTail", () => {
     assert.ok(!result.tail.some((message) => message.role === "tool" && typeof message.content === "string" && message.content.length > 10_000))
   })
 
-  it("summarizes a short session that contains an oversized image attachment", () => {
+  it("does not let an image payload alone trigger compaction", () => {
     const contextLimit = 10_000
     const imageDataUrl = `data:image/png;base64,${"A".repeat(80_000)}`
     const msgs: Message[] = [
@@ -445,8 +445,25 @@ describe("selectCompactionTail", () => {
 
     const result = selectCompactionTail(msgs, contextLimit)
 
-    assert.ok(result.head.length > 0, "the oversized image should be summarized")
-    assert.ok(estimateContextTokens(result.tail) <= contextLimit * 0.2 - COMPACTION_SUMMARY_TOKEN_BUDGET)
+    assert.equal(result.head.length, 0, "only textual context should determine compaction")
+    assert.equal(result.tail.length, msgs.length)
+  })
+
+  it("limits retained images with a request-token allowance after compaction begins", () => {
+    const image = (id: number): Message => ({
+      role: "user",
+      content: [
+        { type: "text", text: `image ${id}` },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(100_000)}` } },
+      ],
+    })
+    const msgs = [user("older text ".repeat(1_000)), ...Array.from({ length: 7 }, (_, i) => image(i))]
+
+    const result = selectCompactionTail(msgs, 20_000)
+
+    assert.ok(result.head.length > 0)
+    assert.equal(result.tail.length, 1, "the request tail should retain only one 2,048-token image allowance")
+    assert.equal(result.tail[0]?.role, "user")
   })
 
   it("does not split in the middle of a tool call cycle", () => {

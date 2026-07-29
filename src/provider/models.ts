@@ -240,10 +240,46 @@ export function estimateTokens(text: string): number {
   return Math.max(0, Math.round(cjkCount / 2 + otherCount / 4))
 }
 
-/** Estimate the request cost of messages without counting local display metadata. */
+/**
+ * Conservative, bounded allowance for one image sent to a vision provider.
+ * Image base64 is transport encoding rather than prompt text, but a provider
+ * still charges it against the context window after visual tokenization.
+ */
+export const IMAGE_REQUEST_TOKEN_ALLOWANCE = 2_048
+
+/**
+ * Estimate the text context cost of messages without counting local display
+ * metadata or binary image payloads. Images are delivered separately to a
+ * vision-capable provider; their base64 representation must not make local
+ * compaction/context estimates treat the attachment as text.
+ */
 export function estimateMessageTokens(messages: Message[]): number {
-  const wireMessages = messages.map(({ parts: _parts, ...message }) => message)
+  const wireMessages = messages.map(({ parts: _parts, content, ...message }) => ({
+    ...message,
+    content: Array.isArray(content)
+      ? content.map((part) => part.type === "image_url"
+        ? { type: "image_url", image_url: { url: "[image payload omitted]" } }
+        : part,
+      )
+      : content,
+  }))
   return estimateTokens(JSON.stringify(wireMessages))
+}
+
+/**
+ * Estimate request context for limits that must account for vision inputs.
+ *
+ * Keep this separate from `estimateMessageTokens`: UI context indicators and
+ * textual compaction deliberately ignore binary attachments, while request
+ * history trimming needs a conservative per-image allowance to avoid sending
+ * too many images to a provider in one request.
+ */
+export function estimateMessageRequestTokens(messages: Message[]): number {
+  const imageCount = messages.reduce((count, message) =>
+    count + (Array.isArray(message.content)
+      ? message.content.filter((part) => part.type === "image_url").length
+      : 0), 0)
+  return estimateMessageTokens(messages) + imageCount * IMAGE_REQUEST_TOKEN_ALLOWANCE
 }
 
 export function estimateCost(model: string, inputTokens: number, outputTokens: number, cachedInputTokens?: number): number {
