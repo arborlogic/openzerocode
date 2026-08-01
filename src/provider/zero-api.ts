@@ -241,6 +241,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
           const decoder = new TextDecoder()
           let buffer = ""
           let emittedText = false
+          let hasToolCalls = false
           let streamDone = false
 
           return new ReadableStream<Chunk>({
@@ -276,7 +277,9 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                             emittedText = true
                             try { controller.enqueue({ delta: { content: text } }) } catch {}
                           }
-                          try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                          if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
+                          const finishReason = hasToolCalls ? "tool_calls" : (type === "response.completed" ? "stop" : "length")
+                          try { controller.enqueue({ delta: {}, finish_reason: finishReason, usage: usageFromResponses(raw.response?.usage) }) } catch {}
                         }
                       }
                     }
@@ -300,7 +303,9 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                             emittedText = true
                             try { controller.enqueue({ delta: { content: text } }) } catch {}
                           }
-                          try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                          if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
+                          const finishReason = hasToolCalls ? "tool_calls" : (type === "response.completed" ? "stop" : "length")
+                          try { controller.enqueue({ delta: {}, finish_reason: finishReason, usage: usageFromResponses(raw.response?.usage) }) } catch {}
                         }
                       }
                     }
@@ -325,10 +330,12 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                     } else if (type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") {
                       controller.enqueue({ delta: { reasoning_content: raw.delta ?? "" } })
                     } else if (type === "response.output_item.added" && raw.item?.type === "function_call") {
+                      hasToolCalls = true
                       controller.enqueue({ delta: {}, tool_calls: [responseToolCallFromItem(raw.item, raw.output_index ?? 0)] })
                     } else if (type === "response.function_call_arguments.delta") {
                       controller.enqueue({ delta: {}, tool_calls: [{ id: raw.call_id, index: raw.output_index ?? 0, type: "function", function: { arguments: raw.delta ?? "" } }] })
                     } else if (type === "response.output_item.done" && raw.item?.type === "function_call") {
+                      hasToolCalls = true
                       controller.enqueue({ delta: {}, tool_calls: [responseToolCallFromItem(raw.item, raw.output_index ?? 0)] })
                     } else if (type === "response.output_item.done" && raw.item?.type === "message" && !emittedText) {
                       const text = responseTextFromOutputItem(raw.item)
@@ -342,7 +349,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                         emittedText = true
                         controller.enqueue({ delta: { content: text } })
                       }
-                      controller.enqueue({ delta: {}, finish_reason: "stop", usage: usageFromResponses(raw.response?.usage) })
+                      if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
+                      controller.enqueue({ delta: {}, finish_reason: hasToolCalls ? "tool_calls" : "stop", usage: usageFromResponses(raw.response?.usage) })
                     } else if (type === "response.incomplete") {
                       const text = !emittedText ? responseTextFromResponse(raw.response) : ""
                       if (text) {
