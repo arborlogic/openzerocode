@@ -259,6 +259,56 @@ describe("zero-api provider request serialization", () => {
     }
   })
 
+  it("closes on response.completed without waiting for transport EOF", async () => {
+    const originalFetch = globalThis.fetch
+    const encoder = new TextEncoder()
+    let transportCancelled = false
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            "event: response.completed",
+            'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Finished"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}',
+            "",
+            "",
+          ].join("\n")))
+          // Deliberately do not close: a terminal SSE event must be sufficient.
+        },
+        cancel() {
+          transportCancelled = true
+        },
+      })
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }) as unknown as typeof fetch
+
+    try {
+      const stream = await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.stream({
+            model: "openaicodex/gpt-5.5",
+            messages: [{ role: "user", content: "inspect image" }],
+            stream: true,
+          })
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+
+      const reader = stream.getReader()
+      const chunks: any[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+
+      assert.equal(chunks[0]?.delta.content, "Finished")
+      assert.equal(chunks.at(-1)?.finish_reason, "stop")
+      assert.equal(transportCancelled, true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it("streams final output item message text when no text delta was sent", async () => {
     const originalFetch = globalThis.fetch
     const encoder = new TextEncoder()

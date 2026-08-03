@@ -339,11 +339,21 @@ export function createResponsesStream(
                   }
                 } else if (type === "response.completed") {
                   controller.enqueue({ delta: {}, finish_reason: "stop", usage: usageFromResponses(raw.response?.usage) })
+                  streamDone = true
                 } else if (type === "response.incomplete") {
                   controller.enqueue({ delta: {}, finish_reason: "length", usage: usageFromResponses(raw.response?.usage) })
+                  streamDone = true
                 }
               }
             }
+          }
+          // A terminal Responses event is the logical end of the response even
+          // when an HTTP proxy keeps the SSE socket open. Do not turn a
+          // successfully completed response into a read-timeout error.
+          if (streamDone) {
+            void reader.cancel().catch(() => {})
+            controller.close()
+            return
           }
           controller.error(err)
           return
@@ -393,9 +403,16 @@ export function createResponsesStream(
               }
             } else if (type === "response.completed") {
               controller.enqueue({ delta: {}, finish_reason: "stop", usage: usageFromResponses(raw.response?.usage) })
+              streamDone = true
             } else if (type === "response.incomplete") {
               controller.enqueue({ delta: {}, finish_reason: "length", usage: usageFromResponses(raw.response?.usage) })
+              streamDone = true
             }
+          }
+          if (streamDone) {
+            void reader.cancel().catch(() => {})
+            controller.close()
+            return
           }
         }
       }

@@ -280,9 +280,14 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                           if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
                           const finishReason = hasToolCalls ? "tool_calls" : (type === "response.completed" ? "stop" : "length")
                           try { controller.enqueue({ delta: {}, finish_reason: finishReason, usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                          streamDone = true
                         }
                       }
                     }
+                  }
+                  if (streamDone) {
+                    try { controller.close() } catch {}
+                    return
                   }
                   try { controller.error(err) } catch {}
                   return
@@ -351,6 +356,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       }
                       if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
                       controller.enqueue({ delta: {}, finish_reason: hasToolCalls ? "tool_calls" : "stop", usage: usageFromResponses(raw.response?.usage) })
+                      streamDone = true
                     } else if (type === "response.incomplete") {
                       const text = !emittedText ? responseTextFromResponse(raw.response) : ""
                       if (text) {
@@ -358,6 +364,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                         controller.enqueue({ delta: { content: text } })
                       }
                       controller.enqueue({ delta: {}, finish_reason: "length", usage: usageFromResponses(raw.response?.usage) })
+                      streamDone = true
                     } else if (raw.choices) {
                       const delta = raw.choices[0]?.delta ?? {}
                       const finish = raw.choices[0]?.finish_reason
@@ -369,6 +376,15 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       if (delta.tool_calls) chunk.tool_calls = delta.tool_calls
                       controller.enqueue(chunk)
                     }
+                  }
+                  // response.completed/response.incomplete terminates the
+                  // logical SSE response. Some gateways leave the HTTP socket
+                  // open for keep-alive, so waiting for transport EOF here
+                  // causes a false "Stream read timeout" after valid output.
+                  if (streamDone) {
+                    void reader.cancel().catch(() => {})
+                    controller.close()
+                    return
                   }
                 }
               }
