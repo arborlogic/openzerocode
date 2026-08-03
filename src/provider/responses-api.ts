@@ -21,8 +21,12 @@ type ResponseOutputItem = {
   summary?: Array<{ type?: string; text?: string }>
 }
 
-/** Timeout for a single reader.read() call before we consider the stream stuck. */
-export const STREAM_READ_TIMEOUT_MS = 60_000
+/**
+ * Timeout for a single reader.read() call before we consider the stream stuck.
+ * Vision tool results and reasoning models can legitimately take more than a
+ * minute before their next SSE event, especially before the first token.
+ */
+export const STREAM_READ_TIMEOUT_MS = 180_000
 
 // SSE parser that correctly joins multiple data: lines (per SSE spec).
 export function parseSSE(text: string): { data: string; event?: string }[] {
@@ -366,6 +370,10 @@ export function createResponsesStream(
         }
 
         buffer += decoder.decode(value, { stream: true })
+        // SSE allows CRLF and bare CR line endings. Normalize before splitting
+        // events so terminal responses are not stranded in the buffer while a
+        // keep-alive transport remains open.
+        buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
         const parts = buffer.split("\n\n")
         buffer = parts.pop() ?? ""
         for (const part of parts) {

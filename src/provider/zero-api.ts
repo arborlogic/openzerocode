@@ -150,8 +150,12 @@ function sanitizeMessages(messages: CompletionRequest["messages"], model: string
   })
 }
 
-/** Timeout for a single reader.read() call before we consider the stream stuck. */
-const STREAM_READ_TIMEOUT_MS = 60_000
+/**
+ * Timeout for a single reader.read() call before we consider the stream stuck.
+ * Vision tool results and reasoning models can legitimately take more than a
+ * minute before their next SSE event, especially before the first token.
+ */
+const STREAM_READ_TIMEOUT_MS = 180_000
 
 function readWithTimeout(reader: ReadableStreamDefaultReader<Uint8Array>, signal?: AbortSignal): Promise<{ done: boolean; value?: Uint8Array }> {
   return new Promise((resolve, reject) => {
@@ -320,6 +324,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                   return
                 }
                 buffer += decoder.decode(value, { stream: true })
+                // SSE permits CRLF (and bare CR) line endings. Normalize them
+                // before looking for the blank line that terminates an event;
+                // otherwise a complete terminal event can remain buffered
+                // until the per-read timeout fires.
+                buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
                 const parts = buffer.split("\n\n")
                 buffer = parts.pop() ?? ""
                 for (const part of parts) {
@@ -375,6 +384,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       }
                       if (delta.tool_calls) chunk.tool_calls = delta.tool_calls
                       controller.enqueue(chunk)
+                      // Chat Completions streams terminate logically when a
+                      // choice carries finish_reason. Gateways can keep the
+                      // HTTP connection alive after this final chunk, just as
+                      // they can after a Responses response.completed event.
+                      if (finish) streamDone = true
                     }
                   }
                   // response.completed/response.incomplete terminates the

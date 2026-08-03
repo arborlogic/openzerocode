@@ -114,4 +114,30 @@ describe("responses-api streaming", () => {
     assert.equal(second.done, true)
     assert.equal(transportCancelled, true)
   })
+
+  it("recognizes a CRLF-delimited terminal event on a keep-alive transport", async () => {
+    const encoder = new TextEncoder()
+    let transportCancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          "event: response.completed",
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+          "",
+          "",
+        ].join("\r\n")))
+      },
+      cancel() {
+        transportCancelled = true
+      },
+    })
+
+    const reader = createResponsesStream(body).getReader()
+    const first = await reader.read()
+    const second = await reader.read()
+
+    assert.equal(first.value?.finish_reason, "stop")
+    assert.equal(second.done, true)
+    assert.equal(transportCancelled, true)
+  })
 })
