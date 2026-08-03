@@ -2123,9 +2123,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   })
 
   // Solid/OpenTUI keeps every mounted renderable alive. Retain the complete
-  // transcript in session state, but only mount the recent window so long-lived
-  // sessions release old markdown, diff, and syntax-highlight renderables.
-  const mountedTurns = createMemo(() => mountedTranscriptWindow(turns()))
+  // transcript in session state, but bound both turns and blocks: one agent
+  // turn can contain hundreds of tool entries, so a turn-only limit can still
+  // exhaust OpenTUI's shared native handle registry.
+  const mountedTurns = createMemo(() => mountedTranscriptWindow(turns(), {
+    weight: (turn) => turn.entries.length + (turn.user ? 1 : 0) + (turn.footer ? 1 : 0),
+  }))
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
   const sidebarWidth = createMemo(() => sidebarWidthForTerminal(dimensions().width))

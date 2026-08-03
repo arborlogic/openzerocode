@@ -6,7 +6,12 @@ import {
   createStableRepaintScheduler,
   forceFullTerminalRepaint,
 } from "./tui-render-stability"
-import { createTuiRendererConfig, MAX_MOUNTED_TRANSCRIPT_TURNS, mountedTranscriptWindow } from "./tui-runtime"
+import {
+  createTuiRendererConfig,
+  MAX_MOUNTED_TRANSCRIPT_BLOCKS,
+  MAX_MOUNTED_TRANSCRIPT_TURNS,
+  mountedTranscriptWindow,
+} from "./tui-runtime"
 
 function rendererStub() {
   let renders = 0
@@ -104,5 +109,30 @@ describe("mountedTranscriptWindow", () => {
     const window = mountedTranscriptWindow(["old", "new"], 0)
 
     assert.deepEqual(window, { turns: ["new"], omitted: 1 })
+  })
+
+  it("also bounds renderable weight when a turn contains many blocks", () => {
+    const turns = [
+      { id: "old", blocks: MAX_MOUNTED_TRANSCRIPT_BLOCKS },
+      { id: "middle", blocks: 2_500 },
+      { id: "new", blocks: 2_000 },
+    ]
+
+    const window = mountedTranscriptWindow(turns, {
+      weight: (turn) => turn.blocks,
+    })
+
+    assert.deepEqual(window.turns.map((turn) => turn.id), ["new"])
+    assert.equal(window.omitted, 2)
+  })
+
+  it("always keeps the newest turn when it alone exceeds the weight budget", () => {
+    const turns = [{ blocks: 1 }, { blocks: MAX_MOUNTED_TRANSCRIPT_BLOCKS + 1 }]
+
+    const window = mountedTranscriptWindow(turns, {
+      weight: (turn) => turn.blocks,
+    })
+
+    assert.deepEqual(window, { turns: [turns[1]], omitted: 1 })
   })
 })
