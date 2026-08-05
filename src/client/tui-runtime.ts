@@ -1,7 +1,39 @@
 import type { CliRendererConfig } from "@opentui/core"
 
-export const MAX_MOUNTED_TRANSCRIPT_TURNS = 160
-export const MAX_MOUNTED_TRANSCRIPT_BLOCKS = 4_000
+export const MAX_MOUNTED_TRANSCRIPT_TURNS = 80
+// A tool block commonly owns several TextBuffers (icon, label, preview, hint,
+// and optional code body), so stay well below OpenTUI's shared handle ceiling.
+export const MAX_MOUNTED_TRANSCRIPT_BLOCKS = 600
+export const MAX_MOUNTED_BLOCKS_PER_TURN = 200
+
+type HideableTranscriptBlock = { hidden?: boolean }
+
+/**
+ * Suppress the oldest visible blocks in an unusually large turn while keeping
+ * every positional slot intact. Keeping the slots avoids shifting Solid's
+ * nested <Index> renderables when tool calls append or display settings change.
+ */
+export function limitMountedTurnBlocks<T extends { entries: B[] }, B extends HideableTranscriptBlock>(
+  turn: T,
+  limit = MAX_MOUNTED_BLOCKS_PER_TURN,
+): T & { omittedMountedBlocks?: number } {
+  const safeLimit = Math.max(1, Math.floor(limit))
+  let visible = 0
+  let omitted = 0
+  const entries = [...turn.entries]
+
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]!
+    if (entry.hidden) continue
+    visible++
+    if (visible <= safeLimit) continue
+    entries[index] = { ...entry, hidden: true }
+    omitted++
+  }
+
+  if (omitted === 0) return { ...turn, entries }
+  return { ...turn, entries, omittedMountedBlocks: omitted }
+}
 
 type TranscriptWindowOptions<T> = {
   maxTurns?: number
@@ -25,8 +57,8 @@ export function mountedTranscriptWindow<T>(
   let mountedWeight = 0
   while (start > 0 && turns.length - start < maxTurns) {
     const nextWeight = Math.max(1, Math.floor(weight(turns[start - 1]) || 1))
-    // Always retain the newest turn, even when that turn alone exceeds the
-    // budget. This avoids presenting an empty transcript during a large reply.
+    // Always retain the newest turn. Callers should use limitMountedTurnBlocks
+    // first so a single tool-heavy turn cannot bypass the global budget.
     if (start < turns.length && mountedWeight + nextWeight > maxWeight) break
     start--
     mountedWeight += nextWeight

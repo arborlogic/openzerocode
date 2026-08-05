@@ -78,7 +78,7 @@ import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
-import { createTuiRendererConfig, mountedTranscriptWindow } from "./tui-runtime"
+import { createTuiRendererConfig, limitMountedTurnBlocks, mountedTranscriptWindow } from "./tui-runtime"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -2126,9 +2126,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // transcript in session state, but bound both turns and blocks: one agent
   // turn can contain hundreds of tool entries, so a turn-only limit can still
   // exhaust OpenTUI's shared native handle registry.
-  const mountedTurns = createMemo(() => mountedTranscriptWindow(turns(), {
-    weight: (turn) => turn.entries.length + (turn.user ? 1 : 0) + (turn.footer ? 1 : 0),
-  }))
+  const mountedTurns = createMemo(() => mountedTranscriptWindow(
+    turns().map((turn) => limitMountedTurnBlocks(turn)),
+    {
+      // Hidden tool/reasoning slots intentionally stay in the arrays to keep
+      // <Index> positions stable, but they do not own TextBuffers and therefore
+      // must not consume the native-renderable budget.
+      weight: (turn) => turn.entries.filter((entry) => !entry.hidden).length
+        + (turn.user ? 1 : 0)
+        + (turn.footer ? 1 : 0)
+        + (turn.omittedMountedBlocks ? 1 : 0),
+    },
+  ))
 
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
   const sidebarWidth = createMemo(() => sidebarWidthForTerminal(dimensions().width))

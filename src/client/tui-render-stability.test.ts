@@ -8,6 +8,8 @@ import {
 } from "./tui-render-stability"
 import {
   createTuiRendererConfig,
+  limitMountedTurnBlocks,
+  MAX_MOUNTED_BLOCKS_PER_TURN,
   MAX_MOUNTED_TRANSCRIPT_BLOCKS,
   MAX_MOUNTED_TRANSCRIPT_TURNS,
   mountedTranscriptWindow,
@@ -134,5 +136,36 @@ describe("mountedTranscriptWindow", () => {
     })
 
     assert.deepEqual(window, { turns: [turns[1]], omitted: 1 })
+  })
+
+  it("suppresses old blocks inside one tool-heavy newest turn", () => {
+    const turn = {
+      entries: Array.from(
+        { length: MAX_MOUNTED_BLOCKS_PER_TURN + 2 },
+        (_, index) => ({ id: index, hidden: false }),
+      ),
+    }
+
+    const limited = limitMountedTurnBlocks(turn)
+
+    assert.equal(limited.omittedMountedBlocks, 2)
+    assert.equal(limited.entries.length, turn.entries.length)
+    assert.deepEqual(limited.entries.slice(0, 3).map((entry) => entry.hidden), [true, true, false])
+    assert.equal(turn.entries[0]?.hidden, false)
+  })
+
+  it("does not spend the per-turn budget on already-hidden tool slots", () => {
+    const turn = {
+      entries: [
+        ...Array.from({ length: 20 }, () => ({ hidden: true })),
+        { hidden: false },
+        { hidden: false },
+      ],
+    }
+
+    const limited = limitMountedTurnBlocks(turn, 2)
+
+    assert.equal(limited.omittedMountedBlocks, undefined)
+    assert.equal(limited.entries.filter((entry) => !entry.hidden).length, 2)
   })
 })

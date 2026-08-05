@@ -7,6 +7,7 @@ export type DisplayTurn = {
   user?: DisplayBlock
   entries: DisplayBlock[]
   footer?: string
+  omittedMountedBlocks?: number
   userMsgIndex?: number  // index into messages() so we can edit/truncate
   peerOrigin?: string    // set when this turn was sent by a peer process
 }
@@ -49,6 +50,11 @@ export function TurnEntry(props: {
 
       <Show when={props.turn.entries.length > 0}>
         <box flexDirection="column">
+          <Show when={(props.turn.omittedMountedBlocks ?? 0) > 0}>
+            <text style={{ fg: THEME.muted }}>
+              {`… ${props.turn.omittedMountedBlocks} older blocks unmounted from this tool-heavy turn`}
+            </text>
+          </Show>
           {/* Entries are append-only within a turn. Index keeps existing
               renderables mounted when messageToBlocks returns fresh objects.
               Hidden entries must remain in this indexed list: filtering them
