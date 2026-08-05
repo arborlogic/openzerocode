@@ -51,10 +51,15 @@ const CRLF_HEADER_END_BYTES = Buffer.from("\r\n\r\n", "ascii")
 const LF_HEADER_END_BYTES = Buffer.from("\n\n", "ascii")
 const MAX_BUFFER_BYTES = 4 * 1024 * 1024
 
-/** Serialize a JSON-RPC message using MCP stdio framing. */
+/**
+ * Serialize a JSON-RPC message for the current MCP stdio transport.
+ *
+ * MCP's stdio transport uses one JSON-RPC message per newline-delimited line.
+ * The decoder below continues to accept legacy Content-Length framing so older
+ * local servers remain compatible.
+ */
 export function encodeMessage(msg: JsonRpcRequest | JsonRpcNotification): string {
-  const body = JSON.stringify(msg)
-  return `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`
+  return `${JSON.stringify(msg)}\n`
 }
 
 /**
