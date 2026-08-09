@@ -42,6 +42,7 @@ import { ToastViewport } from "./toast-viewport"
 import type { ToastItem } from "./toast-viewport"
 import { ResponseEntry } from "./response-entry"
 import type { DisplayBlock } from "./response-entry"
+import { displayBlockMountWeight } from "./display-block"
 import { TurnEntry } from "./turn-entry"
 import type { DisplayTurn } from "./turn-entry"
 import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
@@ -2127,13 +2128,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   // turn can contain hundreds of tool entries, so a turn-only limit can still
   // exhaust OpenTUI's shared native handle registry.
   const mountedTurns = createMemo(() => mountedTranscriptWindow(
-    turns().map((turn) => limitMountedTurnBlocks(turn)),
+    turns().map((turn) => limitMountedTurnBlocks(turn, { weight: displayBlockMountWeight })),
     {
       // Hidden tool/reasoning slots intentionally stay in the arrays to keep
       // <Index> positions stable, but they do not own TextBuffers and therefore
       // must not consume the native-renderable budget.
-      weight: (turn) => turn.entries.filter((entry) => !entry.hidden).length
-        + (turn.user ? 1 : 0)
+      weight: (turn) => turn.entries.filter((entry) => !entry.hidden).reduce(
+        (total, entry) => total + displayBlockMountWeight(entry),
+        0,
+      )
+        + (turn.user ? displayBlockMountWeight(turn.user) : 0)
         + (turn.footer ? 1 : 0)
         + (turn.omittedMountedBlocks ? 1 : 0),
     },
@@ -2159,6 +2163,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }).filter(Boolean) as DisplayBlock[],
   )
+
+  // A long-running agent can append hundreds of live tool calls before its
+  // response becomes a transcript turn. Apply the same per-turn native-resource
+  // budget during streaming instead of waiting until completion to unmount them.
+  const mountedStreamingTurn = createMemo(() => limitMountedTurnBlocks(
+    { entries: streamingEntries() },
+    { weight: displayBlockMountWeight },
+  ))
 
   const runStreamTest = () => {
     if (running() || compacting()) {
@@ -2189,22 +2201,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setTimeout(emit, 45)
         return
       }
-      // Let stream-state's final 32 ms flush commit before moving the text to
-      // durable history, just as a real provider response does.
-      setTimeout(() => {
-        if (abort.aborted) {
-          streamState.reset()
-          setStatus("local stream test cancelled")
-        } else {
-          streamState.reset()
-          setMessages((prev) => [...prev, { role: "assistant", content: STREAM_TEST_RESPONSE }])
-          setStatus("waiting for input")
-          showToast("success", "Stream test complete", "Local response completed without using a model.")
-          queueMicrotask(scrollBottom)
-        }
-        runAbort = undefined
-        setRunning(false)
-      }, 40)
+      // Commit the final buffered chunk synchronously before replacing the live
+      // entry with durable history. Do not race the stream flush interval.
+      streamState.flushPending()
+      if (abort.aborted) {
+        streamState.reset()
+        setStatus("local stream test cancelled")
+      } else {
+        streamState.reset()
+        setMessages((prev) => [...prev, { role: "assistant", content: STREAM_TEST_RESPONSE }])
+        setStatus("waiting for input")
+        showToast("success", "Stream test complete", "Local response completed without using a model.")
+        queueMicrotask(scrollBottom)
+      }
+      runAbort = undefined
+      setRunning(false)
     }
     emit()
   }
@@ -3714,10 +3725,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             />
           )}
         </Index>
-        <Show when={running() && streamingEntries().length > 0}>
+        <Show when={running() && mountedStreamingTurn().entries.length > 0}>
           <box marginTop={1} flexDirection="column" backgroundColor={THEME.background} width="100%" minWidth={0}>
-            <Index each={streamingEntries()}>
-              {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
+            <Show when={(mountedStreamingTurn().omittedMountedBlocks ?? 0) > 0}>
+              <text style={{ fg: THEME.muted }}>
+                {`… ${mountedStreamingTurn().omittedMountedBlocks} older live blocks unmounted from this tool-heavy response`}
+              </text>
+            </Show>
+            {/* Preserve live part slots just like completed turns: filtering
+                hidden entries would shift <Index> renderables while streaming. */}
+            <Index each={mountedStreamingTurn().entries}>
+              {(entry, index) => (
+                <Show when={!entry().hidden}>
+                  <ResponseEntry entry={entry()} isFirst={index === 0} />
+                </Show>
+              )}
             </Index>
           </box>
         </Show>

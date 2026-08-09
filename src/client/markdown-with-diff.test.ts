@@ -2,7 +2,12 @@ import assert from "node:assert"
 import { describe, it } from "bun:test"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
 import { normalizeUnifiedDiffHunks, parseDiffBlocks, parseMarkdownTables } from "./markdown-diff-parser"
-import { requiresCustomMarkdownRenderer } from "./markdown-with-diff"
+import {
+  MAX_CUSTOM_MARKDOWN_SEGMENTS,
+  MAX_STYLED_MARKDOWN_BLOCKS,
+  markdownRenderMode,
+  requiresCustomMarkdownRenderer,
+} from "./markdown-with-diff"
 
 describe("parseDiffBlocks", () => {
   it("returns a single markdown segment when there are no diff blocks", () => {
@@ -264,5 +269,25 @@ describe("parseDiffBlocks", () => {
     assert.ok(DIFF_RENDER_PROPS.removedLineNumberBg)
     assert.equal("addedContentBg" in DIFF_RENDER_PROPS, false)
     assert.equal("removedContentBg" in DIFF_RENDER_PROPS, false)
+  })
+})
+
+describe("markdownRenderMode", () => {
+  it("falls back to one plain TextBuffer for pathologically complex Markdown", () => {
+    const content = Array.from(
+      { length: MAX_STYLED_MARKDOWN_BLOCKS + 1 },
+      (_, index) => `## Section ${index}`,
+    ).join("\n")
+
+    assert.equal(markdownRenderMode(content, parseDiffBlocks(content)), "plain")
+  })
+
+  it("bounds custom diff/table segment renderables", () => {
+    const segments = Array.from({ length: MAX_CUSTOM_MARKDOWN_SEGMENTS + 1 }, () => ({
+      type: "diff" as const,
+      content: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b",
+    }))
+
+    assert.equal(markdownRenderMode("diffs", segments), "plain")
   })
 })

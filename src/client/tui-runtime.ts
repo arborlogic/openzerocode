@@ -1,10 +1,13 @@
 import type { CliRendererConfig } from "@opentui/core"
 
-export const MAX_MOUNTED_TRANSCRIPT_TURNS = 80
-// A tool block commonly owns several TextBuffers (icon, label, preview, hint,
-// and optional code body), so stay well below OpenTUI's shared handle ceiling.
-export const MAX_MOUNTED_TRANSCRIPT_BLOCKS = 600
-export const MAX_MOUNTED_BLOCKS_PER_TURN = 200
+export const MAX_MOUNTED_TRANSCRIPT_TURNS = 60
+// This is a conservative estimate of native TextBuffer pressure, not a block
+// count. Tool rows and Markdown commonly allocate several buffers each.
+export const MAX_MOUNTED_TRANSCRIPT_WEIGHT = 320
+export const MAX_MOUNTED_WEIGHT_PER_TURN = 120
+// Backwards-compatible names for integrations importing the old constants.
+export const MAX_MOUNTED_TRANSCRIPT_BLOCKS = MAX_MOUNTED_TRANSCRIPT_WEIGHT
+export const MAX_MOUNTED_BLOCKS_PER_TURN = MAX_MOUNTED_WEIGHT_PER_TURN
 
 type HideableTranscriptBlock = { hidden?: boolean }
 
@@ -15,18 +18,23 @@ type HideableTranscriptBlock = { hidden?: boolean }
  */
 export function limitMountedTurnBlocks<T extends { entries: B[] }, B extends HideableTranscriptBlock>(
   turn: T,
-  limit = MAX_MOUNTED_BLOCKS_PER_TURN,
+  options: number | { maxWeight?: number; weight?: (block: B) => number } = {},
 ): T & { omittedMountedBlocks?: number } {
-  const safeLimit = Math.max(1, Math.floor(limit))
-  let visible = 0
+  const normalized = typeof options === "number" ? { maxWeight: options } : options
+  const safeLimit = Math.max(1, Math.floor(normalized.maxWeight ?? MAX_MOUNTED_WEIGHT_PER_TURN))
+  const weight = normalized.weight ?? (() => 1)
+  let mountedWeight = 0
   let omitted = 0
   const entries = [...turn.entries]
 
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index]!
     if (entry.hidden) continue
-    visible++
-    if (visible <= safeLimit) continue
+    const entryWeight = Math.max(1, Math.floor(weight(entry) || 1))
+    if (mountedWeight === 0 || mountedWeight + entryWeight <= safeLimit) {
+      mountedWeight += entryWeight
+      continue
+    }
     entries[index] = { ...entry, hidden: true }
     omitted++
   }

@@ -14,6 +14,7 @@ import {
   MAX_MOUNTED_TRANSCRIPT_TURNS,
   mountedTranscriptWindow,
 } from "./tui-runtime"
+import { displayBlockMountWeight, type DisplayBlock } from "./display-block"
 
 function rendererStub() {
   let renders = 0
@@ -167,5 +168,57 @@ describe("mountedTranscriptWindow", () => {
 
     assert.equal(limited.omittedMountedBlocks, undefined)
     assert.equal(limited.entries.filter((entry) => !entry.hidden).length, 2)
+  })
+
+  it("charges tool and structurally complex Markdown blocks more than plain text", () => {
+    assert.equal(displayBlockMountWeight({ kind: "system", text: "ok" }), 1)
+    assert.equal(displayBlockMountWeight({ kind: "tool", text: "result" }), 6)
+    assert.ok(displayBlockMountWeight({
+      kind: "assistant",
+      text: Array.from({ length: 40 }, (_, index) => `## Section ${index}\n\n- item`).join("\n"),
+    }) > displayBlockMountWeight({ kind: "assistant", text: "plain response" }))
+  })
+
+  it("charges completed custom table rows that each allocate a TextBuffer", () => {
+    const table = [
+      "| Name | Value |",
+      "| --- | --- |",
+      ...Array.from({ length: 80 }, (_, index) => `| row ${index} | ${index} |`),
+    ].join("\n")
+
+    assert.ok(displayBlockMountWeight({ kind: "assistant", text: table }) >= 80)
+    assert.equal(displayBlockMountWeight({ kind: "assistant", text: table, streaming: true }), 2)
+  })
+
+  it("bounds live streaming tool entries with the per-turn weighted limit", () => {
+    const liveTurn: { entries: DisplayBlock[] } = {
+      entries: Array.from({ length: 31 }, (_, index) => ({
+        kind: "tool",
+        text: `result ${index}`,
+        streaming: true,
+      })),
+    }
+
+    const limited = limitMountedTurnBlocks(liveTurn, { weight: displayBlockMountWeight })
+
+    assert.equal(limited.omittedMountedBlocks, 1)
+    assert.equal(limited.entries.length, liveTurn.entries.length)
+    assert.equal(limited.entries[0]?.hidden, true)
+    assert.equal(limited.entries.at(-1)?.hidden, undefined)
+  })
+
+  it("suppresses older expensive blocks by weight rather than raw count", () => {
+    const turn: { entries: Array<{ kind: "tool" | "system"; text: string; hidden?: boolean }> } = {
+      entries: [
+        { kind: "tool", text: "old" },
+        { kind: "system", text: "new" },
+      ],
+    }
+
+    const limited = limitMountedTurnBlocks(turn, { maxWeight: 5, weight: displayBlockMountWeight })
+
+    assert.equal(limited.entries[0]?.hidden, true)
+    assert.equal(limited.entries[1]?.hidden, undefined)
+    assert.equal(limited.omittedMountedBlocks, 1)
   })
 })
