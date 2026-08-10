@@ -3,9 +3,25 @@ import { pathToFileURL } from "node:url"
 
 const REPORT_PATH_LINE = /^(\s*(?:[-*]\s+)?(?:\*\*)?(?:Modified|Added|Deleted|Regenerated)(?::\*\*|\*\*:|:)\s*)([^\r\n]*?)(\s*)$/
 const FENCE = /^\s*(`{3,}|~{3,})/
+const MARKDOWN_LINK = /(\[[^\]\r\n]*\])\(\s*(?:<([^>\r\n]+)>|([^\s)\r\n]+))\s*\)/g
 
 function markdownLinkLabel(path: string): string {
   return path.replace(/([\\\[\]])/g, "\\$1")
+}
+
+export function localFileUrl(filePath: string, cwd = process.cwd()): string | undefined {
+  // Preserve web, file, anchor, and protocol-relative destinations. Only plain
+  // filesystem paths should be redirected to the terminal's file opener.
+  if (!filePath || /^(?:[a-z][a-z\d+.-]*:|#|\?|\/\/)/i.test(filePath)) return undefined
+  return pathToFileURL(path.resolve(cwd, filePath)).href
+}
+
+function linkMarkdownFilePaths(content: string, cwd: string): string {
+  return content.replace(MARKDOWN_LINK, (fullMatch, label: string, bracketedPath?: string, barePath?: string) => {
+    const filePath = bracketedPath ?? barePath
+    const fileUrl = filePath ? localFileUrl(filePath, cwd) : undefined
+    return fileUrl ? `${label}(<${fileUrl}>)` : fullMatch
+  })
 }
 
 /**
@@ -34,12 +50,19 @@ export function linkCompletionReportPaths(content: string, cwd = process.cwd()):
     if (!match) return part
 
     const [, prefix, rawPath, trailingWhitespace] = match
-    const filePath = rawPath!.trim()
-    if (!filePath || filePath.includes("\`") || filePath.includes("](") || /^[a-z][a-z\d+.-]*:/i.test(filePath)) {
-      return part
+    const reportContent = rawPath!.trim()
+    if (!reportContent || reportContent.includes("`")) return part
+
+    // Earlier responses used relative Markdown destinations. Rewrite those
+    // existing links as well, or the terminal opens an HTTP URL instead.
+    if (MARKDOWN_LINK.test(reportContent)) {
+      // RegExp#test advances the cursor for global expressions.
+      MARKDOWN_LINK.lastIndex = 0
+      return `${prefix}${linkMarkdownFilePaths(reportContent, cwd)}${trailingWhitespace}`
     }
 
-    const fileUrl = pathToFileURL(path.resolve(cwd, filePath)).href
-    return `${prefix}[${markdownLinkLabel(filePath)}](<${fileUrl}>)${trailingWhitespace}`
+    const fileUrl = localFileUrl(reportContent, cwd)
+    if (!fileUrl) return part
+    return `${prefix}[${markdownLinkLabel(reportContent)}](<${fileUrl}>)${trailingWhitespace}`
   }).join("")
 }

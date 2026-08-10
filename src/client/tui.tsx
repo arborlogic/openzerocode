@@ -444,6 +444,11 @@ function App() {
     setStatus(ok ? `opened folder for ${file.path}` : `folder not found: ${file.path}`)
   }
 
+  function handleOpenDirectoryRequest(directory: string) {
+    const ok = revealFileInFolder(directory)
+    setStatus(ok ? `opened folder: ${directory}` : `folder not found: ${directory}`)
+  }
+
   let scroll: ScrollBoxRenderable | undefined
   let composer: TextareaRenderable | undefined
   let autocompleteApi: AutocompleteApi | undefined
@@ -3963,6 +3968,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           gitRefreshKey={gitRefreshRevision()}
           geassRevision={geassRevision()}
           onFileClick={(file) => { void handleFileDiffRequest(file) }}
+          onDirectoryClick={handleOpenDirectoryRequest}
         />
       </Show>
 
@@ -3994,6 +4000,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             gitRefreshKey={gitRefreshRevision()}
             geassRevision={geassRevision()}
             onFileClick={(file) => { void handleFileDiffRequest(file) }}
+            onDirectoryClick={handleOpenDirectoryRequest}
           />
         </box>
       </Show>

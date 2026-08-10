@@ -1,8 +1,14 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
-import { linkCompletionReportPaths } from "./local-file-links"
+import { linkCompletionReportPaths, localFileUrl } from "./local-file-links"
 
 const cwd = "/Users/tester/project"
+
+describe("localFileUrl", () => {
+  it("creates an encoded file URI from an absolute directory path", () => {
+    assert.equal(localFileUrl("/Users/masato/Dev/ai util/openzerocode"), "file:///Users/masato/Dev/ai%20util/openzerocode")
+  })
+})
 
 describe("linkCompletionReportPaths", () => {
   it("converts completion-report paths to encoded absolute file URIs", () => {
@@ -33,12 +39,25 @@ describe("linkCompletionReportPaths", () => {
     assert.equal(link?.href, "file:///Users/tester/project/outputs/report.pdf")
   })
 
-  it("accepts bold labels and leaves ordinary prose, external URLs, and code fences unchanged", () => {
+  it("rewrites existing relative Markdown links in completion reports", () => {
+    const input = [
+      "- Modified: [src/build-english-deck.mjs](src/build-english-deck.mjs)",
+      "- Added: [report with spaces.pdf](<outputs/report with spaces.pdf>)",
+    ].join("\n")
+
+    assert.equal(linkCompletionReportPaths(input, cwd), [
+      "- Modified: [src/build-english-deck.mjs](<file:///Users/tester/project/src/build-english-deck.mjs>)",
+      "- Added: [report with spaces.pdf](<file:///Users/tester/project/outputs/report%20with%20spaces.pdf>)",
+    ].join("\n"))
+  })
+
+  it("leaves ordinary prose, external URLs, and code fences unchanged", () => {
     const input = [
       "- Modified: https://example.com/report",
+      "- Added: [website](https://example.com/report)",
       "Mention outputs/report.pdf without a report label.",
       "```text",
-      "- Regenerated: outputs/example.pdf",
+      "- Regenerated: [outputs/example.pdf](outputs/example.pdf)",
       "```",
     ].join("\n")
 
