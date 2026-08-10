@@ -66,9 +66,30 @@ function formatPageSummary(page: Geass.PageSnapshot): string {
   return parts.join('\n')
 }
 
-function buildVisualPrompt(userPrompt: string | null | undefined, pageSummary: string): string {
+export function formatScreenshotMetadata(screenshot: Geass.ScreenshotResult): string {
+  const imageWidth = screenshot.width ?? 'unknown'
+  const imageHeight = screenshot.height ?? 'unknown'
+  const originalSize = screenshot.originalWidth && screenshot.originalHeight
+    ? `${screenshot.originalWidth} x ${screenshot.originalHeight}`
+    : 'unknown'
+  const viewport = screenshot.viewport
+    ? `${screenshot.viewport.width} x ${screenshot.viewport.height} at ${screenshot.viewport.x},${screenshot.viewport.y}${screenshot.viewport.deviceScaleFactor === undefined ? '' : ` @${screenshot.viewport.deviceScaleFactor}x`}`
+    : 'unknown'
+
+  return [
+    '=== Authoritative GEASS Screenshot Metadata ===',
+    `Encoded image dimensions: ${imageWidth} x ${imageHeight} pixels.`,
+    `Original captured dimensions before resize: ${originalSize} pixels.`,
+    `Browser viewport: ${viewport}.`,
+    'These values come from GEASS, not visual inference. When asked about dimensions, viewport, URL, or title, use this metadata rather than estimating from screenshot content.',
+  ].join('\n')
+}
+
+export function buildVisualPrompt(userPrompt: string | null | undefined, pageSummary: string, screenshot: Geass.ScreenshotResult): string {
   return [
     userPrompt?.trim() || DEFAULT_VISUAL_PROMPT,
+    '',
+    formatScreenshotMetadata(screenshot),
     '',
     'Structured page context from GEASS:',
     pageSummary,
@@ -166,7 +187,7 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
               endpoint,
               model,
               timeoutMs,
-              prompt: buildVisualPrompt(args.prompt, pageSummary),
+              prompt: buildVisualPrompt(args.prompt, pageSummary, screenshot),
               imageBase64: screenshot.base64,
               imageFormat: screenshot.format,
             }))
