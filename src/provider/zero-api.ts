@@ -199,8 +199,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const complete = (req: CompletionRequest): Effect.Effect<CompletionResult> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          // Strip non-wire fields (max_tokens duplicated below if needed; signal is local-only).
-          const { max_tokens, signal, ...rest } = req as any
+          // AbortSignal is local-only; all completion controls remain on the wire.
+          const { signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages, model), model, stream: false }
 
           const res = yield* Effect.promise(() =>
@@ -228,7 +228,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const stream = (req: CompletionRequest): Effect.Effect<ReadableStream<Chunk>> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          const { max_tokens, signal, ...rest } = req as any
+          const { signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages, model), model, stream: true }
 
           const res = yield* Effect.promise(() =>

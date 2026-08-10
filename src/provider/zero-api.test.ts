@@ -72,6 +72,21 @@ describe("zero-api provider request serialization", () => {
     ])
   })
 
+  it("serializes reasoning effort and token controls", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "openaicodex/gpt-5.6-terra",
+      messages: [{ role: "user", content: "solve this" }],
+      stream: false,
+      max_tokens: 4096,
+      temperature: 0.2,
+      reasoning_effort: "high",
+    })
+
+    assert.equal(requestBody.max_tokens, 4096)
+    assert.equal(requestBody.temperature, 0.2)
+    assert.equal(requestBody.reasoning_effort, "high")
+  })
+
   it("strips image content for non-vision models after local VLM fallback text remains", async () => {
     const requestBody = await captureCompleteRequest({
       model: "some-text-model",
@@ -157,7 +172,7 @@ describe("zero-api provider request serialization", () => {
     assert.equal(requestBody.messages[1].parts, undefined)
   })
 
-  it("omits max_tokens from chat completion requests", async () => {
+  it("preserves max_tokens in chat completion requests", async () => {
     const requestBody = await captureCompleteRequest({
       model: "openaicodex/gpt-5.5",
       messages: [{ role: "user", content: "say hi" }],
@@ -165,7 +180,7 @@ describe("zero-api provider request serialization", () => {
       max_tokens: 400,
     })
 
-    assert.equal(requestBody.max_tokens, undefined)
+    assert.equal(requestBody.max_tokens, 400)
     assert.equal(requestBody.model, "openaicodex/gpt-5.5")
     assert.equal(requestBody.stream, false)
   })

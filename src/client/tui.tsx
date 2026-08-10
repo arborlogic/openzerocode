@@ -699,6 +699,33 @@ function App() {
     return currentModelInfo
   })
 
+  const currentModelSupportsReasoning = createMemo(() => {
+    selectionRevision()
+    return getModelConfig(currentModel, currentModelInfo).reasoning === true
+  })
+
+  const reasoningEffortLabel = createMemo(() => reasoningEffort() ?? "default")
+
+  const modelStatusLabel = createMemo(() => {
+    const model = modelLabel()
+    return currentModelSupportsReasoning() ? `${model} (${reasoningEffortLabel()})` : model
+  })
+
+  const cycleReasoningEffort = () => {
+    const current = reasoningEffort()
+    const next = current === undefined
+      ? "low"
+      : current === "low"
+        ? "medium"
+        : current === "medium"
+          ? "high"
+          : current === "high"
+            ? "max"
+            : undefined
+    setReasoningEffort(next)
+    setStatus(`reasoning effort -> ${next ?? "default"}`)
+  }
+
   const activeProviderKeyLabel = createMemo(() => {
     providerConfigRevision()
     return getActiveConfiguredProviderKeyName(currentProvider) ?? "none"
@@ -1200,6 +1227,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
+      ...(currentModelSupportsReasoning()
+        ? [{
+            label: "Cycle reasoning effort",
+            hint: reasoningEffortLabel(),
+            onSelect: () => {
+              cycleReasoningEffort()
+              setShowPalette(false)
+            },
+          } satisfies PaletteItem]
+        : []),
     ]
   })
 
@@ -1374,8 +1411,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     for (const modelInfo of visibleModels) {
       const model = modelInfo.id
       const isCurrent = providerId === providerLabel() && model === modelLabel()
+      const supportsReasoning = getModelConfig(model, modelInfo).reasoning === true
       items.push({
-        label: `${isCurrent ? ">" : " "} ${model}`,
+        label: `${isCurrent ? ">" : " "} ${supportsReasoning ? "[R] " : ""}${model}`,
         hint: truncateText(modelHint(model, modelInfo), PALETTE_HINT_MAX()),
         onSelect: () => {
           if (!applyProviderModel(providerId, model, true, modelInfo)) return
@@ -3843,7 +3881,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Compose"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-              <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
+              <text style={{ fg: THEME.text }}>{truncateText(modelStatusLabel(), 32)}</text>
               <Show when={autoApprove()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>

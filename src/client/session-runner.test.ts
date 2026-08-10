@@ -157,6 +157,30 @@ test("streamSession can disable recent context anchors per request", async () =>
   assert.equal(requests[0]!.messages.some((message) => String(message.content ?? "").includes("[Recent Context Anchor]")), false)
 })
 
+test("streamSession forwards reasoning effort for Codex GPT-5.5 and GPT-5.6", async () => {
+  for (const model of ["openaicodex/gpt-5.5", "openaicodex/gpt-5.6-terra"]) {
+    const requests: CompletionRequest[] = []
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+        controller.close()
+      },
+    })
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model,
+      provider: "zero-api",
+      keyName: "test-key",
+      mode: "build",
+      reasoning_effort: "high",
+    }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+    while (!(await gen.next()).done) {}
+
+    assert.equal(requests[0]?.reasoning_effort, "high", model)
+  }
+})
+
 test("streamSession surfaces non-abort provider stream read errors", async () => {
   const stream = new ReadableStream({
     pull(controller) {

@@ -35,6 +35,7 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "gpt-5.5-codex": {
     contextLimit: 400_000,
     pricing: { input: 0, output: 0 },
+    reasoning: true,
     vision: true,
   },
   // OpenAI documents a 1,050,000-token context window for the current
@@ -43,21 +44,25 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "gpt-5.5": {
     contextLimit: 372_000,
     pricing: { input: 0, output: 0 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.6-sol": {
     contextLimit: 372_000,
     pricing: { input: 0, output: 0 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.6-terra": {
     contextLimit: 372_000,
     pricing: { input: 0, output: 0 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.6-luna": {
     contextLimit: 372_000,
     pricing: { input: 0, output: 0 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.4-codex": {

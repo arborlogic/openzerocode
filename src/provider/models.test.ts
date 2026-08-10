@@ -24,6 +24,7 @@ describe("getKnownModelConfig", () => {
     const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
     assert.ok(cfg)
     assert.equal(cfg.contextLimit, 372_000)
+    assert.equal(cfg.reasoning, true)
   })
 
   it("uses the 372K application budget for all Codex GPT-5.6 variants", () => {
@@ -31,6 +32,7 @@ describe("getKnownModelConfig", () => {
       const cfg = getKnownModelConfig(`openaicodex/${model}`)
       assert.ok(cfg, `expected config for ${model}`)
       assert.equal(cfg.contextLimit, 372_000)
+      assert.equal(cfg.reasoning, true)
     }
   })
 
