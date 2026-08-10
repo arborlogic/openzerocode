@@ -8,10 +8,12 @@ import { STREAM_TEST_RESPONSE, streamTestChunks } from "./stream-test"
 import type { DisplayBlock } from "./response-entry"
 import type { Message } from "../provider/types"
 import type { AutopilotMode } from "./autopilot"
+import type { SkillActivation } from "./skill-routing"
 
 function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
   const notices: DisplayBlock[] = []
   const messages: Message[] = []
+  let skillActivation: SkillActivation = { mode: "off" }
   return {
     currentProvider: "openrouter",
     setCurrentProvider: mock(() => Promise.resolve({ ok: true, message: "switched" })),
@@ -54,6 +56,8 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     setAutopilotMode: mock(() => {}),
     runReview: mock(() => {}),
     runStreamTest: mock(() => {}),
+    getSkillActivation: () => skillActivation,
+    setSkillActivation: (next) => { skillActivation = next },
     ...overrides,
   }
 }
@@ -70,6 +74,8 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("memory"))
     assert.ok(names.includes("skills"))
     assert.ok(names.includes("skill"))
+    assert.ok(!names.includes("use"))
+    assert.ok(!names.includes("unuse"))
     assert.ok(names.includes("review"))
     assert.ok(names.includes("stream-test"))
     assert.ok(names.includes("model"))
@@ -486,6 +492,14 @@ describe("executeCommand", () => {
     args = (ctx.openSkill as any).mock.calls[0].arguments ?? (ctx.openSkill as any).mock.calls[0]
     assert.equal(args[0], "compose:demo")
     assert.match(args[1], /# Demo/)
+  })
+
+  it("enables and clears automatic skill routing", async () => {
+    const ctx = stubCtx()
+    assert.ok(await executeCommand("/skills auto", ctx))
+    assert.deepEqual(ctx.getSkillActivation(), { mode: "auto" })
+    assert.ok(await executeCommand("/skills clear", ctx))
+    assert.deepEqual(ctx.getSkillActivation(), { mode: "off" })
   })
 
   it("shows usage when /skill has no name", async () => {

@@ -20,6 +20,7 @@ import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
 import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSummary } from "./skill-loader"
+import { buildSkillRoutingSection, normalizeSkillActivation, type SkillActivation } from "./skill-routing"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { estimateMessageTokens, getModelConfig } from "../provider/models"
@@ -220,6 +221,7 @@ function App() {
   let initialCompaction: CompactionInfo | undefined
   let initialPermissionRules: PermissionRule[] = []
   let initialAutoApprove = false
+  let initialSkillActivation: SkillActivation = { mode: "off" }
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -232,6 +234,7 @@ function App() {
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
+      initialSkillActivation = normalizeSkillActivation(loaded.skillActivation)
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "opencode-zen" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -269,6 +272,7 @@ function App() {
   const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
+  const [skillActivation, setSkillActivation] = createSignal<SkillActivation>(initialSkillActivation)
   type PendingApproval = {
     request: PermissionRequest
     resolve: () => void
@@ -740,7 +744,7 @@ function App() {
       currentModel = nextModel
       currentModelInfo = modelInfo ?? getCachedModelInfo(nextProvider, nextModel)
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
       refreshSessions()
       return true
     } catch (error) {
@@ -2292,8 +2296,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "")) return
-    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+    if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "") && skillActivation().mode === "off") return
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
   }
 
   const exportCompactSession = () => {
@@ -2337,6 +2341,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
+    setSkillActivation(normalizeSkillActivation(loaded?.skillActivation))
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -2370,6 +2375,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const msgsUpToTarget = allMsgs.slice(0, messagesIdx + 1)
     const targetMsg = allMsgs[messagesIdx]
     const meta = createSession(currentModel, currentProvider, msgsUpToTarget)
+    saveSession(meta.id, msgsUpToTarget, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
     setSessionId(meta.id)
     setSessionMeta(meta)
     setSessionRevision((v) => v + 1)
@@ -2406,6 +2412,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setPermissionRules([])
     setCompaction(undefined)
     setAutoApprove(false)
+    setSkillActivation({ mode: "off" })
     setComposerText("")
     setDraft("")
     setStatus("waiting for input")
@@ -2576,7 +2583,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
       setMessages(tail)
       setCompaction(newCompaction)
-      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove(), skillActivation())
       refreshSessions()
       setStatus(opts.automatic ? "session auto-compressed" : "session compacted")
       showToast("success", opts.automatic ? "Session auto-compressed" : "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
@@ -2622,7 +2629,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const reviewTarget = decodeReviewRequest(rawInput)
     const { text: decodedInput, peerOrigin, peerHop, samePairRoundtrips, oneWay } = decodePeerInput(rawInput)
     const input = reviewTarget ?? decodedInput
-    const reviewSkill = reviewTarget ? findSkill("review-helper", resolveSkillDirs()) : undefined
+    const skillDirs = resolveSkillDirs()
+    const reviewSkill = reviewTarget ? findSkill("review-helper", skillDirs) : undefined
     // Update peer context so call_peer tool knows our name, peer origin, and current hop state.
     setPeerContext(activePeerName, peerHop ?? 0, peerOrigin, samePairRoundtrips ?? 0)
 
@@ -2713,8 +2721,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         runSync,
         systemPrompt: (runMode: RunMode) => {
           const base = systemPrompt(runMode)
-          const withReviewSkill = reviewSkill ? `${base}\n\n${buildExplicitSkillSection(reviewSkill)}` : base
-          return peerOrigin ? withReviewSkill + peerRequestSystemPrompt(peerOrigin, oneWay) : withReviewSkill
+          const routingSection = buildSkillRoutingSection(skillActivation(), skillDirs)
+          const skillSections = [routingSection, reviewSkill ? buildExplicitSkillSection(reviewSkill) : undefined].filter(Boolean).join("\n\n")
+          const withSkills = skillSections ? `${base}\n\n${skillSections}` : base
+          return peerOrigin ? withSkills + peerRequestSystemPrompt(peerOrigin, oneWay) : withSkills
         },
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
@@ -2753,7 +2763,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
       setStatus(formatQueueStatus(autopilotEnabled() ? "autopilot enabled" : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
       completedResponse = true
@@ -2955,6 +2965,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             }
           }
           : undefined,
+        skillDirs: resolveSkillDirs,
+        getSkillActivation: skillActivation,
+        setSkillActivation: (activation) => {
+          setSkillActivation(activation)
+          doSaveCurrent()
+        },
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()

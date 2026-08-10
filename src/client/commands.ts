@@ -7,6 +7,7 @@ import { getModelConfig } from "../provider/models"
 import type { PeerEntry } from "../peer/registry"
 import type { AutopilotMode } from "./autopilot"
 import { findSkill, listSkills, resolveSkillDirs, type SkillSummary } from "./skill-loader"
+import { formatSkillActivation, type SkillActivation } from "./skill-routing"
 
 export type SlashCommandDef = {
   name: string
@@ -58,6 +59,8 @@ export type CommandContext = {
   listPeers?: () => PeerEntry[]
   callPeer?: (name: string, prompt: string) => Promise<{ ok: boolean; error?: string }>
   skillDirs?: () => string[]
+  getSkillActivation: () => SkillActivation
+  setSkillActivation: (activation: SkillActivation) => void
 }
 
 export const BUILTIN_COMMANDS: SlashCommandDef[] = [
@@ -71,7 +74,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "learn", description: "Extract non-obvious learnings from this session" },
   { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off", argumentOptions: ["low", "medium", "high", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
-  { name: "skills", description: "List available skills" },
+  { name: "skills", description: "List skills or configure automatic routing", argumentOptions: ["auto", "clear", "status"] },
   { name: "skill", description: "Show a skill's instructions: /skill <name>" },
   { name: "review", description: "Review changes using the review-helper skill: /review [target]" },
   { name: "stream-test", description: "Replay a local Markdown response as a simulated stream (no model usage)" },
@@ -99,6 +102,23 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
   const parts = input.slice(1).trim().split(/\s+/)
   const cmd = parts[0]?.toLowerCase()
   const arg = parts.slice(1).join(" ")
+
+  if (cmd === "skills" && arg === "auto") {
+    ctx.setSkillActivation({ mode: "auto" })
+    notifyCommand(ctx, "success", "Automatic skill routing enabled", "The model will select and read relevant skills for each request.")
+    return true
+  }
+
+  if (cmd === "skills" && arg === "clear") {
+    ctx.setSkillActivation({ mode: "off" })
+    notifyCommand(ctx, "success", "Skill routing disabled", "The model will not receive the skill catalog.")
+    return true
+  }
+
+  if (cmd === "skills" && arg === "status") {
+    notifyCommand(ctx, "info", "Skill routing", formatSkillActivation(ctx.getSkillActivation()))
+    return true
+  }
 
   if (cmd === "skills") {
     const skills = listSkills(ctx.skillDirs?.() ?? resolveSkillDirs())
