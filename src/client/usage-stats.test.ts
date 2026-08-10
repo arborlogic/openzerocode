@@ -35,4 +35,30 @@ describe("usage stats", () => {
     assert.equal(session.recentEntries[0].cachedInputTokens, 0)
     assert.equal(session.recentEntries[1].cachedInputTokens, 40)
   })
+
+  it("limits session results without losing totals or the most recent requests", () => {
+    const entry = (sessionId: string, timestamp: number, inputTokens: number): UsageEntry => ({
+      timestamp,
+      provider: "openai",
+      keyName: "default",
+      model: "gpt-5.4",
+      inputTokens,
+      outputTokens: 1,
+      sessionId,
+    })
+    const entries = [
+      entry("older", 100, 10),
+      entry("newer", 400, 40),
+      entry("newer", 200, 20),
+      entry("newer", 300, 30),
+    ]
+
+    const sessions = getSessionBreakdown(entries, 2, 1)
+
+    assert.equal(sessions.length, 1)
+    assert.equal(sessions[0].sessionId, "newer")
+    assert.equal(sessions[0].totalRequests, 3)
+    assert.equal(sessions[0].totalInputTokens, 90)
+    assert.deepEqual(sessions[0].recentEntries.map((row) => row.timestamp), [400, 300])
+  })
 })

@@ -17,6 +17,7 @@ import { listSessions } from "./sessions"
 export type ViewMode = "sessions" | "global" | "daily" | "hourly"
 export const VIEW_MODES: ViewMode[] = ["sessions", "global", "daily", "hourly"]
 type GroupMode = "provider" | "model"
+const MAX_RENDERED_SESSIONS = 50
 
 function pad2(n: number): string {
   return String(n).padStart(2, "0")
@@ -161,7 +162,11 @@ export function UsageDashboard(props: {
   const totalStats = createMemo(() => aggregateEntries(entries()))
   const dailyBuckets = createMemo(() => getDailyBuckets(entries()))
   const hourlyBuckets = createMemo(() => getHourlyBuckets(entries()))
-  const sessionBreakdowns = createMemo(() => getSessionBreakdown(entries(), 5))
+  // OpenTUI eagerly creates every row in a scrollbox. Keep the session view bounded so
+  // long-running installations do not allocate thousands of render nodes at once.
+  const sessionBreakdowns = createMemo(() =>
+    getSessionBreakdown(entries(), 5, MAX_RENDERED_SESSIONS)
+  )
 
   const sessionTitleMap = createMemo(() => {
     const all = listSessions({ directory: null })
@@ -314,6 +319,13 @@ export function UsageDashboard(props: {
         <Show when={viewMode() === "sessions"}>
           <Show when={sessionBreakdowns().length === 0 && entries().length > 0}>
             <text style={{ fg: props.theme.muted }}>No session data available.</text>
+          </Show>
+          <Show when={sessionBreakdowns().length === MAX_RENDERED_SESSIONS}>
+            <box marginBottom={1}>
+              <text style={{ fg: props.theme.muted }}>
+                {`Showing the ${MAX_RENDERED_SESSIONS} most recent sessions.`}
+              </text>
+            </box>
           </Show>
           <For each={sessionBreakdowns()}>
             {(s: SessionBreakdown) => (
