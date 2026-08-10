@@ -13,6 +13,7 @@ import {
   MAX_MOUNTED_TRANSCRIPT_BLOCKS,
   MAX_MOUNTED_TRANSCRIPT_TURNS,
   mountedTranscriptWindow,
+  resolveTranscriptCwd,
 } from "./tui-runtime"
 import { displayBlockMountWeight, type DisplayBlock } from "./display-block"
 
@@ -84,6 +85,14 @@ describe("OpenTUI runtime helpers", () => {
 
     assert.equal(config.openConsoleOnError, true)
     assert.deepEqual(copied, ["selected console text"])
+  })
+
+  it("uses a session's persisted workspace for transcript file links", () => {
+    assert.equal(
+      resolveTranscriptCwd("/work/other-project", "/work/current-project"),
+      "/work/other-project",
+    )
+    assert.equal(resolveTranscriptCwd(undefined, "/work/current-project"), "/work/current-project")
   })
 })
 

@@ -9,6 +9,15 @@ export const MAX_MOUNTED_WEIGHT_PER_TURN = 120
 export const MAX_MOUNTED_TRANSCRIPT_BLOCKS = MAX_MOUNTED_TRANSCRIPT_WEIGHT
 export const MAX_MOUNTED_BLOCKS_PER_TURN = MAX_MOUNTED_WEIGHT_PER_TURN
 
+/**
+ * Completed transcript content may belong to a session opened from a different
+ * workspace than the process's current directory. Preserve the workspace saved
+ * with the session so relative file links continue to point at the right file.
+ */
+export function resolveTranscriptCwd(sessionDirectory: string | undefined, currentDirectory: string): string {
+  return sessionDirectory ?? currentDirectory
+}
+
 type HideableTranscriptBlock = { hidden?: boolean }
 
 /**

@@ -19,6 +19,7 @@ import { Index, Show, createMemo, type ComponentProps } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
 import { parseDiffBlocks, type MarkdownDiffSegment } from "./markdown-diff-parser"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
+import { linkCompletionReportPaths } from "./local-file-links"
 import { THEME } from "./theme"
 import stringWidth from "string-width"
 
@@ -57,6 +58,8 @@ export interface MarkdownWithDiffProps extends ComponentProps<"div"> {
   fg?: string
   bg?: string
   streaming?: boolean
+  /** Working directory used to resolve local paths in completion reports. */
+  cwd?: string
   class?: string
 }
 
@@ -124,11 +127,16 @@ function MarkdownTable(props: {
  * a native diff visualization.
  */
 export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
+  // Do not rewrite live output: an incomplete report line must remain stable
+  // while the model streams it. Resolve links only once the response completes.
+  const renderedContent = createMemo(() =>
+    props.streaming ? props.content : linkCompletionReportPaths(props.content, props.cwd),
+  )
   const segments = createMemo(() =>
-    props.streaming ? [] : parseDiffBlocks(props.content),
+    props.streaming ? [] : parseDiffBlocks(renderedContent()),
   )
   const renderMode = createMemo<MarkdownRenderMode>(() =>
-    props.streaming ? "plain" : markdownRenderMode(props.content, segments()),
+    props.streaming ? "plain" : markdownRenderMode(renderedContent(), segments()),
   )
 
   return (
@@ -140,7 +148,7 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
             when={renderMode() === "custom"}
             fallback={
               <markdown
-                content={props.content}
+                content={renderedContent()}
                 syntaxStyle={props.syntaxStyle}
                 fg={props.fg}
                 bg={props.bg}
@@ -191,7 +199,7 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
           </Show>
         }
       >
-        <text content={props.content} />
+        <text content={renderedContent()} />
       </Show>
     </box>
   )

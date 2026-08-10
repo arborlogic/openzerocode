@@ -15,6 +15,7 @@ export type DisplayTurn = {
 export function TurnEntry(props: {
   turn: DisplayTurn
   isFirst: boolean
+  cwd?: string
   onUserClick?: (msgIndex: number, text: string) => void
   isRunning?: boolean
 }) {
@@ -63,7 +64,7 @@ export function TurnEntry(props: {
           <Index each={props.turn.entries}>
             {(entry, index) => (
               <Show when={!entry().hidden}>
-                <ResponseEntry entry={entry()} isFirst={index === 0} />
+                <ResponseEntry entry={entry()} isFirst={index === 0} cwd={props.cwd} />
               </Show>
             )}
           </Index>

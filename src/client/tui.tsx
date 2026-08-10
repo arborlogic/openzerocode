@@ -80,7 +80,7 @@ import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
-import { createTuiRendererConfig, limitMountedTurnBlocks, mountedTranscriptWindow } from "./tui-runtime"
+import { createTuiRendererConfig, limitMountedTurnBlocks, mountedTranscriptWindow, resolveTranscriptCwd } from "./tui-runtime"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -379,6 +379,7 @@ function App() {
     cwdRevision()
     return process.cwd()
   })
+  const transcriptCwd = createMemo(() => resolveTranscriptCwd(sessionMeta()?.directory, currentCwd()))
   const splashSessions = createMemo(() => {
     sessionRevision()
     cwdRevision()
@@ -3769,6 +3770,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <TurnEntry
               turn={turn()}
               isFirst={index === 0}
+              cwd={transcriptCwd()}
               onUserClick={(msgIndex, text) => {
                 setUserMsgActionTarget({ index: msgIndex, text })
                 setPaletteMode("userMessageActions")
@@ -3791,7 +3793,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <Index each={mountedStreamingTurn().entries}>
               {(entry, index) => (
                 <Show when={!entry().hidden}>
-                  <ResponseEntry entry={entry()} isFirst={index === 0} />
+                  <ResponseEntry entry={entry()} isFirst={index === 0} cwd={transcriptCwd()} />
                 </Show>
               )}
             </Index>
