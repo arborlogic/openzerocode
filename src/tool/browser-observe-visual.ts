@@ -23,9 +23,11 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   return Math.min(max, Math.max(min, Math.round(parsed)))
 }
 
+// Capture at the same default dimensions and quality used by the local VLM so
+// it does not need to repeatedly re-encode a larger GEASS screenshot.
 const DEFAULT_VLM_IMAGE_FORMAT: 'jpeg' | 'png' = (process.env.OPENZEROCODE_VLM_IMAGE_FORMAT === 'png' ? 'png' : 'jpeg')
-const DEFAULT_VLM_IMAGE_QUALITY = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_QUALITY, 72, 1, 100)
-const DEFAULT_VLM_IMAGE_MAX_LONG_EDGE = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE, 1280, 320, 4096)
+const DEFAULT_VLM_IMAGE_QUALITY = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_QUALITY, 60, 1, 100)
+const DEFAULT_VLM_IMAGE_MAX_LONG_EDGE = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE, 896, 320, 4096)
 
 const DEFAULT_VISUAL_PROMPT = [
   'Describe the current browser screenshot for an automation agent.',
