@@ -89,7 +89,7 @@ export function mountedTranscriptWindow<T>(
 }
 
 export function createTuiRendererConfig(
-  copySelection: (text: string) => void | Promise<void>,
+  copySelection: (text: string) => void | Promise<unknown>,
 ): CliRendererConfig {
   return {
     // Keep OpenTUI's useful automatic error console, but wire its otherwise

@@ -1861,8 +1861,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: "message text to clipboard",
         onSelect: async () => {
           if (target) {
-            await copyToClipboard(target.text)
-            showToast("success", "Copied to clipboard", truncateText(target.text.replace(/\s+/g, " ").trim(), 60), 2000)
+            const copied = await copyToClipboard(target.text)
+            if (copied) {
+              showToast("success", "Copied to clipboard", truncateText(target.text.replace(/\s+/g, " ").trim(), 60), 2000)
+            } else {
+              showToast("error", "Could not copy to clipboard", "On Linux, install wl-clipboard (Wayland) or xclip/xsel (X11).", 5000)
+            }
           }
           setShowPalette(false)
           setPaletteMode("actions")
@@ -2294,9 +2298,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const selection = renderer.getSelection?.()
     const text = selection?.getSelectedText?.()
     if (!text) return
-    await copyToClipboard(text)
-    renderer.clearSelection?.()
-    showToast("success", "Copied to clipboard", truncateText(text.replace(/\s+/g, " ").trim(), 60), 2000)
+    const copied = await copyToClipboard(text)
+    if (copied) {
+      renderer.clearSelection?.()
+      showToast("success", "Copied to clipboard", truncateText(text.replace(/\s+/g, " ").trim(), 60), 2000)
+    } else {
+      showToast("error", "Could not copy to clipboard", "On Linux, install wl-clipboard (Wayland) or xclip/xsel (X11).", 5000)
+    }
   }
 
   const doSaveCurrent = () => {
