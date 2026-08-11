@@ -1,6 +1,6 @@
 import type { Message, Part } from "../provider/types"
 import { contentToText } from "../provider/content"
-import { estimateMessageTokens, estimateTokens } from "../provider/models"
+import { estimateMessageRequestTokens, estimateMessageTokens, estimateTokens } from "../provider/models"
 
 export const COMPACT_SUMMARY_PREFIX = "[Session Summary]"
 
@@ -137,13 +137,11 @@ export function selectCompactionTail(messages: Message[], contextLimit: number):
   let tailStart = clean.length
 
   for (let i = clean.length - 1; i >= 0; i--) {
-    // Use the exact wire-message estimator here, not the readable
-    // compaction transcript. In particular, content can contain image data
-    // URLs that are sent to the provider but intentionally omitted from the
-    // textual transcript. Counting only the transcript could retain a huge
-    // screenshot in the tail and make an oversized session appear too short
-    // to compact.
-    const nextCost = estimateMessageTokens([clean[i]!])
+    // Request budgeting includes a bounded vision-token allowance per image.
+    // The readable compaction transcript and UI text-context estimate omit
+    // image payloads, but retaining too many images can still overflow a
+    // provider context window.
+    const nextCost = estimateMessageRequestTokens([clean[i]!])
     if (used + nextCost > tailBudget) break
     used += nextCost
     tailStart = i

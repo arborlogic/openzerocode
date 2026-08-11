@@ -151,7 +151,19 @@ export const ApplyPatchTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "apply_patch",
-    description: "Apply a patch-style file change. Use OpenAI patch format with *** Begin Patch / *** End Patch markers.",
+    description: [
+      "Apply a patch to create, update, or delete files using the OpenAI patch format.",
+      "",
+      "patchText markers:",
+      "- `*** Begin Patch` / `*** End Patch` wrap the patch.",
+      "- `*** Add File: <path>` followed by `+line` additions.",
+      "- `*** Delete File: <path>`.",
+      "- `*** Update File: <path>` with hunks starting at `@@`; lines prefixed ` ` (context), `-` (remove), `+` (add).",
+      "",
+      "Tips:",
+      "- Context lines must match the file exactly. Re-read the file first.",
+      "- Prefer `edit` for a single small change; use apply_patch for multi-file or multi-hunk changes.",
+    ].join("\n"),
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {

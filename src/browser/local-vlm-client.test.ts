@@ -4,6 +4,8 @@ import { spawnSync } from 'node:child_process'
 import { analyzeImageWithLocalVlm, prepareVlmImage } from './local-vlm-client'
 
 const hasSips = spawnSync('sips', ['--help'], { stdio: 'ignore' }).status === 0
+const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0
+const hasImageConverter = hasSips || hasFfmpeg
 
 const originalFetch = globalThis.fetch
 const originalEnv = { ...process.env }
@@ -63,7 +65,7 @@ describe('local VLM client', () => {
     assert.equal(result.text, 'The page shows a social feed. It has a composer.')
   })
 
-  it('falls back to llama.cpp /completion when chat completions fail', async () => {
+  it('falls back to llama.cpp /completion only when chat completions are unavailable', async () => {
     const calls: string[] = []
     globalThis.fetch = (async (input: string | URL | Request) => {
       const url = String(input)
@@ -89,15 +91,38 @@ describe('local VLM client', () => {
     ])
   })
 
-  it('keeps images within the configured VLM payload budget unchanged', () => {
-    process.env.OPENZEROCODE_VLM_MAX_BASE64_LENGTH = '100'
+  it('does not retry /completion after a chat-completion timeout', async () => {
+    const calls: string[] = []
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      calls.push(String(input))
+      throw new DOMException('The operation timed out.', 'TimeoutError')
+    }) as unknown as typeof fetch
 
+    await assert.rejects(
+      analyzeImageWithLocalVlm({ endpoint: 'http://vlm.local', prompt: 'describe', imageBase64: 'abc123', timeoutMs: 1000 }),
+      /OpenAI-compatible API: The operation timed out/,
+    )
+    assert.deepEqual(calls, ['http://vlm.local/v1/chat/completions'])
+  })
+
+  it('passes malformed or non-image data through unchanged', () => {
     const result = prepareVlmImage('abc123', 'png')
 
     assert.deepEqual(result, { base64: 'abc123', format: 'png' })
   })
 
-  it('adaptively resizes oversized VLM image payloads when possible', { skip: !hasSips }, () => {
+  it('uses ffmpeg when it is the only available image converter', { skip: !hasFfmpeg || hasSips }, () => {
+    const ppmHeader = 'P6\n800 600\n255\n'
+    const pixels = Buffer.alloc(800 * 600 * 3, 200)
+    const image = Buffer.concat([Buffer.from(ppmHeader, 'ascii'), pixels]).toString('base64')
+
+    const result = prepareVlmImage(image, 'png')
+
+    assert.equal(result.format, 'jpeg')
+    assert.notEqual(result.base64, image)
+  })
+
+  it('always normalizes valid VLM images to the configured JPEG bounds', { skip: !hasImageConverter }, () => {
     process.env.OPENZEROCODE_VLM_MAX_BASE64_LENGTH = '16000'
     process.env.OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE = '640'
     process.env.OPENZEROCODE_VLM_IMAGE_MIN_LONG_EDGE = '320'

@@ -20,6 +20,7 @@ import type { AutocompleteApi } from "./autocomplete"
 import { BUILTIN_COMMANDS, executeCommand, type CommandContext, type CommandToastKind } from "./commands"
 import { HELP_CONTENT } from "./help-content"
 import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSummary } from "./skill-loader"
+import { buildSkillRoutingSection, normalizeSkillActivation, type SkillActivation } from "./skill-routing"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
 import { estimateMessageTokens, getModelConfig } from "../provider/models"
@@ -42,6 +43,7 @@ import { ToastViewport } from "./toast-viewport"
 import type { ToastItem } from "./toast-viewport"
 import { ResponseEntry } from "./response-entry"
 import type { DisplayBlock } from "./response-entry"
+import { displayBlockMountWeight } from "./display-block"
 import { TurnEntry } from "./turn-entry"
 import type { DisplayTurn } from "./turn-entry"
 import { setTodoUpdateCallback, type TodoItem } from "../tool/todo"
@@ -78,6 +80,7 @@ import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
 import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
+import { createTuiRendererConfig, limitMountedTurnBlocks, mountedTranscriptWindow, resolveTranscriptCwd } from "./tui-runtime"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
 import { messageToBlocks } from "./message-blocks"
 import { getFileDiff } from "./git-diff"
@@ -218,6 +221,7 @@ function App() {
   let initialCompaction: CompactionInfo | undefined
   let initialPermissionRules: PermissionRule[] = []
   let initialAutoApprove = false
+  let initialSkillActivation: SkillActivation = { mode: "off" }
   let sid = getCurrentSessionId()
   if (sid) {
     const loaded = loadSessionState(sid)
@@ -230,6 +234,7 @@ function App() {
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
+      initialSkillActivation = normalizeSkillActivation(loaded.skillActivation)
     }
     if (meta?.provider) currentProvider = meta.provider
     if (meta?.model) currentModel = meta.provider === "opencode-zen" ? normalizeBigPickleModel(meta.model) : meta.model
@@ -267,6 +272,7 @@ function App() {
   const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
+  const [skillActivation, setSkillActivation] = createSignal<SkillActivation>(initialSkillActivation)
   type PendingApproval = {
     request: PermissionRequest
     resolve: () => void
@@ -373,6 +379,7 @@ function App() {
     cwdRevision()
     return process.cwd()
   })
+  const transcriptCwd = createMemo(() => resolveTranscriptCwd(sessionMeta()?.directory, currentCwd()))
   const splashSessions = createMemo(() => {
     sessionRevision()
     cwdRevision()
@@ -435,6 +442,11 @@ function App() {
   function handleRevealFileRequest(file: GitFile, cwd = currentCwd()) {
     const ok = revealFileInFolder(file.path, cwd)
     setStatus(ok ? `opened folder for ${file.path}` : `folder not found: ${file.path}`)
+  }
+
+  function handleOpenDirectoryRequest(directory: string) {
+    const ok = revealFileInFolder(directory)
+    setStatus(ok ? `opened folder: ${directory}` : `folder not found: ${directory}`)
   }
 
   let scroll: ScrollBoxRenderable | undefined
@@ -697,6 +709,33 @@ function App() {
     return currentModelInfo
   })
 
+  const currentModelSupportsReasoning = createMemo(() => {
+    selectionRevision()
+    return getModelConfig(currentModel, currentModelInfo).reasoning === true
+  })
+
+  const reasoningEffortLabel = createMemo(() => reasoningEffort() ?? "default")
+
+  const modelStatusLabel = createMemo(() => {
+    const model = modelLabel()
+    return currentModelSupportsReasoning() ? `${model} (${reasoningEffortLabel()})` : model
+  })
+
+  const cycleReasoningEffort = () => {
+    const current = reasoningEffort()
+    const next = current === undefined
+      ? "low"
+      : current === "low"
+        ? "medium"
+        : current === "medium"
+          ? "high"
+          : current === "high"
+            ? "max"
+            : undefined
+    setReasoningEffort(next)
+    setStatus(`reasoning effort -> ${next ?? "default"}`)
+  }
+
   const activeProviderKeyLabel = createMemo(() => {
     providerConfigRevision()
     return getActiveConfiguredProviderKeyName(currentProvider) ?? "none"
@@ -711,7 +750,7 @@ function App() {
       currentModel = nextModel
       currentModelInfo = modelInfo ?? getCachedModelInfo(nextProvider, nextModel)
       setSelectionRevision((value) => value + 1)
-      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+      if (persist) saveSession(sessionId(), messages(), currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
       refreshSessions()
       return true
     } catch (error) {
@@ -1198,6 +1237,16 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: truncateText(modelLabel(), PALETTE_HINT_MAX()),
         onSelect: () => openModelsPalette(providerLabel(), "actions"),
       },
+      ...(currentModelSupportsReasoning()
+        ? [{
+            label: "Cycle reasoning effort",
+            hint: reasoningEffortLabel(),
+            onSelect: () => {
+              cycleReasoningEffort()
+              setShowPalette(false)
+            },
+          } satisfies PaletteItem]
+        : []),
     ]
   })
 
@@ -1372,8 +1421,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     for (const modelInfo of visibleModels) {
       const model = modelInfo.id
       const isCurrent = providerId === providerLabel() && model === modelLabel()
+      const supportsReasoning = getModelConfig(model, modelInfo).reasoning === true
       items.push({
-        label: `${isCurrent ? ">" : " "} ${model}`,
+        label: `${isCurrent ? ">" : " "} ${supportsReasoning ? "[R] " : ""}${model}`,
         hint: truncateText(modelHint(model, modelInfo), PALETTE_HINT_MAX()),
         onSelect: () => {
           if (!applyProviderModel(providerId, model, true, modelInfo)) return
@@ -1811,8 +1861,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         hint: "message text to clipboard",
         onSelect: async () => {
           if (target) {
-            await copyToClipboard(target.text)
-            showToast("success", "Copied to clipboard", truncateText(target.text.replace(/\s+/g, " ").trim(), 60), 2000)
+            const copied = await copyToClipboard(target.text)
+            if (copied) {
+              showToast("success", "Copied to clipboard", truncateText(target.text.replace(/\s+/g, " ").trim(), 60), 2000)
+            } else {
+              showToast("error", "Could not copy to clipboard", "On Linux, install wl-clipboard (Wayland) or xclip/xsel (X11).", 5000)
+            }
           }
           setShowPalette(false)
           setPaletteMode("actions")
@@ -2121,6 +2175,26 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     return result
   })
 
+  // Solid/OpenTUI keeps every mounted renderable alive. Retain the complete
+  // transcript in session state, but bound both turns and blocks: one agent
+  // turn can contain hundreds of tool entries, so a turn-only limit can still
+  // exhaust OpenTUI's shared native handle registry.
+  const mountedTurns = createMemo(() => mountedTranscriptWindow(
+    turns().map((turn) => limitMountedTurnBlocks(turn, { weight: displayBlockMountWeight })),
+    {
+      // Hidden tool/reasoning slots intentionally stay in the arrays to keep
+      // <Index> positions stable, but they do not own TextBuffers and therefore
+      // must not consume the native-renderable budget.
+      weight: (turn) => turn.entries.filter((entry) => !entry.hidden).reduce(
+        (total, entry) => total + displayBlockMountWeight(entry),
+        0,
+      )
+        + (turn.user ? displayBlockMountWeight(turn.user) : 0)
+        + (turn.footer ? 1 : 0)
+        + (turn.omittedMountedBlocks ? 1 : 0),
+    },
+  ))
+
   const responseHeight = createMemo(() => Math.max(8, dimensions().height - 8))
   const sidebarWidth = createMemo(() => sidebarWidthForTerminal(dimensions().width))
   const overlaySidebarWidth = createMemo(() => Math.max(24, Math.min(sidebarWidth(), dimensions().width - 4)))
@@ -2141,6 +2215,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
     }).filter(Boolean) as DisplayBlock[],
   )
+
+  // A long-running agent can append hundreds of live tool calls before its
+  // response becomes a transcript turn. Apply the same per-turn native-resource
+  // budget during streaming instead of waiting until completion to unmount them.
+  const mountedStreamingTurn = createMemo(() => limitMountedTurnBlocks(
+    { entries: streamingEntries() },
+    { weight: displayBlockMountWeight },
+  ))
 
   const runStreamTest = () => {
     if (running() || compacting()) {
@@ -2171,22 +2253,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         setTimeout(emit, 45)
         return
       }
-      // Let stream-state's final 32 ms flush commit before moving the text to
-      // durable history, just as a real provider response does.
-      setTimeout(() => {
-        if (abort.aborted) {
-          streamState.reset()
-          setStatus("local stream test cancelled")
-        } else {
-          streamState.reset()
-          setMessages((prev) => [...prev, { role: "assistant", content: STREAM_TEST_RESPONSE }])
-          setStatus("waiting for input")
-          showToast("success", "Stream test complete", "Local response completed without using a model.")
-          queueMicrotask(scrollBottom)
-        }
-        runAbort = undefined
-        setRunning(false)
-      }, 40)
+      // Commit the final buffered chunk synchronously before replacing the live
+      // entry with durable history. Do not race the stream flush interval.
+      streamState.flushPending()
+      if (abort.aborted) {
+        streamState.reset()
+        setStatus("local stream test cancelled")
+      } else {
+        streamState.reset()
+        setMessages((prev) => [...prev, { role: "assistant", content: STREAM_TEST_RESPONSE }])
+        setStatus("waiting for input")
+        showToast("success", "Stream test complete", "Local response completed without using a model.")
+        queueMicrotask(scrollBottom)
+      }
+      runAbort = undefined
+      setRunning(false)
     }
     emit()
   }
@@ -2217,16 +2298,20 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const selection = renderer.getSelection?.()
     const text = selection?.getSelectedText?.()
     if (!text) return
-    await copyToClipboard(text)
-    renderer.clearSelection?.()
-    showToast("success", "Copied to clipboard", truncateText(text.replace(/\s+/g, " ").trim(), 60), 2000)
+    const copied = await copyToClipboard(text)
+    if (copied) {
+      renderer.clearSelection?.()
+      showToast("success", "Copied to clipboard", truncateText(text.replace(/\s+/g, " ").trim(), 60), 2000)
+    } else {
+      showToast("error", "Could not copy to clipboard", "On Linux, install wl-clipboard (Wayland) or xclip/xsel (X11).", 5000)
+    }
   }
 
   const doSaveCurrent = () => {
     const id = sessionId()
     const msgs = messages()
-    if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "")) return
-    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+    if (msgs.length === 0 && isDefaultTitle(sessionMeta()?.title ?? "") && skillActivation().mode === "off") return
+    saveSession(id, msgs, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
   }
 
   const exportCompactSession = () => {
@@ -2270,6 +2355,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
+    setSkillActivation(normalizeSkillActivation(loaded?.skillActivation))
     setNotices([])
     setSessionId(id)
     setCurrentSessionId(id)
@@ -2303,6 +2389,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const msgsUpToTarget = allMsgs.slice(0, messagesIdx + 1)
     const targetMsg = allMsgs[messagesIdx]
     const meta = createSession(currentModel, currentProvider, msgsUpToTarget)
+    saveSession(meta.id, msgsUpToTarget, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
     setSessionId(meta.id)
     setSessionMeta(meta)
     setSessionRevision((v) => v + 1)
@@ -2339,6 +2426,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     setPermissionRules([])
     setCompaction(undefined)
     setAutoApprove(false)
+    setSkillActivation({ mode: "off" })
     setComposerText("")
     setDraft("")
     setStatus("waiting for input")
@@ -2509,7 +2597,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       }
       setMessages(tail)
       setCompaction(newCompaction)
-      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove())
+      saveSession(sessionId(), tail, currentModel, currentProvider, mode(), newCompaction, permissionRules(), autoApprove(), skillActivation())
       refreshSessions()
       setStatus(opts.automatic ? "session auto-compressed" : "session compacted")
       showToast("success", opts.automatic ? "Session auto-compressed" : "Session compacted", `Compressed ${head.length} earlier messages into a summary.`)
@@ -2555,7 +2643,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const reviewTarget = decodeReviewRequest(rawInput)
     const { text: decodedInput, peerOrigin, peerHop, samePairRoundtrips, oneWay } = decodePeerInput(rawInput)
     const input = reviewTarget ?? decodedInput
-    const reviewSkill = reviewTarget ? findSkill("review-helper", resolveSkillDirs()) : undefined
+    const skillDirs = resolveSkillDirs()
+    const reviewSkill = reviewTarget ? findSkill("review-helper", skillDirs) : undefined
     // Update peer context so call_peer tool knows our name, peer origin, and current hop state.
     setPeerContext(activePeerName, peerHop ?? 0, peerOrigin, samePairRoundtrips ?? 0)
 
@@ -2646,8 +2735,10 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         runSync,
         systemPrompt: (runMode: RunMode) => {
           const base = systemPrompt(runMode)
-          const withReviewSkill = reviewSkill ? `${base}\n\n${buildExplicitSkillSection(reviewSkill)}` : base
-          return peerOrigin ? withReviewSkill + peerRequestSystemPrompt(peerOrigin, oneWay) : withReviewSkill
+          const routingSection = buildSkillRoutingSection(skillActivation(), skillDirs)
+          const skillSections = [routingSection, reviewSkill ? buildExplicitSkillSection(reviewSkill) : undefined].filter(Boolean).join("\n\n")
+          const withSkills = skillSections ? `${base}\n\n${skillSections}` : base
+          return peerOrigin ? withSkills + peerRequestSystemPrompt(peerOrigin, oneWay) : withSkills
         },
         parseJson: tryParseJSON,
         compactionSummary: compaction()?.summary,
@@ -2686,7 +2777,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       })
 
       setMessages(next)
-      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove())
+      saveSession(sessionId(), next, currentModel, currentProvider, mode(), compaction(), permissionRules(), autoApprove(), skillActivation())
       setStatus(formatQueueStatus(autopilotEnabled() ? "autopilot enabled" : "waiting for input", queuedInputs()))
       queueMicrotask(scrollBottom)
       completedResponse = true
@@ -2888,6 +2979,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             }
           }
           : undefined,
+        skillDirs: resolveSkillDirs,
+        getSkillActivation: skillActivation,
+        setSkillActivation: (activation) => {
+          setSkillActivation(activation)
+          doSaveCurrent()
+        },
       }
       // Handle display toggles that need local signal access
       const slashCmd = input.slice(1).split(/\s+/)[0]?.toLowerCase()
@@ -3675,13 +3772,18 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         viewportCulling={false}
         backgroundColor={THEME.background}
       >
-        {/* Transcript turns are append-only. Index preserves already-painted
-            renderables when the memo rebuilds its lightweight view models. */}
-        <Index each={turns()}>
+        <Show when={mountedTurns().omitted > 0}>
+          <text style={{ fg: THEME.muted }}>{`… ${mountedTurns().omitted} older turns kept in session but unmounted from the UI`}</text>
+        </Show>
+        {/* Index preserves already-painted renderables within the bounded
+            transcript window. Turns that leave the window are unmounted and
+            destroyed by Solid/OpenTUI instead of accumulating forever. */}
+        <Index each={mountedTurns().turns}>
           {(turn, index) => (
             <TurnEntry
               turn={turn()}
               isFirst={index === 0}
+              cwd={transcriptCwd()}
               onUserClick={(msgIndex, text) => {
                 setUserMsgActionTarget({ index: msgIndex, text })
                 setPaletteMode("userMessageActions")
@@ -3692,10 +3794,21 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             />
           )}
         </Index>
-        <Show when={running() && streamingEntries().length > 0}>
+        <Show when={running() && mountedStreamingTurn().entries.length > 0}>
           <box marginTop={1} flexDirection="column" backgroundColor={THEME.background} width="100%" minWidth={0}>
-            <Index each={streamingEntries()}>
-              {(entry, index) => <ResponseEntry entry={entry()} isFirst={index === 0} />}
+            <Show when={(mountedStreamingTurn().omittedMountedBlocks ?? 0) > 0}>
+              <text style={{ fg: THEME.muted }}>
+                {`… ${mountedStreamingTurn().omittedMountedBlocks} older live blocks unmounted from this tool-heavy response`}
+              </text>
+            </Show>
+            {/* Preserve live part slots just like completed turns: filtering
+                hidden entries would shift <Index> renderables while streaming. */}
+            <Index each={mountedStreamingTurn().entries}>
+              {(entry, index) => (
+                <Show when={!entry().hidden}>
+                  <ResponseEntry entry={entry()} isFirst={index === 0} cwd={transcriptCwd()} />
+                </Show>
+              )}
             </Index>
           </box>
         </Show>
@@ -3799,7 +3912,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Compose"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-              <text style={{ fg: THEME.text }}>{truncateText(modelLabel(), 32)}</text>
+              <text style={{ fg: THEME.text }}>{truncateText(modelStatusLabel(), 32)}</text>
               <Show when={autoApprove()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
                 <text style={{ fg: "#3fb950" }}>{"AUTO"}</text>
@@ -3863,6 +3976,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           gitRefreshKey={gitRefreshRevision()}
           geassRevision={geassRevision()}
           onFileClick={(file) => { void handleFileDiffRequest(file) }}
+          onDirectoryClick={handleOpenDirectoryRequest}
         />
       </Show>
 
@@ -3894,6 +4008,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             gitRefreshKey={gitRefreshRevision()}
             geassRevision={geassRevision()}
             onFileClick={(file) => { void handleFileDiffRequest(file) }}
+            onDirectoryClick={handleOpenDirectoryRequest}
           />
         </box>
       </Show>
@@ -4219,7 +4334,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   )
 }
 
-render(() => <App />).catch((error) => {
+render(() => <App />, createTuiRendererConfig(copyToClipboard)).catch((error) => {
   console.error(error)
   process.exit(1)
 })

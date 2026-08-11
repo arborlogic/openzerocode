@@ -110,7 +110,23 @@ export const BashTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "bash",
-    description: "Execute a shell command",
+    description: [
+      "Execute a shell command and return stdout/stderr.",
+      "",
+      "Runs via `sh -c` in the session cwd. Use this for builds, tests, git, file operations, or any CLI.",
+      "",
+      "Parameters:",
+      "- command (string, required): the shell command line.",
+      "- timeout (number, optional): timeout in milliseconds (min 1000, default 60000). The whole process group is killed on timeout/abort.",
+      "",
+      "Behavior:",
+      `- Exit code 0 → stdout (or "(no output)" if empty). Non-zero → stderr (or stdout) is returned with an error title so failures are visible.`,
+      "- Output is capped at 1MB; oversize output is truncated with a notice.",
+      "",
+      "Tips:",
+      "- Chain related checks in one command (e.g. `npm run typecheck && npm test`) to save round-trips.",
+      "- Prefer reading/editing files with `read`/`edit` over `cat`/`sed` so changes are tracked and permissioned.",
+    ].join("\n"),
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {

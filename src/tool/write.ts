@@ -13,7 +13,17 @@ export const WriteTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "write",
-    description: "Write content to a file, overwriting if it exists",
+    description: [
+      "Write content to a file, creating it (and parent directories) if needed, or overwriting if it exists.",
+      "",
+      "Parameters:",
+      "- filePath (string, required): destination path (relative to session cwd). Parent dirs are created automatically.",
+      "- content (string, required): the full file contents. This REPLACES any existing content entirely.",
+      "",
+      "Tips:",
+      "- This is a full overwrite. To change part of a file, use `edit` or `apply_patch` instead.",
+      "- Use for new files or when you intend to replace the whole file.",
+    ].join("\n"),
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {

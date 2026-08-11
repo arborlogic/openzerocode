@@ -53,7 +53,17 @@ export const GlobTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
     id: "glob",
-    description: "Find files by glob pattern",
+    description: [
+      "Find files by glob pattern. Returns matching file paths (absolute), one per line. Skips dotfiles and node_modules.",
+      "",
+      "Parameters:",
+      `- pattern (string | string[], required): one or more glob patterns, e.g. "src/**/*.ts". \`*\` matches within a path segment; \`**\` matches across segments.`,
+      `- path (string, optional): directory to search in, relative to session cwd. Defaults to ".".`,
+      "",
+      "Tips:",
+      "- Use `**/*.ext` to find all files of an extension under a tree.",
+      "- Combine with `grep` to locate content within matched files.",
+    ].join("\n"),
     parameters: Parameters,
     execute: (raw, ctx) =>
       Effect.gen(function* () {

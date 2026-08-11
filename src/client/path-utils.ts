@@ -1,5 +1,6 @@
 import { resolve, dirname, basename } from "node:path"
 import { existsSync, readdirSync, statSync } from "node:fs"
+import stringWidth from "string-width"
 
 export function homeDir() {
   return process.env.HOME ?? ""
@@ -14,6 +15,31 @@ export function expandHome(path: string) {
 export function displayPath(path: string) {
   const home = homeDir()
   return home && (path === home || path.startsWith(`${home}/`)) ? `~${path.slice(home.length)}` : path
+}
+
+function truncateStart(text: string, maxWidth: number): string {
+  if (maxWidth <= 0) return ""
+  if (stringWidth(text) <= maxWidth) return text
+  let width = 1
+  let result = ""
+  for (const char of [...text].reverse()) {
+    const charWidth = stringWidth(char)
+    if (width + charWidth > maxWidth) break
+    width += charWidth
+    result = char + result
+  }
+  return "…" + result
+}
+
+/** Shorten a path from the left without dropping a leading ~/ marker. */
+export function truncateDisplayPath(path: string, maxWidth: number): string {
+  const displayed = displayPath(path)
+  if (!displayed.startsWith("~/") || stringWidth(displayed) <= maxWidth) {
+    return truncateStart(displayed, maxWidth)
+  }
+  if (maxWidth <= 4) return truncateStart(displayed, maxWidth)
+  const tail = truncateStart(displayed.slice(2), maxWidth - 4).slice(1)
+  return `~/…/${tail}`
 }
 
 export function resolveDirectoryPath(input: string, cwd = process.cwd()) {

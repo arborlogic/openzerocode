@@ -105,6 +105,13 @@ describe("sessions", () => {
       assert.equal(state?.autoApprove, true)
     })
 
+    it("persists automatic skill routing with the session state", () => {
+      const meta = createSession("gpt-4o", "openai")
+      saveSession(meta.id, [], "gpt-4o", "openai", "build", undefined, [], false, { mode: "auto" })
+
+      assert.deepEqual(loadSessionState(meta.id)?.skillActivation, { mode: "auto" })
+    })
+
     it("loadSessionState returns null for nonexistent session", () => {
       assert.equal(loadSessionState("nonexistent"), null)
     })

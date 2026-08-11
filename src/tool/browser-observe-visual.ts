@@ -23,9 +23,11 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   return Math.min(max, Math.max(min, Math.round(parsed)))
 }
 
+// Capture at the same default dimensions and quality used by the local VLM so
+// it does not need to repeatedly re-encode a larger GEASS screenshot.
 const DEFAULT_VLM_IMAGE_FORMAT: 'jpeg' | 'png' = (process.env.OPENZEROCODE_VLM_IMAGE_FORMAT === 'png' ? 'png' : 'jpeg')
-const DEFAULT_VLM_IMAGE_QUALITY = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_QUALITY, 72, 1, 100)
-const DEFAULT_VLM_IMAGE_MAX_LONG_EDGE = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE, 1280, 320, 4096)
+const DEFAULT_VLM_IMAGE_QUALITY = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_QUALITY, 60, 1, 100)
+const DEFAULT_VLM_IMAGE_MAX_LONG_EDGE = clampInt(process.env.OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE, 896, 320, 4096)
 
 const DEFAULT_VISUAL_PROMPT = [
   'Describe the current browser screenshot for an automation agent.',
@@ -66,9 +68,30 @@ function formatPageSummary(page: Geass.PageSnapshot): string {
   return parts.join('\n')
 }
 
-function buildVisualPrompt(userPrompt: string | null | undefined, pageSummary: string): string {
+export function formatScreenshotMetadata(screenshot: Geass.ScreenshotResult): string {
+  const imageWidth = screenshot.width ?? 'unknown'
+  const imageHeight = screenshot.height ?? 'unknown'
+  const originalSize = screenshot.originalWidth && screenshot.originalHeight
+    ? `${screenshot.originalWidth} x ${screenshot.originalHeight}`
+    : 'unknown'
+  const viewport = screenshot.viewport
+    ? `${screenshot.viewport.width} x ${screenshot.viewport.height} at ${screenshot.viewport.x},${screenshot.viewport.y}${screenshot.viewport.deviceScaleFactor === undefined ? '' : ` @${screenshot.viewport.deviceScaleFactor}x`}`
+    : 'unknown'
+
+  return [
+    '=== Authoritative GEASS Screenshot Metadata ===',
+    `Encoded image dimensions: ${imageWidth} x ${imageHeight} pixels.`,
+    `Original captured dimensions before resize: ${originalSize} pixels.`,
+    `Browser viewport: ${viewport}.`,
+    'These values come from GEASS, not visual inference. When asked about dimensions, viewport, URL, or title, use this metadata rather than estimating from screenshot content.',
+  ].join('\n')
+}
+
+export function buildVisualPrompt(userPrompt: string | null | undefined, pageSummary: string, screenshot: Geass.ScreenshotResult): string {
   return [
     userPrompt?.trim() || DEFAULT_VISUAL_PROMPT,
+    '',
+    formatScreenshotMetadata(screenshot),
     '',
     'Structured page context from GEASS:',
     pageSummary,
@@ -166,7 +189,7 @@ export const BrowserObserveVisualTool = Effect.gen(function* () {
               endpoint,
               model,
               timeoutMs,
-              prompt: buildVisualPrompt(args.prompt, pageSummary),
+              prompt: buildVisualPrompt(args.prompt, pageSummary, screenshot),
               imageBase64: screenshot.base64,
               imageFormat: screenshot.format,
             }))

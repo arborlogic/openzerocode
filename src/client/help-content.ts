@@ -15,6 +15,9 @@ Commands
                          Switch mode; no arg cycles build / plan / compose
   /memory                Show loaded global memory files
   /skills                List available skills
+  /skills auto           Let the model select relevant skills per request
+  /skills clear          Disable automatic skill routing
+  /skills status         Show current skill routing
   /skill <name>          Show a skill's instructions
   /review [target]       Review changes using the review-helper skill
   /model [name|list]     Show or switch model

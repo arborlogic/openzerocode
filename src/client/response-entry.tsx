@@ -46,7 +46,7 @@ function detectFiletypeFromContent(content: string): string {
   return "none"
 }
 
-export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) {
+export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean; cwd?: string }) {
   // Parent lists use <Index> so text updates do not remount OpenTUI
   // renderables on every streaming chunk. An index is not permanently tied to
   // one block kind, though: a streamed tool-call is replaced by its tool
@@ -56,12 +56,12 @@ export function ResponseEntry(props: { entry: DisplayBlock; isFirst: boolean }) 
   // response).
   return (
     <Show when={responseEntryRenderKey(props.entry)} keyed>
-      {() => <ResponseEntryBody entry={props.entry} isFirst={props.isFirst} />}
+      {() => <ResponseEntryBody entry={props.entry} isFirst={props.isFirst} cwd={props.cwd} />}
     </Show>
   )
 }
 
-function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
+function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean; cwd?: string }) {
   const collapsible = () => props.entry.kind === "reasoning" || props.entry.kind === "tool-call" || props.entry.kind === "tool"
   const [collapsed, setCollapsed] = createSignal(
     collapsible() && !(props.entry.streaming ?? false)
@@ -94,6 +94,7 @@ function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
           fg={THEME.text}
           bg={THEME.background}
           streaming={props.entry.streaming ?? false}
+          cwd={props.cwd}
         />
       </box>
     )
@@ -164,15 +165,18 @@ function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
   })
 
   // Tool result: detect filetype from content heuristics
+  const renderedToolResult = createMemo(() =>
+    props.entry.kind === "tool" ? props.entry.text : ""
+  )
   const toolResultFiletype = createMemo(() => {
     if (props.entry.kind !== "tool") return "none"
-    return detectFiletypeFromContent(props.entry.text)
+    return detectFiletypeFromContent(renderedToolResult())
   })
 
   // Tool result collapse: >3 lines or long lines
-  const toolResultLines = createMemo(() => displayLines(props.entry.text))
+  const toolResultLines = createMemo(() => displayLines(renderedToolResult()))
   const toolResultOverflow = createMemo(() =>
-    toolResultLines().length > TOOL_COLLAPSE_MAX_LINES || hasLongDisplayLine(props.entry.text)
+    toolResultLines().length > TOOL_COLLAPSE_MAX_LINES || hasLongDisplayLine(renderedToolResult())
   )
 
   // Whether to show expanded content
@@ -251,7 +255,7 @@ function ResponseEntryBody(props: { entry: DisplayBlock; isFirst: boolean }) {
           {/* Tool result: show output with syntax highlighting */}
           <Show when={props.entry.kind === "tool" && !props.entry.streaming}>
             <code
-              content={props.entry.text}
+              content={renderedToolResult()}
               filetype={toolResultFiletype()}
               syntaxStyle={MARKDOWN_SYNTAX}
               fg={THEME.muted}

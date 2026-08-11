@@ -6,6 +6,7 @@ import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
 import { isEnabled, isConnected, getConfiguredSessionId } from "../browser/geass-client"
 import { readGitSnapshot, type GitCommit, type GitFile } from "./git-snapshot"
+import { truncateDisplayPath } from "./path-utils"
 import stringWidth from "string-width"
 
 function truncateStart(text: string, maxWidth: number): string {
@@ -122,6 +123,8 @@ export function Sidebar(props: {
   geassRevision?: number
   /** Called when user clicks a changed file to view its diff. */
   onFileClick?: (file: GitFile) => void
+  /** Called when user clicks the displayed project directory. */
+  onDirectoryClick?: (directory: string) => void
 }) {
   const [gitFiles, setGitFiles] = createSignal<GitFile[]>([])
   const [branch, setBranch] = createSignal<string | null>(null)
@@ -513,8 +516,15 @@ export function Sidebar(props: {
         <Show when={props.cwd}>
           <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Directory</text>
-            <text style={{ fg: props.theme.muted }} wrapMode="none">
-              {truncateStart(props.cwd ?? "", Math.max(1, props.width - 4))}
+            <text
+              style={{ fg: props.theme.muted }}
+              wrapMode="none"
+              onMouseUp={() => {
+                const directory = props.cwd
+                if (directory) setTimeout(() => props.onDirectoryClick?.(directory), 0)
+              }}
+            >
+              {truncateDisplayPath(props.cwd ?? "", Math.max(1, props.width - 4))}
             </text>
           </box>
         </Show>

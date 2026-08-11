@@ -3,12 +3,9 @@ import assert from "node:assert"
 import { encodeMessage, decodeMessages, contentToText } from "./protocol"
 
 describe("mcp protocol", () => {
-  it("encodes a request with Content-Length framing", () => {
-    const framed = encodeMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" })
-    const [header, body] = framed.split("\r\n\r\n")
-    assert.match(header!, /^Content-Length: \d+$/)
-    assert.equal(Number(header!.slice("Content-Length: ".length)), Buffer.byteLength(body!, "utf8"))
-    assert.deepEqual(JSON.parse(body!), { jsonrpc: "2.0", id: 1, method: "tools/list" })
+  it("encodes a request as newline-delimited JSON", () => {
+    const encoded = encodeMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+    assert.equal(encoded, '{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n')
   })
 
   it("decodes complete messages and keeps the partial remainder", () => {

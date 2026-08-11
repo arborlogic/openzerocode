@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js"
 import type { Part } from "../provider/types"
 
-const FLUSH_INTERVAL_MS = 32 // ~30fps
+export const STREAM_FLUSH_INTERVAL_MS = 50 // cap native text/layout updates at ~20fps
 
 /**
  * Buffers streamed text so rendering (and any dependent layout work) happens
@@ -13,70 +13,92 @@ export function createStreamState(onTextFlush?: () => void) {
   // Pending buffers — flushed on next tick rather than on every chunk
   let assistantBuffer = ""
   let reasoningBuffer = ""
+  const toolCallBuffers = new Map<number, { id?: string; tool?: string; argumentsChunk: string }>()
+  // Providers commonly send id/tool only in the first delta. Retain that
+  // identity across flush boundaries so later argument-only deltas update the
+  // same visual slot instead of creating another fallback-id tool call.
+  const toolCallIdentities = new Map<number, { id?: string; tool?: string }>()
   let flushTimer: ReturnType<typeof setTimeout> | undefined
+
+  function flushPending() {
+    if (flushTimer !== undefined) clearTimeout(flushTimer)
+    flushTimer = undefined
+    const aText = assistantBuffer
+    const rText = reasoningBuffer
+    const toolCalls = [...toolCallBuffers.entries()]
+    assistantBuffer = ""
+    reasoningBuffer = ""
+    toolCallBuffers.clear()
+    if (!aText && !rText && toolCalls.length === 0) return
+    setParts((prev) => {
+      let next = prev
+      if (rText) {
+        const last = next[next.length - 1]
+        if (last?.type === "reasoning") {
+          next = [...next.slice(0, -1), { type: "reasoning", text: last.text + rText }]
+        } else {
+          next = [...next, { type: "reasoning", text: rText }]
+        }
+      }
+      if (aText) {
+        const last = next[next.length - 1]
+        if (last?.type === "text") {
+          next = [...next.slice(0, -1), { type: "text", text: last.text + aText }]
+        } else {
+          next = [...next, { type: "text", text: aText }]
+        }
+      }
+      for (const [index, input] of toolCalls) {
+        const fallbackId = `stream_tool_call_${index}`
+        const at = next.findIndex((part) =>
+          part.type === "tool-call" && (part.id === input.id || part.id === fallbackId),
+        )
+        if (at >= 0) {
+          const current = next[at] as Extract<Part, { type: "tool-call" }>
+          const updated: Extract<Part, { type: "tool-call" }> = {
+            type: "tool-call",
+            id: input.id ?? current.id,
+            tool: input.tool ?? current.tool,
+            input: current.input + input.argumentsChunk,
+          }
+          next = [...next.slice(0, at), updated, ...next.slice(at + 1)]
+        } else {
+          next = [...next, {
+            type: "tool-call",
+            id: input.id ?? fallbackId,
+            tool: input.tool ?? "unknown",
+            input: input.argumentsChunk,
+          }]
+        }
+      }
+      return next
+    })
+    onTextFlush?.()
+  }
 
   function scheduleFlush() {
     if (flushTimer !== undefined) return
-    flushTimer = setTimeout(() => {
-      flushTimer = undefined
-      const aText = assistantBuffer
-      const rText = reasoningBuffer
-      assistantBuffer = ""
-      reasoningBuffer = ""
-      if (!aText && !rText) return
-      setParts((prev) => {
-        let next = prev
-        if (rText) {
-          const last = next[next.length - 1]
-          if (last?.type === "reasoning") {
-            next = [...next.slice(0, -1), { type: "reasoning", text: last.text + rText }]
-          } else {
-            next = [...next, { type: "reasoning", text: rText }]
-          }
-        }
-        if (aText) {
-          const last = next[next.length - 1]
-          if (last?.type === "text") {
-            next = [...next.slice(0, -1), { type: "text", text: last.text + aText }]
-          } else {
-            next = [...next, { type: "text", text: aText }]
-          }
-        }
-        return next
-      })
-      onTextFlush?.()
-    }, FLUSH_INTERVAL_MS)
+    flushTimer = setTimeout(flushPending, STREAM_FLUSH_INTERVAL_MS)
   }
 
   const streamToolCallChunk = (index: number, input: { id?: string; tool?: string; argumentsChunk?: string }) => {
-    const fallbackId = `stream_tool_call_${index}`
-    setParts((prev) => {
-      const at = prev.findIndex((part) =>
-        part.type === "tool-call" && (part.id === input.id || part.id === fallbackId),
-      )
-      if (at >= 0) {
-        const current = prev[at] as Extract<Part, { type: "tool-call" }>
-        const next: Extract<Part, { type: "tool-call" }> = {
-          type: "tool-call",
-          id: input.id ?? current.id,
-          tool: input.tool ?? current.tool,
-          input: current.input + (input.argumentsChunk ?? ""),
-        }
-        return [...prev.slice(0, at), next, ...prev.slice(at + 1)]
-      }
-      return [
-        ...prev,
-        {
-          type: "tool-call",
-          id: input.id ?? fallbackId,
-          tool: input.tool ?? "unknown",
-          input: input.argumentsChunk ?? "",
-        },
-      ]
+    const pending = toolCallBuffers.get(index)
+    const identity = toolCallIdentities.get(index)
+    const id = input.id ?? pending?.id ?? identity?.id
+    const tool = input.tool ?? pending?.tool ?? identity?.tool
+    toolCallIdentities.set(index, { id, tool })
+    toolCallBuffers.set(index, {
+      id,
+      tool,
+      argumentsChunk: (pending?.argumentsChunk ?? "") + (input.argumentsChunk ?? ""),
     })
+    scheduleFlush()
   }
 
   const setToolResult = (input: { id?: string; tool?: string; output: string; error?: boolean }) => {
+    // Commit buffered arguments before replacing their visual slot. This also
+    // prevents a delayed flush from resurrecting a completed tool call.
+    flushPending()
     const key = input.id
     setParts((prev) => {
       const resultAt = prev.findIndex((part) =>
@@ -111,6 +133,8 @@ export function createStreamState(onTextFlush?: () => void) {
     }
     assistantBuffer = ""
     reasoningBuffer = ""
+    toolCallBuffers.clear()
+    toolCallIdentities.clear()
     setParts([])
   }
 
@@ -127,6 +151,7 @@ export function createStreamState(onTextFlush?: () => void) {
     },
     streamToolCallChunk,
     setToolResult,
+    flushPending,
     reset,
   }
 }

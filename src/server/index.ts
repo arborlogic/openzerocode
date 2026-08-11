@@ -6,6 +6,8 @@ import { streamSession, type RunMode } from "../client/session-runner"
 import { createSession, loadSessionState, saveSession, deleteSession, listSessions, markSessionActive, unmarkSessionActive } from "../client/sessions"
 import { buildSystemPrompt } from "../client/system-prompt"
 import { loadAgentsInstruction, loadContextInstruction } from "../client/workspace-memory"
+import { buildSkillRoutingSection, normalizeSkillActivation } from "../client/skill-routing"
+import { resolveSkillDirs } from "../client/skill-loader"
 import type { Message } from "../provider/types"
 import type { StreamChunk } from "./types"
 
@@ -169,6 +171,7 @@ function handleGetSession(id: string): Response {
     model: state.model,
     provider: state.provider,
     mode: state.mode,
+    skillActivation: normalizeSkillActivation(state.skillActivation),
     messages: state.messages,
     createdAt: meta?.createdAt,
     updatedAt: meta?.updatedAt,
@@ -205,6 +208,8 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
 
   const agentsInstruction = loadAgentsInstruction(workdir)
   const contextInstruction = loadContextInstruction(workdir)
+  const skillActivation = normalizeSkillActivation(state?.skillActivation)
+  const skillRoutingSection = buildSkillRoutingSection(skillActivation, resolveSkillDirs(workdir))
 
   const abortController = new AbortController()
   req.signal.addEventListener("abort", () => abortController.abort(), { once: true })
@@ -229,7 +234,10 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           reasoning_effort: body.reasoning_effort,
         }, {
           runSync,
-          systemPrompt: (m) => buildSystemPrompt(m, agentsInstruction, contextInstruction, workdir),
+          systemPrompt: (m) => {
+            const base = buildSystemPrompt(m, agentsInstruction, contextInstruction, workdir)
+            return skillRoutingSection ? `${base}\n\n${skillRoutingSection}` : base
+          },
           parseJson: tryParseJSON,
           compactionSummary: state?.compaction?.summary,
           // Server mode: auto-approve all tool requests. Permission gating is
@@ -258,6 +266,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           state?.compaction,
           state?.permissionRules,
           state?.autoApprove,
+          skillActivation,
         )
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)

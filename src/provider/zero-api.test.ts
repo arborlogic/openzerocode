@@ -72,6 +72,21 @@ describe("zero-api provider request serialization", () => {
     ])
   })
 
+  it("serializes reasoning effort and token controls", async () => {
+    const requestBody = await captureCompleteRequest({
+      model: "openaicodex/gpt-5.6-terra",
+      messages: [{ role: "user", content: "solve this" }],
+      stream: false,
+      max_tokens: 4096,
+      temperature: 0.2,
+      reasoning_effort: "high",
+    })
+
+    assert.equal(requestBody.max_tokens, 4096)
+    assert.equal(requestBody.temperature, 0.2)
+    assert.equal(requestBody.reasoning_effort, "high")
+  })
+
   it("strips image content for non-vision models after local VLM fallback text remains", async () => {
     const requestBody = await captureCompleteRequest({
       model: "some-text-model",
@@ -157,7 +172,7 @@ describe("zero-api provider request serialization", () => {
     assert.equal(requestBody.messages[1].parts, undefined)
   })
 
-  it("omits max_tokens from chat completion requests", async () => {
+  it("preserves max_tokens in chat completion requests", async () => {
     const requestBody = await captureCompleteRequest({
       model: "openaicodex/gpt-5.5",
       messages: [{ role: "user", content: "say hi" }],
@@ -165,7 +180,7 @@ describe("zero-api provider request serialization", () => {
       max_tokens: 400,
     })
 
-    assert.equal(requestBody.max_tokens, undefined)
+    assert.equal(requestBody.max_tokens, 400)
     assert.equal(requestBody.model, "openaicodex/gpt-5.5")
     assert.equal(requestBody.stream, false)
   })
@@ -254,6 +269,105 @@ describe("zero-api provider request serialization", () => {
       }
 
       assert.equal(chunks.join(""), "Review result")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it("closes on response.completed without waiting for transport EOF", async () => {
+    const originalFetch = globalThis.fetch
+    const encoder = new TextEncoder()
+    let transportCancelled = false
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            "event: response.completed",
+            'data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Finished"}]}],"usage":{"input_tokens":1,"output_tokens":2}}}',
+            "",
+            "",
+          ].join("\n")))
+          // Deliberately do not close: a terminal SSE event must be sufficient.
+        },
+        cancel() {
+          transportCancelled = true
+        },
+      })
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }) as unknown as typeof fetch
+
+    try {
+      const stream = await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.stream({
+            model: "openaicodex/gpt-5.5",
+            messages: [{ role: "user", content: "inspect image" }],
+            stream: true,
+          })
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+
+      const reader = stream.getReader()
+      const chunks: any[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+
+      assert.equal(chunks[0]?.delta.content, "Finished")
+      assert.equal(chunks.at(-1)?.finish_reason, "stop")
+      assert.equal(transportCancelled, true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it("closes on a CRLF chat completion finish reason without waiting for transport EOF", async () => {
+    const originalFetch = globalThis.fetch
+    const encoder = new TextEncoder()
+    let transportCancelled = false
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode([
+            'data: {"choices":[{"delta":{"content":"Finished"},"finish_reason":null}]}',
+            "",
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "",
+            "",
+          ].join("\r\n")))
+          // Deliberately leave the transport open to emulate a keep-alive proxy.
+        },
+        cancel() {
+          transportCancelled = true
+        },
+      })
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    }) as unknown as typeof fetch
+
+    try {
+      const stream = await Effect.runPromise(
+        Effect.gen(function* () {
+          const p = yield* Provider
+          return yield* p.stream({
+            model: "openaicodex/gpt-5.6-terra",
+            messages: [{ role: "user", content: "say hi" }],
+            stream: true,
+          })
+        }).pipe(Effect.provide(layer({ apiKey: "test", baseURL: "http://zero.test/v1" })))
+      )
+
+      const reader = stream.getReader()
+      const first = await reader.read()
+      const second = await reader.read()
+      const third = await reader.read()
+
+      assert.equal(first.value?.delta.content, "Finished")
+      assert.equal(second.value?.finish_reason, "stop")
+      assert.equal(third.done, true)
+      assert.equal(transportCancelled, true)
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -4,6 +4,7 @@ import { homedir } from "os"
 import type { Message } from "../provider/types"
 import type { PermissionRule } from "./permission-rules"
 import { sanitizeMessages } from "./message-sanitize"
+import type { SkillActivation } from "./skill-routing"
 
 export type CompactionInfo = {
   summary: string
@@ -155,6 +156,7 @@ export function saveSession(
   compaction?: CompactionInfo,
   permissionRules?: PermissionRule[],
   autoApprove?: boolean,
+  skillActivation?: SkillActivation,
 ) {
   ensureDir()
   const now = Date.now()
@@ -171,6 +173,7 @@ export function saveSession(
     compaction,
     permissionRules: permissionRules ?? [],
     autoApprove: autoApprove ?? false,
+    skillActivation,
     createdAt,
     updatedAt: now,
   })
@@ -208,7 +211,7 @@ export function loadSession(id: string): Message[] | null {
   }
 }
 
-export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo; permissionRules?: PermissionRule[]; autoApprove?: boolean } | null {
+export function loadSessionState(id: string): { messages: Message[]; model?: string; provider?: string; mode?: string; compaction?: CompactionInfo; permissionRules?: PermissionRule[]; autoApprove?: boolean; skillActivation?: SkillActivation } | null {
   try {
     const path = sessionPath(id)
     if (!existsSync(path)) return null
@@ -221,6 +224,7 @@ export function loadSessionState(id: string): { messages: Message[]; model?: str
       compaction: data.compaction,
       permissionRules: data.permissionRules ?? [],
       autoApprove: data.autoApprove ?? false,
+      skillActivation: data.skillActivation,
     }
   } catch {
     return null

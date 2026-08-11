@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { getKnownModelConfig, getModelConfig, estimateTokens, estimateMessageTokens, estimateCost, modelSupportsVision } from "./models"
+import { getKnownModelConfig, getModelConfig, estimateTokens, estimateMessageTokens, estimateMessageRequestTokens, estimateCost, modelSupportsVision, IMAGE_REQUEST_TOKEN_ALLOWANCE } from "./models"
 import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
@@ -24,6 +24,7 @@ describe("getKnownModelConfig", () => {
     const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
     assert.ok(cfg)
     assert.equal(cfg.contextLimit, 372_000)
+    assert.equal(cfg.reasoning, true)
   })
 
   it("uses the 372K application budget for all Codex GPT-5.6 variants", () => {
@@ -31,6 +32,7 @@ describe("getKnownModelConfig", () => {
       const cfg = getKnownModelConfig(`openaicodex/${model}`)
       assert.ok(cfg, `expected config for ${model}`)
       assert.equal(cfg.contextLimit, 372_000)
+      assert.equal(cfg.reasoning, true)
     }
   })
 
@@ -207,6 +209,42 @@ describe("estimateMessageTokens", () => {
     }
 
     assert.equal(estimateMessageTokens([withMirroredParts]), estimateMessageTokens([message]))
+  })
+
+  it("does not count image base64 payload as text context", () => {
+    const text = "Screenshot from the browser tool"
+    const withSmallImage = {
+      role: "tool" as const,
+      tool_call_id: "call_1",
+      content: [
+        { type: "text" as const, text },
+        { type: "image_url" as const, image_url: { url: "data:image/png;base64,AA==" } },
+      ],
+    }
+    const withLargeImage = {
+      ...withSmallImage,
+      content: [
+        { type: "text" as const, text },
+        { type: "image_url" as const, image_url: { url: `data:image/png;base64,${"A".repeat(1_000_000)}` } },
+      ],
+    }
+
+    assert.equal(estimateMessageTokens([withLargeImage]), estimateMessageTokens([withSmallImage]))
+  })
+
+  it("adds a bounded vision allowance when budgeting a provider request", () => {
+    const imageMessage = {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "inspect this" },
+        { type: "image_url" as const, image_url: { url: `data:image/png;base64,${"A".repeat(1_000_000)}` } },
+      ],
+    }
+
+    assert.equal(
+      estimateMessageRequestTokens([imageMessage]),
+      estimateMessageTokens([imageMessage]) + IMAGE_REQUEST_TOKEN_ALLOWANCE,
+    )
   })
 })
 

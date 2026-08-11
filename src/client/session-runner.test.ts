@@ -116,7 +116,7 @@ test("streamSession injects a recent context anchor into provider requests witho
     provider: "test-provider",
     keyName: "test-key",
     mode: "build",
-  }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+  }, runtime(stream, { onRequest: (req) => requests.push({ ...req, messages: [...req.messages] }) }))
 
   let done: IteratorResult<any, Message[]>
   do {
@@ -155,6 +155,30 @@ test("streamSession can disable recent context anchors per request", async () =>
   while (!(await gen.next()).done) {}
 
   assert.equal(requests[0]!.messages.some((message) => String(message.content ?? "").includes("[Recent Context Anchor]")), false)
+})
+
+test("streamSession forwards reasoning effort for Codex GPT-5.5 and GPT-5.6", async () => {
+  for (const model of ["openaicodex/gpt-5.5", "openaicodex/gpt-5.6-terra"]) {
+    const requests: CompletionRequest[] = []
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+        controller.close()
+      },
+    })
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model,
+      provider: "zero-api",
+      keyName: "test-key",
+      mode: "build",
+      reasoning_effort: "high",
+    }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+    while (!(await gen.next()).done) {}
+
+    assert.equal(requests[0]?.reasoning_effort, "high", model)
+  }
 })
 
 test("streamSession surfaces non-abort provider stream read errors", async () => {
@@ -315,6 +339,50 @@ test("streamSession treats empty EOF after tool results as clean completion", as
     done.value.map((message) => message.role),
     ["user", "assistant", "tool"],
   )
+})
+
+test("streamSession trims initial history against prefix and image request budget", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const imagePart = { type: "image_url" as const, image_url: { url: `data:image/png;base64,${"a".repeat(20_000)}` } }
+  const history: Message[] = [
+    { role: "user", content: [{ type: "text", text: "old image 1" }, imagePart] },
+    { role: "assistant", content: "old answer 1" },
+    { role: "user", content: [{ type: "text", text: "old image 2" }, imagePart] },
+    { role: "assistant", content: "old answer 2" },
+    { role: "user", content: [{ type: "text", text: "recent image" }, imagePart] },
+    { role: "assistant", content: "recent answer" },
+  ]
+
+  const gen = streamSession("new request", history, {
+    abort: new AbortController().signal,
+    model: "test-model",
+    modelInfo: { id: "test-model", contextLimit: 5_000 },
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    recentContextAnchor: false,
+  }, runtime(stream, { onRequest: (req) => requests.push({ ...req, messages: [...req.messages] }) }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.equal(requests.length, 1)
+  const sentMessages = requests[0]!.messages
+  assert.equal(sentMessages[0]?.role, "system")
+  assert.equal(sentMessages.at(-1)?.content, "new request")
+  assert.equal(sentMessages.filter((message) => Array.isArray(message.content)).length, 1)
+  assert.deepEqual(sentMessages.map((message) => message.content), [
+    "system prompt",
+    "old answer 2",
+    [{ type: "text", text: "recent image" }, imagePart],
+    "recent answer",
+    "new request",
+  ])
 })
 
 test("streamSession compacts large current-turn tool history before provider requests", async () => {

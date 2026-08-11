@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { messagesToInput, toResponsesRequestBody } from "./responses-api"
+import { createResponsesStream, messagesToInput, toResponsesRequestBody } from "./responses-api"
 
 describe("responses-api multimodal tool results", () => {
   it("forwards tool image attachments as a follow-up user input_image message", () => {
@@ -84,5 +84,60 @@ describe("responses-api multimodal tool results", () => {
         { type: "input_image", image_url: "data:image/png;base64,AAECAw==" },
       ],
     }])
+  })
+})
+
+describe("responses-api streaming", () => {
+  it("closes on response.completed without waiting for transport EOF", async () => {
+    const encoder = new TextEncoder()
+    let transportCancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          "event: response.completed",
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+          "",
+          "",
+        ].join("\n")))
+        // Deliberately leave the transport open to emulate a keep-alive proxy.
+      },
+      cancel() {
+        transportCancelled = true
+      },
+    })
+
+    const reader = createResponsesStream(body).getReader()
+    const first = await reader.read()
+    const second = await reader.read()
+
+    assert.equal(first.value?.finish_reason, "stop")
+    assert.equal(second.done, true)
+    assert.equal(transportCancelled, true)
+  })
+
+  it("recognizes a CRLF-delimited terminal event on a keep-alive transport", async () => {
+    const encoder = new TextEncoder()
+    let transportCancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          "event: response.completed",
+          'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}',
+          "",
+          "",
+        ].join("\r\n")))
+      },
+      cancel() {
+        transportCancelled = true
+      },
+    })
+
+    const reader = createResponsesStream(body).getReader()
+    const first = await reader.read()
+    const second = await reader.read()
+
+    assert.equal(first.value?.finish_reason, "stop")
+    assert.equal(second.done, true)
+    assert.equal(transportCancelled, true)
   })
 })

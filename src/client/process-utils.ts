@@ -6,6 +6,117 @@ import path from "node:path"
 
 const execFileAsync = promisify(execFile)
 
+export interface ClipboardCommand {
+  command: string
+  args: string[]
+}
+
+export interface ClipboardCommandCandidates {
+  copy: ClipboardCommand[]
+  paste: ClipboardCommand[]
+}
+
+/** Return native clipboard commands in the order appropriate for the desktop session. */
+export function getClipboardCommandCandidates(
+  p = platform(),
+  env: NodeJS.ProcessEnv = process.env,
+): ClipboardCommandCandidates {
+  if (p === "darwin") {
+    return {
+      copy: [{ command: "pbcopy", args: [] }],
+      paste: [{ command: "pbpaste", args: [] }],
+    }
+  }
+  if (p === "win32") {
+    return {
+      copy: [{ command: "clip", args: [] }],
+      paste: [{ command: "powershell.exe", args: ["-NoProfile", "-Command", "Get-Clipboard"] }],
+    }
+  }
+  if (p !== "linux") return { copy: [], paste: [] }
+
+  const wayland = Boolean(env.WAYLAND_DISPLAY) || env.XDG_SESSION_TYPE?.toLowerCase() === "wayland"
+  const waylandCommands: ClipboardCommandCandidates = {
+    copy: [{ command: "wl-copy", args: [] }],
+    paste: [{ command: "wl-paste", args: ["--no-newline"] }],
+  }
+  const x11Commands: ClipboardCommandCandidates = {
+    copy: [
+      { command: "xclip", args: ["-selection", "clipboard"] },
+      { command: "xsel", args: ["--clipboard", "--input"] },
+    ],
+    paste: [
+      { command: "xclip", args: ["-selection", "clipboard", "-o"] },
+      { command: "xsel", args: ["--clipboard", "--output"] },
+    ],
+  }
+
+  const copy = wayland
+    ? [...waylandCommands.copy, ...x11Commands.copy]
+    : [...x11Commands.copy, ...waylandCommands.copy]
+  const paste = wayland
+    ? [...waylandCommands.paste, ...x11Commands.paste]
+    : [...x11Commands.paste, ...waylandCommands.paste]
+
+  // WSL can access the Windows clipboard even when no Linux display server is available.
+  if (env.WSL_DISTRO_NAME || env.WSL_INTEROP) {
+    copy.push({ command: "clip.exe", args: [] })
+    paste.push({ command: "powershell.exe", args: ["-NoProfile", "-Command", "Get-Clipboard"] })
+  }
+  return { copy, paste }
+}
+
+function writeWithCommand(candidate: ClipboardCommand, text: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(ok)
+    }
+    const child = spawn(candidate.command, candidate.args, { stdio: ["pipe", "ignore", "ignore"] })
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(false)
+    }, 3000)
+    timer.unref()
+    child.on("error", () => finish(false))
+    child.on("close", (code) => finish(code === 0))
+    child.stdin?.on("error", () => finish(false))
+    child.stdin?.end(text)
+  })
+}
+
+function readWithCommand(candidate: ClipboardCommand): Promise<{ ok: boolean; text: string }> {
+  return new Promise((resolve) => {
+    let settled = false
+    let out = ""
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ ok, text: ok ? out : "" })
+    }
+    const child = spawn(candidate.command, candidate.args, { stdio: ["ignore", "pipe", "ignore"] })
+    const timer = setTimeout(() => {
+      child.kill()
+      finish(false)
+    }, 3000)
+    timer.unref()
+    child.stdout?.on("data", (data) => (out += data.toString()))
+    child.on("error", () => finish(false))
+    child.on("close", (code) => finish(code === 0))
+  })
+}
+
+function writeOsc52(text: string): boolean {
+  if (!process.stdout.isTTY) return false
+  const base64 = Buffer.from(text).toString("base64")
+  process.stdout.write(`\x1b]52;c;${base64}\x07`)
+  return true
+}
+
 /** Run git command and return trimmed stdout, or empty string on failure. */
 export async function runGit(args: string[], timeout = 1000, maxBuffer = 1024 * 256): Promise<string> {
   try {
@@ -37,36 +148,20 @@ export async function getGitFileChanges(): Promise<{ modified: string[]; added: 
   return { modified, added, deleted }
 }
 
-export async function copyToClipboard(text: string) {
-  if (!text) return
-  if (process.stdout.isTTY) {
-    const base64 = Buffer.from(text).toString("base64")
-    process.stdout.write(`\x1b]52;c;${base64}\x07`)
+export async function copyToClipboard(text: string): Promise<boolean> {
+  if (!text) return false
+  for (const candidate of getClipboardCommandCandidates().copy) {
+    if (await writeWithCommand(candidate, text)) return true
   }
-
-  const p = platform()
-  const cmd = p === "darwin" ? "pbcopy" : p === "win32" ? "clip" : "xclip"
-  const args = p === "linux" ? ["-selection", "clipboard"] : []
-  await new Promise<void>((resolve) => {
-    const child = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] })
-    child.on("error", () => resolve())
-    child.on("close", () => resolve())
-    child.stdin?.write(text)
-    child.stdin?.end()
-  })
+  return writeOsc52(text)
 }
 
 export async function readClipboard(): Promise<string> {
-  const p = platform()
-  const cmd = p === "darwin" ? "pbpaste" : p === "win32" ? "powershell.exe" : "xclip"
-  const args = p === "win32" ? ["-NoProfile", "-Command", "Get-Clipboard"] : p === "linux" ? ["-selection", "clipboard", "-o"] : []
-  return await new Promise<string>((resolve) => {
-    const child = spawn(cmd, args)
-    let out = ""
-    child.stdout.on("data", (d) => (out += d.toString()))
-    child.on("error", () => resolve(""))
-    child.on("close", (code) => (code === 0 ? resolve(out) : resolve("")))
-  })
+  for (const candidate of getClipboardCommandCandidates().paste) {
+    const result = await readWithCommand(candidate)
+    if (result.ok) return result.text
+  }
+  return ""
 }
 
 export function openExternalUrl(url: string) {

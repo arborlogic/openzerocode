@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.4 - 2026-08-11
+
+### Added
+
+- Added automatic skill routing based on the current session context.
+- Added local-file links for completion reports, with correct handling for local directory and file paths.
+- Added controls and model metadata for Codex GPT-5.5 and GPT-5.6 variants.
+- Added clipboard support for Wayland and X11 environments.
+
+### Changed
+
+- Bounded transcript, tool-output, usage-dashboard, and visual-analysis payload rendering to improve TUI stability during long sessions.
+- Improved browser screenshot metadata passed to local VLM analysis and documented the GEASS vision integration.
+
+### Fixed
+
+- Fixed provider streaming for CRLF-delimited and slow responses, preserved tool-call finish reasons, and closed streams after terminal response events.
+- Fixed MCP stdio framing to use newline-delimited messages.
+- Fixed Markdown transcript rendering stability and capped mounted renderables to prevent TextBuffer failures.
+- Fixed image-payload accounting so image content is not counted as text context.
+- Updated the `brace-expansion` dependency override to version 5.0.9.
+
 ## 0.8.3 - 2026-07-28
 
 ### Added

@@ -180,6 +180,12 @@ Environment variables:
 - `OPENZEROCODE_VLM_URL` or `GEASS_VLM_URL`: local VLM server URL.
 - `OPENZEROCODE_VLM_MODEL` or `GEASS_VLM_MODEL`: model name for OpenAI-compatible servers.
 - `OPENZEROCODE_VLM_TIMEOUT_MS`: request timeout, default `60000`.
+- `OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE`: VLM-bound screenshot long edge, default `896` pixels.
+- `OPENZEROCODE_VLM_IMAGE_MIN_LONG_EDGE`: lower bound for adaptive retry resizing, default `384` pixels.
+- `OPENZEROCODE_VLM_IMAGE_QUALITY`: JPEG quality for VLM-bound images, default `60`.
+- `OPENZEROCODE_VLM_MAX_BASE64_LENGTH`: maximum encoded image payload before additional downscaling, default `250000` characters.
+
+Screenshots are always normalized to the configured JPEG dimensions and quality before a local VLM request. This caps visual-token work even when the original image is small enough to fit the byte budget. For CPU-only llama.cpp deployments, start with `896` pixels and use a modest server-side `--image-min-tokens` limit (for example `256`).
 
 Supported request shapes:
 

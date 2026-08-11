@@ -192,7 +192,13 @@ export type SessionBreakdown = {
   lastActivity: number
 }
 
-export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): SessionBreakdown[] {
+export function getSessionBreakdown(
+  entries: UsageEntry[],
+  recentCount = 5,
+  maxSessions = Number.POSITIVE_INFINITY,
+): SessionBreakdown[] {
+  const safeRecentCount = Math.max(0, Math.floor(recentCount))
+  const safeMaxSessions = Math.max(0, Math.floor(maxSessions))
   const map = new Map<string, {
     provider: string
     keyName: string
@@ -200,23 +206,28 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
     totalInputTokens: number
     totalOutputTokens: number
     totalCachedInputTokens: number
-    allEntries: SessionRequestRow[]
+    totalRequests: number
+    recentEntries: SessionRequestRow[]
     lastActivity: number
   }>()
 
   for (const e of entries) {
     const sid = e.sessionId ?? "(no session)"
+    const request = {
+      timestamp: e.timestamp,
+      inputTokens: e.inputTokens,
+      outputTokens: e.outputTokens,
+      cachedInputTokens: e.cachedInputTokens ?? 0,
+    }
     const existing = map.get(sid)
     if (existing) {
       existing.totalInputTokens += e.inputTokens
       existing.totalOutputTokens += e.outputTokens
       existing.totalCachedInputTokens += e.cachedInputTokens ?? 0
-      existing.allEntries.push({
-        timestamp: e.timestamp,
-        inputTokens: e.inputTokens,
-        outputTokens: e.outputTokens,
-        cachedInputTokens: e.cachedInputTokens ?? 0,
-      })
+      existing.totalRequests++
+      existing.recentEntries.push(request)
+      existing.recentEntries.sort((a, b) => b.timestamp - a.timestamp)
+      if (existing.recentEntries.length > safeRecentCount) existing.recentEntries.pop()
       if (e.timestamp > existing.lastActivity) {
         existing.lastActivity = e.timestamp
         existing.model = e.model
@@ -231,12 +242,8 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
         totalInputTokens: e.inputTokens,
         totalOutputTokens: e.outputTokens,
         totalCachedInputTokens: e.cachedInputTokens ?? 0,
-        allEntries: [{
-          timestamp: e.timestamp,
-          inputTokens: e.inputTokens,
-          outputTokens: e.outputTokens,
-          cachedInputTokens: e.cachedInputTokens ?? 0,
-        }],
+        totalRequests: 1,
+        recentEntries: safeRecentCount > 0 ? [request] : [],
         lastActivity: e.timestamp,
       })
     }
@@ -244,19 +251,17 @@ export function getSessionBreakdown(entries: UsageEntry[], recentCount = 5): Ses
 
   return [...map.entries()]
     .sort((a, b) => b[1].lastActivity - a[1].lastActivity)
-    .map(([sessionId, data]) => {
-      const sorted = data.allEntries.sort((a, b) => b.timestamp - a.timestamp)
-      return {
-        sessionId,
-        provider: data.provider,
-        keyName: data.keyName,
-        model: data.model,
-        totalInputTokens: data.totalInputTokens,
-        totalOutputTokens: data.totalOutputTokens,
-        totalCachedInputTokens: data.totalCachedInputTokens,
-        totalRequests: data.allEntries.length,
-        recentEntries: sorted.slice(0, recentCount),
-        lastActivity: data.lastActivity,
-      }
-    })
+    .slice(0, safeMaxSessions)
+    .map(([sessionId, data]) => ({
+      sessionId,
+      provider: data.provider,
+      keyName: data.keyName,
+      model: data.model,
+      totalInputTokens: data.totalInputTokens,
+      totalOutputTokens: data.totalOutputTokens,
+      totalCachedInputTokens: data.totalCachedInputTokens,
+      totalRequests: data.totalRequests,
+      recentEntries: data.recentEntries,
+      lastActivity: data.lastActivity,
+    }))
 }

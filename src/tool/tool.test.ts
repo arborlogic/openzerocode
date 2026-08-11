@@ -167,7 +167,8 @@ describe("tool", () => {
 
     const read = await Effect.runPromise(ReadTool)
     const readResult = await Effect.runPromise(read.execute({ filePath: "nested/test.txt" }, ctx))
-    assert.equal(readResult.output, "alpha beta")
+    assert.ok(readResult.output.includes("alpha beta"), readResult.output)
+    assert.ok(/1│ alpha beta/.test(readResult.output), readResult.output)
 
     const edit = await Effect.runPromise(EditTool)
     await Effect.runPromise(edit.execute({ filePath: "nested/test.txt", oldString: "beta", newString: "gamma", replaceAll: false }, ctx))

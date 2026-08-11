@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { getGitFileChanges, runGit } from "./process-utils"
+import { getClipboardCommandCandidates, getGitFileChanges, runGit } from "./process-utils"
 
 const execFileAsync = promisify(execFile)
 
@@ -36,6 +36,27 @@ describe("process-utils", () => {
 
   it("runGit returns an empty string on failure", async () => {
     assert.equal(await runGit(["definitely-not-a-git-command"], 1000), "")
+  })
+
+  it("prefers wl-clipboard in a Wayland Linux session", () => {
+    const candidates = getClipboardCommandCandidates("linux", { XDG_SESSION_TYPE: "wayland" })
+
+    assert.deepEqual(candidates.copy.map(({ command }) => command), ["wl-copy", "xclip", "xsel"])
+    assert.deepEqual(candidates.paste.map(({ command }) => command), ["wl-paste", "xclip", "xsel"])
+  })
+
+  it("prefers X11 clipboard tools and falls back to wl-clipboard on Linux", () => {
+    const candidates = getClipboardCommandCandidates("linux", { XDG_SESSION_TYPE: "x11" })
+
+    assert.deepEqual(candidates.copy.map(({ command }) => command), ["xclip", "xsel", "wl-copy"])
+    assert.deepEqual(candidates.paste.map(({ command }) => command), ["xclip", "xsel", "wl-paste"])
+  })
+
+  it("adds the Windows clipboard as a WSL fallback", () => {
+    const candidates = getClipboardCommandCandidates("linux", { WSL_DISTRO_NAME: "Ubuntu" })
+
+    assert.equal(candidates.copy.at(-1)?.command, "clip.exe")
+    assert.equal(candidates.paste.at(-1)?.command, "powershell.exe")
   })
 
   it("classifies tracked modified, added, and deleted git file changes vs HEAD", async () => {

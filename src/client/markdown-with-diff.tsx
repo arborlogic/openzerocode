@@ -19,6 +19,7 @@ import { Index, Show, createMemo, type ComponentProps } from "solid-js"
 import type { SyntaxStyle } from "@opentui/core"
 import { parseDiffBlocks, type MarkdownDiffSegment } from "./markdown-diff-parser"
 import { DIFF_RENDER_PROPS } from "./diff-rendering"
+import { linkCompletionReportPaths } from "./local-file-links"
 import { THEME } from "./theme"
 import stringWidth from "string-width"
 
@@ -28,12 +29,37 @@ export function requiresCustomMarkdownRenderer(segments: MarkdownDiffSegment[]):
   return segments.some((segment) => segment.type !== "markdown")
 }
 
+export const MAX_STYLED_MARKDOWN_BLOCKS = 160
+export const MAX_CUSTOM_MARKDOWN_SEGMENTS = 48
+export const MAX_CUSTOM_TABLE_ROWS = 120
+
+export type MarkdownRenderMode = "markdown" | "custom" | "plain"
+
+/** Avoid letting one generated response allocate an unbounded renderable tree. */
+export function markdownRenderMode(
+  content: string,
+  segments: MarkdownDiffSegment[],
+): MarkdownRenderMode {
+  const structuralBlocks = content.match(/(?:^|\n)(?:\s*\n|#{1,6}\s|```|~~~|\s*[-*+]\s|\s*\d+[.)]\s|>\s)/g)?.length ?? 0
+  if (structuralBlocks > MAX_STYLED_MARKDOWN_BLOCKS) return "plain"
+  if (!requiresCustomMarkdownRenderer(segments)) return "markdown"
+
+  const tableRows = segments.reduce(
+    (total, segment) => total + (segment.type === "table" ? segment.table.rows.length + 1 : 0),
+    0,
+  )
+  if (segments.length > MAX_CUSTOM_MARKDOWN_SEGMENTS || tableRows > MAX_CUSTOM_TABLE_ROWS) return "plain"
+  return "custom"
+}
+
 export interface MarkdownWithDiffProps extends ComponentProps<"div"> {
   content: string
   syntaxStyle: SyntaxStyle
   fg?: string
   bg?: string
   streaming?: boolean
+  /** Working directory used to resolve local paths in completion reports. */
+  cwd?: string
   class?: string
 }
 
@@ -101,21 +127,28 @@ function MarkdownTable(props: {
  * a native diff visualization.
  */
 export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
-  const segments = createMemo(() =>
-    props.streaming ? [] : parseDiffBlocks(props.content),
+  // Do not rewrite live output: an incomplete report line must remain stable
+  // while the model streams it. Resolve links only once the response completes.
+  const renderedContent = createMemo(() =>
+    props.streaming ? props.content : linkCompletionReportPaths(props.content, props.cwd),
   )
-  const hasCustomSegments = createMemo(() => requiresCustomMarkdownRenderer(segments()))
+  const segments = createMemo(() =>
+    props.streaming ? [] : parseDiffBlocks(renderedContent()),
+  )
+  const renderMode = createMemo<MarkdownRenderMode>(() =>
+    props.streaming ? "plain" : markdownRenderMode(renderedContent(), segments()),
+  )
 
   return (
     <box flexDirection="column" width="100%">
       <Show
-        when={props.streaming}
+        when={renderMode() === "plain"}
         fallback={
           <Show
-            when={hasCustomSegments()}
+            when={renderMode() === "custom"}
             fallback={
               <markdown
-                content={props.content}
+                content={renderedContent()}
                 syntaxStyle={props.syntaxStyle}
                 fg={props.fg}
                 bg={props.bg}
@@ -166,7 +199,7 @@ export function MarkdownWithDiff(props: MarkdownWithDiffProps) {
           </Show>
         }
       >
-        <text content={props.content} />
+        <text content={renderedContent()} />
       </Show>
     </box>
   )

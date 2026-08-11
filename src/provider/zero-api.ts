@@ -150,8 +150,12 @@ function sanitizeMessages(messages: CompletionRequest["messages"], model: string
   })
 }
 
-/** Timeout for a single reader.read() call before we consider the stream stuck. */
-const STREAM_READ_TIMEOUT_MS = 60_000
+/**
+ * Timeout for a single reader.read() call before we consider the stream stuck.
+ * Vision tool results and reasoning models can legitimately take more than a
+ * minute before their next SSE event, especially before the first token.
+ */
+const STREAM_READ_TIMEOUT_MS = 180_000
 
 function readWithTimeout(reader: ReadableStreamDefaultReader<Uint8Array>, signal?: AbortSignal): Promise<{ done: boolean; value?: Uint8Array }> {
   return new Promise((resolve, reject) => {
@@ -195,8 +199,8 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const complete = (req: CompletionRequest): Effect.Effect<CompletionResult> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          // Strip non-wire fields (max_tokens duplicated below if needed; signal is local-only).
-          const { max_tokens, signal, ...rest } = req as any
+          // AbortSignal is local-only; all completion controls remain on the wire.
+          const { signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages, model), model, stream: false }
 
           const res = yield* Effect.promise(() =>
@@ -224,7 +228,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
       const stream = (req: CompletionRequest): Effect.Effect<ReadableStream<Chunk>> =>
         Effect.gen(function* () {
           const model = req.model || defaultModel
-          const { max_tokens, signal, ...rest } = req as any
+          const { signal, ...rest } = req as any
           const body = { ...rest, messages: sanitizeMessages(req.messages, model), model, stream: true }
 
           const res = yield* Effect.promise(() =>
@@ -241,6 +245,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
           const decoder = new TextDecoder()
           let buffer = ""
           let emittedText = false
+          let hasToolCalls = false
           let streamDone = false
 
           return new ReadableStream<Chunk>({
@@ -276,10 +281,17 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                             emittedText = true
                             try { controller.enqueue({ delta: { content: text } }) } catch {}
                           }
-                          try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                          if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
+                          const finishReason = hasToolCalls ? "tool_calls" : (type === "response.completed" ? "stop" : "length")
+                          try { controller.enqueue({ delta: {}, finish_reason: finishReason, usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                          streamDone = true
                         }
                       }
                     }
+                  }
+                  if (streamDone) {
+                    try { controller.close() } catch {}
+                    return
                   }
                   try { controller.error(err) } catch {}
                   return
@@ -300,7 +312,9 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                             emittedText = true
                             try { controller.enqueue({ delta: { content: text } }) } catch {}
                           }
-                          try { controller.enqueue({ delta: {}, finish_reason: type === "response.completed" ? "stop" : "length", usage: usageFromResponses(raw.response?.usage) }) } catch {}
+                          if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
+                          const finishReason = hasToolCalls ? "tool_calls" : (type === "response.completed" ? "stop" : "length")
+                          try { controller.enqueue({ delta: {}, finish_reason: finishReason, usage: usageFromResponses(raw.response?.usage) }) } catch {}
                         }
                       }
                     }
@@ -310,6 +324,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                   return
                 }
                 buffer += decoder.decode(value, { stream: true })
+                // SSE permits CRLF (and bare CR) line endings. Normalize them
+                // before looking for the blank line that terminates an event;
+                // otherwise a complete terminal event can remain buffered
+                // until the per-read timeout fires.
+                buffer = buffer.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
                 const parts = buffer.split("\n\n")
                 buffer = parts.pop() ?? ""
                 for (const part of parts) {
@@ -325,10 +344,12 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                     } else if (type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") {
                       controller.enqueue({ delta: { reasoning_content: raw.delta ?? "" } })
                     } else if (type === "response.output_item.added" && raw.item?.type === "function_call") {
+                      hasToolCalls = true
                       controller.enqueue({ delta: {}, tool_calls: [responseToolCallFromItem(raw.item, raw.output_index ?? 0)] })
                     } else if (type === "response.function_call_arguments.delta") {
                       controller.enqueue({ delta: {}, tool_calls: [{ id: raw.call_id, index: raw.output_index ?? 0, type: "function", function: { arguments: raw.delta ?? "" } }] })
                     } else if (type === "response.output_item.done" && raw.item?.type === "function_call") {
+                      hasToolCalls = true
                       controller.enqueue({ delta: {}, tool_calls: [responseToolCallFromItem(raw.item, raw.output_index ?? 0)] })
                     } else if (type === "response.output_item.done" && raw.item?.type === "message" && !emittedText) {
                       const text = responseTextFromOutputItem(raw.item)
@@ -342,7 +363,9 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                         emittedText = true
                         controller.enqueue({ delta: { content: text } })
                       }
-                      controller.enqueue({ delta: {}, finish_reason: "stop", usage: usageFromResponses(raw.response?.usage) })
+                      if (Array.isArray(raw.response?.output) && raw.response.output.some((item: any) => item?.type === "function_call")) hasToolCalls = true
+                      controller.enqueue({ delta: {}, finish_reason: hasToolCalls ? "tool_calls" : "stop", usage: usageFromResponses(raw.response?.usage) })
+                      streamDone = true
                     } else if (type === "response.incomplete") {
                       const text = !emittedText ? responseTextFromResponse(raw.response) : ""
                       if (text) {
@@ -350,6 +373,7 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                         controller.enqueue({ delta: { content: text } })
                       }
                       controller.enqueue({ delta: {}, finish_reason: "length", usage: usageFromResponses(raw.response?.usage) })
+                      streamDone = true
                     } else if (raw.choices) {
                       const delta = raw.choices[0]?.delta ?? {}
                       const finish = raw.choices[0]?.finish_reason
@@ -360,7 +384,21 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string 
                       }
                       if (delta.tool_calls) chunk.tool_calls = delta.tool_calls
                       controller.enqueue(chunk)
+                      // Chat Completions streams terminate logically when a
+                      // choice carries finish_reason. Gateways can keep the
+                      // HTTP connection alive after this final chunk, just as
+                      // they can after a Responses response.completed event.
+                      if (finish) streamDone = true
                     }
+                  }
+                  // response.completed/response.incomplete terminates the
+                  // logical SSE response. Some gateways leave the HTTP socket
+                  // open for keep-alive, so waiting for transport EOF here
+                  // causes a false "Stream read timeout" after valid output.
+                  if (streamDone) {
+                    void reader.cancel().catch(() => {})
+                    controller.close()
+                    return
                   }
                 }
               }

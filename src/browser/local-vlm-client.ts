@@ -12,13 +12,16 @@ export interface LocalVlmRequest {
   timeoutMs?: number;
 }
 
-// Keep local VLM image payloads modest without degrading screenshots that are
-// already within the byte budget produced by browser_screenshot/analyze_image.
-// Oversized payloads are adaptively downscaled until they fit the target budget.
-const DEFAULT_MAX_LONG_EDGE = 1280;
-const DEFAULT_MIN_LONG_EDGE = 320;
-const DEFAULT_JPEG_QUALITY = 72;
-const DEFAULT_MAX_BASE64_LENGTH = 500_000;
+// Keep local VLM image payloads modest by normalizing them before they reach
+// a local model. Oversized payloads are adaptively downscaled until they fit
+// the target budget.
+// These defaults target CPU-hosted VLMs as well as network payload size. A 896px
+// browser view remains readable for UI/layout inspection while substantially
+// reducing visual tokens compared with a native/high-DPI screenshot.
+const DEFAULT_MAX_LONG_EDGE = 896;
+const DEFAULT_MIN_LONG_EDGE = 384;
+const DEFAULT_JPEG_QUALITY = 60;
+const DEFAULT_MAX_BASE64_LENGTH = 250_000;
 
 export interface LocalVlmResult {
   text: string;
@@ -118,6 +121,13 @@ function clampInt(value: string | undefined, fallback: number, min: number, max:
   return Math.min(max, Math.max(min, parsed));
 }
 
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
 async function postJson(url: string, body: unknown, timeoutMs: number): Promise<unknown> {
   const res = await fetch(url, {
     method: 'POST',
@@ -128,11 +138,50 @@ async function postJson(url: string, body: unknown, timeoutMs: number): Promise<
 
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${text.slice(0, 500)}`);
+    throw new HttpError(res.status, `HTTP ${res.status}: ${text.slice(0, 500)}`);
   }
 
   if (!text.trim()) return {};
   return JSON.parse(text) as unknown;
+}
+
+function supportsLlamaCompletionFallback(error: unknown): boolean {
+  // Do not make a second expensive vision request after a timeout, transport
+  // failure, or busy/error response. /completion is only a compatibility
+  // fallback for servers that do not expose the OpenAI chat route.
+  return error instanceof HttpError && [404, 405, 501].includes(error.status);
+}
+
+function ffmpegJpegQuality(quality: number): string {
+  // ffmpeg's MJPEG quantizer is inverted: 2 is highest quality, 31 lowest.
+  return String(Math.round(2 + ((100 - quality) * 29) / 99));
+}
+
+function convertWithSips(input: string, output: string, edge: number, quality: number): void {
+  execFileSync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', String(quality), '-Z', String(edge), input, '--out', output], {
+    timeout: 15_000,
+    stdio: 'ignore',
+  });
+}
+
+function convertWithFfmpeg(input: string, output: string, edge: number, quality: number): void {
+  // -2 preserves aspect ratio and guarantees even output dimensions, which
+  // avoids encoder failures for screenshots with odd pixel dimensions.
+  const scale = `scale='if(gte(iw,ih),${edge},-2)':'if(gte(ih,iw),${edge},-2)'`;
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', input, '-vf', scale, '-frames:v', '1', '-q:v', ffmpegJpegQuality(quality), output], {
+    timeout: 15_000,
+    stdio: 'ignore',
+  });
+}
+
+function convertToJpeg(input: string, output: string, edge: number, quality: number): void {
+  try {
+    convertWithSips(input, output, edge, quality);
+  } catch {
+    // sips is only available on macOS. ffmpeg is widely available on Linux,
+    // Windows, and macOS, so use it whenever sips is absent or rejects input.
+    convertWithFfmpeg(input, output, edge, quality);
+  }
 }
 
 export function getDefaultLocalVlmEndpoint(): string {
@@ -162,19 +211,16 @@ export function shouldForceLocalVlm(): boolean {
 /**
  * Prepare a base64-encoded image for llama.cpp VLM APIs.
  *
- * browser_screenshot already captures bandwidth-conscious images. Preserve those
- * payloads as-is to avoid losing OCR/UI detail. If a payload is too large, create
- * progressively smaller JPEG candidates until one fits the configured byte budget.
+ * Always normalize screenshots to the configured JPEG dimensions/quality before
+ * they reach a local VLM. This caps visual-token work even when a source image
+ * happens to compress below the byte budget. Then progressively shrink further
+ * when needed to fit that budget.
  */
 export function prepareVlmImage(base64: string, inputFormat: 'png' | 'jpeg'): { base64: string; format: 'jpeg' | 'png' } {
   const maxLongEdge = clampInt(env('OPENZEROCODE_VLM_IMAGE_MAX_LONG_EDGE'), DEFAULT_MAX_LONG_EDGE, 64, 4096);
   const minLongEdge = clampInt(env('OPENZEROCODE_VLM_IMAGE_MIN_LONG_EDGE'), DEFAULT_MIN_LONG_EDGE, 64, maxLongEdge);
   const jpegQuality = clampInt(env('OPENZEROCODE_VLM_IMAGE_QUALITY'), DEFAULT_JPEG_QUALITY, 1, 100);
   const maxBase64Length = clampInt(env('OPENZEROCODE_VLM_MAX_BASE64_LENGTH'), DEFAULT_MAX_BASE64_LENGTH, 16_000, 5_000_000);
-
-  if (base64.length <= maxBase64Length) {
-    return { base64, format: inputFormat };
-  }
 
   const stamp = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const tmpIn = join(tmpdir(), `vlm-resize-in-${stamp}`);
@@ -191,14 +237,14 @@ export function prepareVlmImage(base64: string, inputFormat: 'png' | 'jpeg'): { 
     ]))
       .filter((edge) => edge >= minLongEdge && edge <= maxLongEdge)
       .sort((a, b) => b - a);
-    const qualityCandidates = Array.from(new Set([jpegQuality, 60, 45, 30, 20]))
+    const qualityCandidates = Array.from(new Set([jpegQuality, 50, 40, 30, 20]))
       .map((quality) => Math.min(jpegQuality, quality))
       .filter((quality) => quality >= 1 && quality <= 100);
 
     let best: { base64: string; format: 'jpeg' } | undefined;
     for (const edge of edgeCandidates) {
       for (const quality of qualityCandidates) {
-        execFileSync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', String(quality), '-Z', String(edge), tmpIn, '--out', tmpOut], { timeout: 15_000, stdio: 'ignore' });
+        convertToJpeg(tmpIn, tmpOut, edge, quality);
         const converted = readFileSync(tmpOut).toString('base64');
         if (!best || converted.length < best.base64.length) {
           best = { base64: converted, format: 'jpeg' };
@@ -256,6 +302,11 @@ export async function analyzeImageWithLocalVlm(request: LocalVlmRequest): Promis
     openAiError = new Error('OpenAI-compatible response did not contain text content');
   } catch (error) {
     openAiError = error;
+  }
+
+  if (!supportsLlamaCompletionFallback(openAiError)) {
+    const message = openAiError instanceof Error ? openAiError.message : String(openAiError);
+    throw new Error(`Local VLM analysis failed through the OpenAI-compatible API: ${message}`);
   }
 
   const llamaBody = {
