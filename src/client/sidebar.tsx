@@ -6,7 +6,7 @@ import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
 import { isEnabled, isConnected, getConfiguredSessionId } from "../browser/geass-client"
 import { readGitSnapshot, type GitCommit, type GitFile } from "./git-snapshot"
-import { displayPath } from "./path-utils"
+import { truncateDisplayPath } from "./path-utils"
 import stringWidth from "string-width"
 
 function truncateStart(text: string, maxWidth: number): string {
@@ -514,10 +514,17 @@ export function Sidebar(props: {
       {/* Fixed bottom: Directory + Version */}
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
         <Show when={props.cwd}>
-          <box flexDirection="column" onMouseDown={() => props.onDirectoryClick?.(props.cwd!)}>
+          <box flexDirection="column">
             <text style={{ fg: props.theme.accent }}>Directory</text>
-            <text style={{ fg: props.theme.muted }} wrapMode="none">
-              {truncateStart(displayPath(props.cwd ?? ""), Math.max(1, props.width - 4))}
+            <text
+              style={{ fg: props.theme.muted }}
+              wrapMode="none"
+              onMouseUp={() => {
+                const directory = props.cwd
+                if (directory) setTimeout(() => props.onDirectoryClick?.(directory), 0)
+              }}
+            >
+              {truncateDisplayPath(props.cwd ?? "", Math.max(1, props.width - 4))}
             </text>
           </box>
         </Show>
