@@ -68,6 +68,26 @@ OpenZeroCode 是一個本機優先、由 TUI 驅動的 AI 程式開發助手，�
 
 原始碼開發需要 **bun** >= 1.2，以及 `PATH` 中可用的 **npm**。
 
+#### Linux 剪貼簿支援
+
+OpenZeroCode 在 Linux 上會透過系統剪貼簿工具進行複製與貼上。請依桌面工作階段安裝對應套件：
+
+- **Wayland**（包含使用 Wayland 工作階段的 Kubuntu）：`wl-clipboard`
+- **X11/Xorg**：`xclip` 或 `xsel`
+
+Debian、Ubuntu 或 Kubuntu 可使用：
+
+```bash
+# Wayland
+sudo apt install wl-clipboard
+
+# X11/Xorg（擇一安裝）
+sudo apt install xclip
+# 或：sudo apt install xsel
+```
+
+OpenZeroCode 會依目前的工作階段，按適當順序嘗試 Wayland 與 X11 工具。WSL 則會在可用時透過 `clip.exe` 與 PowerShell 使用 Windows 剪貼簿。
+
 ### 安裝腳本
 
 Release installer 參考 opencode 的使用者層級安裝方式：預設把二進位檔安裝到 `~/.openzerocode/bin`，並在需要時更新你的 shell 設定，把該目錄加入 `PATH`。
@@ -119,12 +139,36 @@ npm run dev
 
 ### 更新
 
+OpenZeroCode 目前不會自行更新，也不會在背景下載更新。使用者必須依照原本的安裝方式手動更新。
+
+**安裝腳本：**重新執行安裝程式，以最新的 GitHub Release 取代已安裝的二進位檔：
+
+```bash
+curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash
+```
+
+如果安裝時有設定 `OPENZEROCODE_INSTALL_DIR`，更新時請指定相同的目錄。
+
+**npm：**全域安裝最新發布版本：
+
+```bash
+npm install -g openzerocode@latest
+```
+
+**原始碼 checkout：**拉取最新原始碼，並重新建置本機開發安裝：
+
 ```bash
 git pull
 python3 scripts/dev-install.py
 ```
 
 這會更新依賴、重新建置二進位檔，並從你的本機 checkout 重新安裝全域 `openzerocode` 命令。
+
+更新後可使用以下命令確認已安裝的版本：
+
+```bash
+openzerocode --version
+```
 
 ### npm 打包流程
 
