@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { formatProviderError, isCompactionRetryableError, isRateLimitError, delay } from "./errors"
+import { formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError, delay } from "./errors"
 
 describe("formatProviderError", () => {
   it("formats rate limit errors (429)", () => {
@@ -86,6 +86,20 @@ describe("isRateLimitError", () => {
 
   it("returns false for non-Error input without rate-limit keywords", () => {
     assert.ok(!isRateLimitError("random error"))
+  })
+})
+
+describe("isTransientProviderError", () => {
+  it("detects connection, timeout, and temporary gateway failures", () => {
+    assert.ok(isTransientProviderError(new Error("fetch failed: ECONNRESET")))
+    assert.ok(isTransientProviderError(new Error("provider stream ended before completion")))
+    assert.ok(isTransientProviderError(new Error("504 Gateway Timeout")))
+  })
+
+  it("does not retry authentication, billing, or unrelated failures", () => {
+    assert.ok(!isTransientProviderError(new Error("401 Invalid API key")))
+    assert.ok(!isTransientProviderError(new Error("429 Rate limit exceeded")))
+    assert.ok(!isTransientProviderError(new Error("malformed tool arguments")))
   })
 })
 

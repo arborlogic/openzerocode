@@ -7,13 +7,30 @@ import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectPlanModeTools } from "../tool/selection"
-import { delay, formatProviderError, isRateLimitError } from "./errors"
+import { delay, formatProviderError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build" | "plan" | "compose"
+
+const PROVIDER_RETRY_LIMIT = 3
+const PROVIDER_RETRY_BASE_MS = 1000
+const PROVIDER_RETRY_MAX_MS = 8000
+
+function providerRetryDelay(retryNumber: number): number {
+  const exponential = Math.min(PROVIDER_RETRY_BASE_MS * (2 ** Math.max(0, retryNumber - 1)), PROVIDER_RETRY_MAX_MS)
+  // ±20% jitter prevents several sessions from reconnecting in lockstep.
+  return Math.round(exponential * (0.8 + Math.random() * 0.4))
+}
+
+function debugProviderRetry(message: string, error?: unknown): void {
+  const enabled = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_DEBUG ?? "").toLowerCase())
+  if (!enabled) return
+  const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error ?? "")
+  console.error(`[openzerocode:provider-retry] ${message}${detail ? ` (${detail})` : ""}`)
+}
 
 type SessionUi = {
   abort: AbortSignal
@@ -48,6 +65,22 @@ type SessionRuntime = {
 
 function estimateMessagesTokens(messages: Message[]): number {
   return estimateMessageRequestTokens(messages)
+}
+
+function longestContinuationOverlap(previous: string, continuation: string): number {
+  const max = Math.min(previous.length, continuation.length)
+  for (let length = max; length > 0; length--) {
+    if (previous.endsWith(continuation.slice(0, length))) return length
+  }
+  return 0
+}
+
+function couldStillBeContinuationOverlap(previous: string, continuation: string): boolean {
+  if (!continuation) return true
+  for (let length = previous.length; length >= continuation.length; length--) {
+    if (previous.slice(previous.length - length).startsWith(continuation)) return true
+  }
+  return false
 }
 
 function trimHistoryForInitialRequest(
@@ -218,7 +251,6 @@ export async function* streamSession(
   runtime: SessionRuntime,
 ): AsyncGenerator<StreamChunk, Message[], void> {
   const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
-  const retrySchedule = [2000, 5000, 10000]
   // Max model round-trips per run. Each tool-using turn costs one step, so a
   // complex task (many edits/bash calls) can hit this. Configurable via env so
   // long tasks can raise it without a rebuild; default stays conservative to
@@ -232,6 +264,18 @@ export async function* streamSession(
     role: "system",
     content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
   }
+  const CONTINUE_AFTER_INTERRUPTION: Message = {
+    role: "user",
+    content: "The provider stream was interrupted. Continue from exactly where the previous assistant message stopped. Do not repeat completed text or tool calls, do not restart, and finish the original task.",
+  }
+  const providerName = options.provider.toLowerCase()
+  const isRecoverableProviderSession = providerName.includes("zero-api")
+    || providerName.includes("codex")
+    || options.model.toLowerCase().includes("codex")
+  let interruptionRecoveries = 0
+  let crossedToolBoundary = false
+  let continuationOverlapReference: string | undefined
+  let accumulatedVisibleText = ""
   const workdir = options.workdir ?? process.cwd()
   // Only pass reasoning_effort to models that support it (e.g. DeepSeek V4 Pro).
   // Sending it to non-reasoning models can cause API errors (OpenAI) or is silently ignored.
@@ -282,7 +326,7 @@ export async function* streamSession(
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
 
-    for (let attempt = 0; attempt <= retrySchedule.length; attempt++) {
+    for (let attempt = 0; attempt <= PROVIDER_RETRY_LIMIT; attempt++) {
       const requestMessages = step === 0
         ? allMessages
         : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), contextLimit)
@@ -306,10 +350,20 @@ export async function* streamSession(
         return undefined
       })
       if (stream) break
-      if (!retry429 || !isRateLimitError(lastError) || attempt >= retrySchedule.length) break
-      const wait = retrySchedule[attempt]
-      yield { type: "status", text: `rate limited, retry in ${Math.round(wait / 1000)}s...` }
-      yield { type: "notice", kind: "system", text: `rate limited, retrying in ${Math.round(wait / 1000)}s` }
+      const retryRateLimit = retry429 && isRateLimitError(lastError)
+      const retryTransient = isRecoverableProviderSession && isTransientProviderError(lastError)
+      if (crossedToolBoundary || (!retryRateLimit && !retryTransient) || attempt >= PROVIDER_RETRY_LIMIT) {
+        if (crossedToolBoundary && (retryRateLimit || retryTransient)) {
+          debugProviderRetry("not replaying request after tool/side-effect boundary", lastError)
+        }
+        break
+      }
+      const retryNumber = attempt + 1
+      const wait = providerRetryDelay(retryNumber)
+      const reason = retryRateLimit ? "rate limited" : "provider connection interrupted"
+      debugProviderRetry(`request failed before output; retry ${retryNumber}/${PROVIDER_RETRY_LIMIT} in ${wait}ms`, lastError)
+      yield { type: "status", text: `${reason}, retry in ${Math.round(wait / 1000)}s...` }
+      yield { type: "notice", kind: "system", text: `${reason}, retrying (${retryNumber}/${PROVIDER_RETRY_LIMIT}) in ${Math.round(wait / 1000)}s` }
       await delay(wait)
     }
 
@@ -324,6 +378,7 @@ export async function* streamSession(
     }
 
     let content = ""
+    let pendingContinuationText = ""
     let reasoning = ""
     let hasReasoning = false
     let finishReason: string | null | undefined
@@ -331,6 +386,7 @@ export async function* streamSession(
     let lastUsageOutput = 0
     let lastUsageCachedInput = 0
     const acc = new Map<number, AccToolCall>()
+    let streamError: unknown
     const reader = stream.getReader()
     // If the user aborts while we're blocked inside reader.read() waiting for
     // the next chunk, the check at the top of the loop wouldn't fire — wire
@@ -352,7 +408,8 @@ export async function* streamSession(
         // mid-stream failure must be surfaced; treating it as a normal EOF can
         // silently stop an agent turn after a tool result with no final answer.
         if (options.abort.aborted) break
-        throw error
+        streamError = error
+        break
       }
       if (done) break
       if (value.finish_reason) finishReason = value.finish_reason
@@ -362,9 +419,24 @@ export async function* streamSession(
         lastUsageCachedInput = value.usage.cached_tokens ?? 0
       }
       if (value.delta.content) {
-        content += value.delta.content
-        yield { type: "text", content: value.delta.content }
-        yield { type: "status", text: "generating..." }
+        let visibleDelta = value.delta.content as string
+        if (continuationOverlapReference !== undefined) {
+          pendingContinuationText += visibleDelta
+          if (couldStillBeContinuationOverlap(continuationOverlapReference, pendingContinuationText)) {
+            visibleDelta = ""
+          } else {
+            const overlap = longestContinuationOverlap(continuationOverlapReference, pendingContinuationText)
+            visibleDelta = pendingContinuationText.slice(overlap)
+            pendingContinuationText = ""
+            continuationOverlapReference = undefined
+          }
+        }
+        if (visibleDelta) {
+          content += visibleDelta
+          accumulatedVisibleText += visibleDelta
+          yield { type: "text", content: visibleDelta }
+          yield { type: "status", text: "generating..." }
+        }
       }
       if (value.delta.reasoning_content !== undefined) {
         hasReasoning = true
@@ -375,6 +447,9 @@ export async function* streamSession(
         }
       }
       for (const tc of value.tool_calls ?? []) {
+        // From the first tool-call delta onward, replaying or continuing this
+        // user turn could cause the model to issue a side effect twice.
+        crossedToolBoundary = true
         const next = acc.get(tc.index ?? 0) ?? { name: "", arguments: "" }
         if (tc.id) next.id = tc.id
         if (tc.function?.name) next.name = tc.function.name
@@ -399,12 +474,67 @@ export async function* streamSession(
       try { reader.releaseLock() } catch {}
     }
 
+    if (!streamError && pendingContinuationText && continuationOverlapReference !== undefined) {
+      const overlap = longestContinuationOverlap(continuationOverlapReference, pendingContinuationText)
+      const visibleDelta = pendingContinuationText.slice(overlap)
+      continuationOverlapReference = undefined
+      pendingContinuationText = ""
+      if (visibleDelta) {
+        content += visibleDelta
+        accumulatedVisibleText += visibleDelta
+        yield { type: "text", content: visibleDelta }
+        yield { type: "status", text: "generating..." }
+      }
+    }
+
     if (!options.abort.aborted && (lastUsageInput > 0 || lastUsageOutput > 0)) {
       yield { type: "usage", inputTokens: lastUsageInput, outputTokens: lastUsageOutput, cachedInputTokens: lastUsageCachedInput }
     }
 
     if (options.abort.aborted) {
       return resultHistory
+    }
+
+    // Codex/Responses streams can occasionally end without a terminal event.
+    // Treat that as an interruption rather than accepting a truncated answer.
+    if (!streamError && isRecoverableProviderSession && finishReason == null) {
+      streamError = new Error("provider stream ended before completion")
+    }
+
+    if (streamError) {
+      const canRecover = isRecoverableProviderSession
+        && isTransientProviderError(streamError)
+        && !crossedToolBoundary
+        && interruptionRecoveries < PROVIDER_RETRY_LIMIT
+        // Hidden reasoning without visible text is neither transparent nor a
+        // safe textual continuation context, so surface that interruption.
+        && (content.length > 0 || !hasReasoning)
+      if (!canRecover) throw streamError
+
+      interruptionRecoveries++
+      const wait = providerRetryDelay(interruptionRecoveries)
+      debugProviderRetry(`stream interrupted; recovery ${interruptionRecoveries}/${PROVIDER_RETRY_LIMIT} in ${wait}ms`, streamError)
+      if (content) {
+        const partialMessage = createAssistantMessage({
+          content,
+          reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
+        })
+        resultHistory.push(partialMessage)
+        allMessages.push(partialMessage, CONTINUE_AFTER_INTERRUPTION)
+        // A bounded suffix is enough to remove a replayed opening without
+        // making overlap checks quadratic in the full response size.
+        continuationOverlapReference = accumulatedVisibleText.slice(-8192)
+        yield { type: "message", message: partialMessage }
+        yield { type: "notice", kind: "system", text: `provider stream interrupted; saved partial response and continuing (attempt ${interruptionRecoveries}/${PROVIDER_RETRY_LIMIT})` }
+      } else {
+        // Nothing reached the UI, so safely repeat the same logical step rather
+        // than consuming an agent step or adding a synthetic history message.
+        step--
+        yield { type: "notice", kind: "system", text: `provider stream interrupted before output; retrying (attempt ${interruptionRecoveries}/${PROVIDER_RETRY_LIMIT})` }
+      }
+      yield { type: "status", text: `reconnecting in ${Math.round(wait / 1000)}s...` }
+      await delay(wait)
+      continue
     }
 
     const toolCalls: ToolCall[] | undefined = acc.size > 0

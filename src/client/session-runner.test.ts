@@ -201,6 +201,203 @@ test("streamSession surfaces non-abort provider stream read errors", async () =>
   await assert.rejects(() => gen.next(), /upstream connection reset/)
 })
 
+test("streamSession retries a Codex stream interrupted before any output", async () => {
+  let requestCount = 0
+  const makeStream = () => new ReadableStream({
+    pull(controller) {
+      requestCount++
+      if (requestCount === 1) controller.error(new Error("upstream connection reset"))
+      else {
+        controller.enqueue({ delta: { content: "recovered" }, finish_reason: "stop" })
+        controller.close()
+      }
+    },
+  })
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "gpt-5.5-codex",
+    provider: "openai-codex",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream))
+
+  const chunks: any[] = []
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+    chunks.push(next.value)
+  }
+
+  assert.equal(requestCount, 2)
+  assert.equal(result.at(-1)?.content, "recovered")
+  assert.ok(chunks.some((chunk) => chunk.type === "notice" && /before output; retrying/.test(chunk.text)))
+})
+
+test("streamSession retries a transient zero-api fetch failure before a stream is returned", async () => {
+  let requestCount = 0
+  const makeStream = () => {
+    requestCount++
+    if (requestCount === 1) throw new TypeError("fetch failed: ECONNRESET")
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue({ delta: { content: "recovered" }, finish_reason: "stop" })
+        controller.close()
+      },
+    })
+  }
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "zero-api",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream))
+
+  const notices: string[] = []
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+    if (next.value.type === "notice") notices.push(next.value.text)
+  }
+
+  assert.equal(requestCount, 2)
+  assert.equal(result.at(-1)?.content, "recovered")
+  assert.ok(notices.some((text) => /retrying \(1\/3\)/.test(text)))
+})
+
+test("streamSession saves partial Codex text and continues after interruption", async () => {
+  let requestCount = 0
+  const requests: CompletionRequest[] = []
+  const makeStream = () => {
+    requestCount++
+    let pulls = 0
+    return new ReadableStream({
+      pull(controller) {
+        pulls++
+        if (requestCount === 1) {
+          if (pulls === 1) controller.enqueue({ delta: { content: "partial " } })
+          else controller.error(new Error("connection closed"))
+        } else if (pulls === 1) {
+          controller.enqueue({ delta: { content: "par" } })
+        } else {
+          controller.enqueue({ delta: { content: "tial answer" }, finish_reason: "stop" })
+          controller.close()
+        }
+      },
+    })
+  }
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "gpt-5.5-codex",
+    provider: "openai-codex",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { onRequest: (req) => requests.push(req) }))
+
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+  }
+
+  assert.equal(requestCount, 2)
+  assert.deepEqual(
+    result.filter((message) => message.role === "assistant").map((message) => message.content),
+    ["partial ", "answer"],
+  )
+  assert.ok(requests[1]?.messages.some((message) => message.role === "assistant" && message.content === "partial "))
+  assert.ok(requests[1]?.messages.some((message) => message.role === "user" && String(message.content).includes("provider stream was interrupted")))
+})
+
+test("streamSession does not retry an interrupted Codex tool call", async () => {
+  let requestCount = 0
+  const makeStream = () => {
+    requestCount++
+    let pulls = 0
+    return new ReadableStream({
+      pull(controller) {
+        pulls++
+        if (pulls === 1) {
+          controller.enqueue({
+            delta: {},
+            tool_calls: [{ index: 0, id: "call_1", function: { name: "write", arguments: "{\"filePath\":" } }],
+          })
+        } else {
+          controller.error(new Error("connection closed"))
+        }
+      },
+    })
+  }
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "gpt-5.5-codex",
+    provider: "openai-codex",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { tools: [testTool("write")] }))
+
+  await assert.rejects(async () => {
+    while (!(await gen.next()).done) {}
+  }, /connection closed/)
+  assert.equal(requestCount, 1)
+})
+
+test("streamSession does not replay after a completed tool side-effect boundary", async () => {
+  let requestCount = 0
+  const makeStream = () => {
+    requestCount++
+    if (requestCount === 1) {
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue({
+            delta: {},
+            tool_calls: [{ index: 0, id: "call_1", function: { name: "write", arguments: "{}" } }],
+            finish_reason: "tool_calls",
+          })
+          controller.close()
+        },
+      })
+    }
+    throw new TypeError("fetch failed: ECONNRESET")
+  }
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "zero-api",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { tools: [testTool("write")] }))
+
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+  }
+
+  assert.equal(requestCount, 2)
+  assert.equal(result.filter((message) => message.role === "tool").length, 1)
+  assert.match(String(result.at(-1)?.content), /Network error/)
+})
+
 test("runSession persists an assistant error message when provider stream reading fails", async () => {
   const stream = new ReadableStream({
     pull(controller) {
