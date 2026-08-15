@@ -448,6 +448,32 @@ test("runSession persists an assistant error message when provider returns an em
   assert.ok(statuses.includes("error"))
 })
 
+test("runSession reports an error when the provider returns reasoning without an answer", async () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { reasoning_content: "I should inspect the project first." } })
+      controller.enqueue({ delta: {}, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const messages: Message[] = []
+  const reasoning: string[] = []
+  const notices: string[] = []
+
+  const result = await runSession("hello", [], createUi({
+    addMessage: (message) => messages.push(message),
+    streamReasoningChunk: (content) => reasoning.push(content),
+    notify: (text, kind) => notices.push(`${kind}:${text}`),
+  }), runtime(stream))
+
+  assert.deepEqual(reasoning, ["I should inspect the project first."])
+  assert.equal(messages.at(-1)?.role, "assistant")
+  assert.match(String(messages.at(-1)?.content), /Provider returned reasoning without an assistant response/)
+  assert.equal(messages.at(-1)?.reasoning_content, "I should inspect the project first.")
+  assert.match(String(result.at(-1)?.content), /Provider returned reasoning without an assistant response/)
+  assert.deepEqual(notices, ["error:Provider returned reasoning without an assistant response"])
+})
+
 test("streamSession treats empty stop after tool results as clean completion", async () => {
   let requestCount = 0
   const makeStream = () => new ReadableStream({
@@ -734,6 +760,39 @@ test("streamSession exposes all tools in build mode", async () => {
     requests[0]?.tools?.map((tool) => tool.function.name),
     ["read", "grep", "glob", "write", "bash", "web_fetch"],
   )
+})
+
+test("streamSession sends only the Lite allowlist to local models", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "done" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("capture tools", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    harnessProfile: "lite",
+  }, runtime(stream, {
+    tools: [
+      testTool("read"),
+      testTool("bash"),
+      testTool("web_fetch"),
+      testTool("todowrite"),
+      testTool("call_peer"),
+      testTool("mcp_custom"),
+    ],
+    onRequest: (req) => requests.push(req),
+  }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.deepEqual(requests[0]?.tools?.map((tool) => tool.function.name), ["read", "bash"])
 })
 
 test("streamSession exposes only read-only inspection tools in plan mode", async () => {

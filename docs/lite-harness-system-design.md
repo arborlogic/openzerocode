@@ -160,16 +160,6 @@ const LITE_TOOL_IDS = new Set([
   "edit",
   "write",
   "bash",
-  "web_fetch",
-  "analyze_image",
-  "browser_navigate",
-  "browser_read",
-  "browser_click",
-  "browser_type",
-  "browser_select",
-  "browser_scroll",
-  "browser_screenshot",
-  "browser_observe_visual",
 ])
 ```
 
@@ -178,6 +168,8 @@ const LITE_TOOL_IDS = new Set([
 - `apply_patch`；
 - `todowrite`；
 - `call_peer`；
+- `web_fetch`、`analyze_image` 或 browser tools（4K local model 的預設
+  context 無法容納其 schema；需要較大 context 的 profile 才可另外納入）；
 - Compose skills；
 - MCP / dynamic tools；
 - 未來新增但未明列的工具。
@@ -422,6 +414,18 @@ src/harness/teacher-context.ts
 5. 驗證短 task 未觸發 compaction/卡關時不呼叫 teacher。
 
 **完成條件**：小型 edit task 可由 local worker 修改、驗證並正常回覆，且沒有新增 teacher review round。
+
+#### Prompt-harness spike（目前實作）
+
+在完整 profile、tool allowlist 與 teacher 流程完成前，可用下列環境變數讓 local worker 使用精簡 prompt 進行實驗：
+
+```text
+OPENZEROCODE_HARNESS_PROFILE=lite openzerocode
+```
+
+未設定或使用任何其他值時維持既有 `productive` prompt。此 spike 同時適用於 TUI、headless CLI 與 server entry point，因為它們共用 `buildSystemPrompt`。Lite prompt 僅含 worker loop、mode、環境資訊與最多 4,000 字元的 `AGENTS.md` instructions；不注入 Todo、peer、Compose、vision/GEASS、`CONTEXT.md` 或完整產品流程。Compose + Lite 會明確拒絕，避免靜默使用過大的 Compose prompt。
+
+> 注意：這只是 prompt harness，尚未實作設計文件要求的 exact tool allowlist、teacher config 驗證、teacher compaction 或 recovery。因此這一階段僅適合評估短 prompt 對 local model 的影響，不代表完整 Lite MVP 的安全與 teacher contract。
 
 ### Slice 2 — Teacher compaction + advice
 

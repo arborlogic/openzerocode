@@ -32,7 +32,7 @@ import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction 
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { hasXaiAuth, startXaiDeviceAuthorization, deleteXaiAuth } from "../provider/xai-auth"
-import { buildSystemPrompt } from "./system-prompt"
+import { buildSystemPrompt, shouldAppendSkillInstructions } from "./system-prompt"
 import { addDefaultParsers } from "@opentui/core"
 import parsers from "../../parsers-config"
 
@@ -2735,8 +2735,12 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         runSync,
         systemPrompt: (runMode: RunMode) => {
           const base = systemPrompt(runMode)
-          const routingSection = buildSkillRoutingSection(skillActivation(), skillDirs)
-          const skillSections = [routingSection, reviewSkill ? buildExplicitSkillSection(reviewSkill) : undefined].filter(Boolean).join("\n\n")
+          const skillSections = shouldAppendSkillInstructions()
+            ? [
+                buildSkillRoutingSection(skillActivation(), skillDirs),
+                reviewSkill ? buildExplicitSkillSection(reviewSkill) : undefined,
+              ].filter(Boolean).join("\n\n")
+            : ""
           const withSkills = skillSections ? `${base}\n\n${skillSections}` : base
           return peerOrigin ? withSkills + peerRequestSystemPrompt(peerOrigin, oneWay) : withSkills
         },

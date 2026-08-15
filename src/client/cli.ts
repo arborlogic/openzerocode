@@ -7,7 +7,7 @@ import { streamSession, type RunMode, type StreamOptions } from "./session-runne
 import { tryParseJSON } from "./format-utils"
 import { loadAgentsInstruction, loadContextInstruction } from "./workspace-memory"
 import { getActiveConfiguredProviderKeyName } from "../provider/config"
-import { buildSystemPrompt } from "./system-prompt"
+import { buildSystemPrompt, shouldAppendSkillInstructions } from "./system-prompt"
 import { testConnection, isConnected, setEnabled, readPage } from "../browser/geass-client"
 import { resolveSkillDirs, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
 import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
@@ -102,7 +102,7 @@ async function handleHeadlessRun(args: string[]): Promise<void> {
       }
     }
   }
-  const skillSection = activeSkill ? buildSkillSection(activeSkill) : undefined
+  const skillSection = shouldAppendSkillInstructions() && activeSkill ? buildSkillSection(activeSkill) : undefined
 
   const runSync = <E, A>(effect: Effect.Effect<A, E, ToolRegistry | Provider>): Promise<A> =>
     Effect.runPromise(effect.pipe(Effect.provide(layer))) as Promise<A>

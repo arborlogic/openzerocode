@@ -6,7 +6,8 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
-import { selectEnabledTools, selectPlanModeTools } from "../tool/selection"
+import { selectEnabledTools, selectLiteTools, selectPlanModeTools } from "../tool/selection"
+import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
@@ -234,6 +235,8 @@ export type StreamOptions = {
   disabledToolGroups?: string[]
   /** Inject a short request-time summary of recent history. Defaults to true. */
   recentContextAnchor?: boolean
+  /** Capability profile for this request. Defaults to OPENZEROCODE_HARNESS_PROFILE. */
+  harnessProfile?: HarnessProfile
 }
 
 /**
@@ -313,9 +316,13 @@ export async function* streamSession(
     const r = yield* ToolRegistry
     return yield* r.all()
   }))
-  // Hide user-disabled tool groups (e.g. the GEASS browser tools) from the model
-  // so it never tries them; core tools have no group and always pass.
-  const enabledTools = selectEnabledTools(allTools, options.disabledToolGroups ?? [])
+  // Keep the filtering order stable: profile allowlist → user group settings →
+  // run mode. In particular, Lite must not serialize future registry/MCP tool
+  // schemas into a small local model's already constrained context window.
+  const profileTools = (options.harnessProfile ?? getHarnessProfile()) === "lite"
+    ? selectLiteTools(allTools)
+    : allTools
+  const enabledTools = selectEnabledTools(profileTools, options.disabledToolGroups ?? [])
   const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
   const toolDefs = convertToolsToDefs(tools)
 
@@ -545,6 +552,22 @@ export async function* streamSession(
         }))
       : undefined
 
+    // Reasoning is intermediate work, not a complete answer. A provider can
+    // terminate after emitting it without any visible content or tool call;
+    // surface that invalid completion rather than silently ending the turn.
+    if (!content && hasReasoning && !toolCalls) {
+      const errorText = "Provider returned reasoning without an assistant response"
+      yield { type: "notice", kind: "error", text: errorText }
+      const errorMsg = createAssistantMessage({
+        content: `Error: ${errorText}`,
+        reasoning_content: reasoning || undefined,
+      })
+      resultHistory.push(errorMsg)
+      yield { type: "message", message: errorMsg }
+      yield { type: "error", message: errorText }
+      return resultHistory
+    }
+
     if (!content && !hasReasoning && !toolCalls) {
       const hadProgressThisTurn = resultHistory.length > turnProgressStart
       if (hadProgressThisTurn && finishReason !== "length") {
@@ -741,6 +764,7 @@ export async function runSession(
     origin: ui.origin,
     disabledToolGroups: ui.disabledToolGroups,
     recentContextAnchor: recentContextAnchorEnabled(),
+    harnessProfile: getHarnessProfile(),
   }, runtime)
   const resultHistory: Message[] = [...history]
 

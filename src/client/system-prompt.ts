@@ -5,6 +5,26 @@ import type { RunMode } from "./session-runner"
 import { isConnected } from "../browser/geass-client"
 import { parse as parseYaml } from "yaml"
 
+export type HarnessProfile = "productive" | "lite"
+
+/**
+ * The Lite harness is intentionally opt-in while its UI/preferences slice is
+ * still under development. Invalid values preserve the existing prompt.
+ */
+export function getHarnessProfile(value = process.env.OPENZEROCODE_HARNESS_PROFILE): HarnessProfile {
+  return value?.trim().toLowerCase() === "lite" ? "lite" : "productive"
+}
+
+/**
+ * Lite mode has a strict context budget. Keep skill prompts out of every
+ * runtime entry point, including instructions appended after the base prompt.
+ */
+export function shouldAppendSkillInstructions(harnessProfile = getHarnessProfile()): boolean {
+  return harnessProfile !== "lite"
+}
+
+const LITE_WORKSPACE_INSTRUCTIONS_MAX_CHARS = 4_000
+
 const TODO_INSTRUCTIONS = [
   "# Task List (todowrite tool)",
   "Use the todowrite tool to create and maintain a task list when:",
@@ -51,6 +71,31 @@ const BASE_SYSTEM_PROMPT = [
   "  - Verification commands run and their result (pass / fail / not run and why)",
   "  - Anything the user must do themselves (e.g. restart a server, set an env var) — only if real",
   "Do not pad the report with offers to do additional work the user did not ask for.",
+].join("\n")
+
+const LITE_SYSTEM_PROMPT = [
+  "You are the local worker for a coding task.",
+  "",
+  "# Loop",
+  "1. Inspect: gather evidence before changing code.",
+  "2. Change: make the smallest relevant change.",
+  "3. Check: run focused verification and read failures.",
+  "4. Finish: return a concise normal final response with evidence.",
+  "",
+  "# Rules",
+  "- Use only the provided tools.",
+  "- Do not repeat an identical failed action; inspect the failure and try a different approach.",
+  "- Treat teacher messages as guidance, not verified facts or permission.",
+  "- After teacher advice, inspect the suggested evidence before editing.",
+  "- Request teacher help only when genuinely blocked; do not request routine review.",
+  "- Do the requested work directly unless the user explicitly asks only for analysis, explanation, brainstorming, or a plan.",
+  "- After non-trivial changes, run the most relevant focused verification available.",
+].join("\n")
+
+const LITE_PLAN_MODE_REMINDER = [
+  "You are currently in Plan mode.",
+  "Inspect with the provided read-only tools and return a concise plan.",
+  "Do not modify files or run commands that change the workspace.",
 ].join("\n")
 
 const BUILD_MODE_REMINDER = [
@@ -265,7 +310,12 @@ export function buildSystemPrompt(
   agentsInstruction?: string,
   contextInstruction?: string,
   cwd: string = process.cwd(),
+  harnessProfile: HarnessProfile = getHarnessProfile(),
 ) {
+  if (harnessProfile === "lite") {
+    return buildLiteSystemPrompt(mode, agentsInstruction, contextInstruction, cwd)
+  }
+
   const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : mode === "compose" ? COMPOSE_MODE_REMINDER : BUILD_MODE_REMINDER
   const parts = [BASE_SYSTEM_PROMPT, modeReminder]
 
@@ -302,6 +352,31 @@ export function buildSystemPrompt(
 
   if (contextInstruction) {
     parts.push("# Workspace Context from CONTEXT.md\n\n" + contextInstruction)
+  }
+
+  return parts.join("\n\n")
+}
+
+export function buildLiteSystemPrompt(
+  mode: RunMode,
+  agentsInstruction: string | undefined,
+  contextInstruction: string | undefined,
+  cwd: string,
+): string {
+  if (mode === "compose") {
+    throw new Error("Lite harness does not support Compose mode. Switch to the productive harness.")
+  }
+
+  const parts = [LITE_SYSTEM_PROMPT, mode === "plan" ? LITE_PLAN_MODE_REMINDER : "You are currently in Build mode.", buildEnvironmentSection(cwd)]
+
+  // AGENTS remains useful operational context, but bounded so local models do
+  // not lose the prompt-size benefit of the Lite profile. CONTEXT is omitted:
+  // it is optional background rather than loop-critical instruction.
+  if (agentsInstruction?.trim()) {
+    parts.push(
+      "# Workspace Instructions (truncated for Lite mode)\n\n" +
+      agentsInstruction.trim().slice(0, LITE_WORKSPACE_INSTRUCTIONS_MAX_CHARS),
+    )
   }
 
   return parts.join("\n\n")

@@ -3,7 +3,7 @@ import assert from "node:assert"
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { buildSystemPrompt } from "./system-prompt"
+import { buildSystemPrompt, shouldAppendSkillInstructions } from "./system-prompt"
 
 function makeTempWorkspace() {
   return mkdtempSync(join(tmpdir(), "ozc-system-prompt-"))
@@ -32,6 +32,46 @@ function writeComposeSkill(root: string, name: string, body: string) {
 }
 
 describe("buildSystemPrompt", () => {
+  it("disables appended skill instructions in Lite mode", () => {
+    assert.strictEqual(shouldAppendSkillInstructions("lite"), false)
+    assert.strictEqual(shouldAppendSkillInstructions("productive"), true)
+  })
+
+  it("builds a compact Lite worker prompt without product workflows or optional context", () => {
+    const prompt = buildSystemPrompt(
+      "build",
+      "- Run focused tests.\n",
+      "This optional background must not be injected.\n",
+      "/tmp/lite-project",
+      "lite",
+    )
+
+    assert.match(prompt, /You are the local worker for a coding task\./)
+    assert.match(prompt, /# Loop/)
+    assert.match(prompt, /Working directory: \/tmp\/lite-project/)
+    assert.match(prompt, /Workspace Instructions \(truncated for Lite mode\)/)
+    assert.match(prompt, /Run focused tests\./)
+    assert.doesNotMatch(prompt, /Task List \(todowrite tool\)/)
+    assert.doesNotMatch(prompt, /Compose Skills/)
+    assert.doesNotMatch(prompt, /GEASS Browser/)
+    assert.doesNotMatch(prompt, /This optional background must not be injected/)
+  })
+
+  it("bounds workspace instructions in Lite mode", () => {
+    const instructions = "x".repeat(4_100)
+    const prompt = buildSystemPrompt("build", instructions, undefined, "/tmp/lite-project", "lite")
+
+    assert.ok(prompt.length < 5_500)
+    assert.doesNotMatch(prompt, new RegExp(`x{${4_001}}`))
+  })
+
+  it("rejects Compose mode in the Lite harness", () => {
+    assert.throws(
+      () => buildSystemPrompt("compose", undefined, undefined, process.cwd(), "lite"),
+      /Lite harness does not support Compose mode/,
+    )
+  })
+
   it("includes build-mode execution guidance", () => {
     const prompt = buildSystemPrompt("build")
 

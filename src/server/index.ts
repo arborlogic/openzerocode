@@ -4,7 +4,7 @@ import { Provider } from "../provider/types"
 import { ToolRegistry, layer as toolLayer } from "../tool/registry"
 import { streamSession, type RunMode } from "../client/session-runner"
 import { createSession, loadSessionState, saveSession, deleteSession, listSessions, markSessionActive, unmarkSessionActive } from "../client/sessions"
-import { buildSystemPrompt } from "../client/system-prompt"
+import { buildSystemPrompt, shouldAppendSkillInstructions } from "../client/system-prompt"
 import { loadAgentsInstruction, loadContextInstruction } from "../client/workspace-memory"
 import { buildSkillRoutingSection, normalizeSkillActivation } from "../client/skill-routing"
 import { resolveSkillDirs } from "../client/skill-loader"
@@ -209,7 +209,9 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
   const agentsInstruction = loadAgentsInstruction(workdir)
   const contextInstruction = loadContextInstruction(workdir)
   const skillActivation = normalizeSkillActivation(state?.skillActivation)
-  const skillRoutingSection = buildSkillRoutingSection(skillActivation, resolveSkillDirs(workdir))
+  const skillRoutingSection = shouldAppendSkillInstructions()
+    ? buildSkillRoutingSection(skillActivation, resolveSkillDirs(workdir))
+    : undefined
 
   const abortController = new AbortController()
   req.signal.addEventListener("abort", () => abortController.abort(), { once: true })
