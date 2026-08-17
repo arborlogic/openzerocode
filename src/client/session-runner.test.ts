@@ -192,6 +192,35 @@ test("streamSession can disable recent context anchors per request", async () =>
   assert.equal(requests[0]!.messages.some((message) => String(message.content ?? "").includes("[Recent Context Anchor]")), false)
 })
 
+test("streamSession uses provider context metadata ahead of the static model catalogue", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const history: Message[] = [
+    { role: "user", content: "old marker " + "x".repeat(36_000) },
+    { role: "assistant", content: "old answer " + "y".repeat(36_000) },
+  ]
+
+  const gen = streamSession("new request", history, {
+    abort: new AbortController().signal,
+    model: "gpt-5.5",
+    modelInfo: { id: "gpt-5.5", contextLimit: 10_000 },
+    provider: "zero-api",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.equal(requests[0]?.messages.some((message) =>
+    message.role !== "system" && String(message.content ?? "").includes("old marker")
+  ), false)
+})
+
 test("streamSession forwards reasoning effort for Codex GPT-5.5 and GPT-5.6", async () => {
   for (const model of ["openaicodex/gpt-5.5", "openaicodex/gpt-5.6-terra"]) {
     const requests: CompletionRequest[] = []

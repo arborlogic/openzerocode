@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { getKnownModelConfig, getModelConfig, estimateTokens, estimateMessageTokens, estimateMessageRequestTokens, estimateCost, modelSupportsVision, IMAGE_REQUEST_TOKEN_ALLOWANCE } from "./models"
+import { getEffectiveContextLimit, getKnownModelConfig, getModelConfig, estimateTokens, estimateMessageTokens, estimateMessageRequestTokens, estimateCost, modelSupportsVision, IMAGE_REQUEST_TOKEN_ALLOWANCE } from "./models"
 import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
@@ -142,6 +142,17 @@ describe("getModelConfig", () => {
     assert.equal(cfg.contextLimit, 400_000)
     assert.equal(cfg.pricing?.input, 0)
     assert.equal(cfg.pricing?.output, 0)
+  })
+})
+
+describe("getEffectiveContextLimit", () => {
+  it("prefers a valid provider context limit for known models", () => {
+    assert.equal(getEffectiveContextLimit("gpt-4o", { id: "gpt-4o", contextLimit: 256_000 }), 256_000)
+  })
+
+  it("falls back to the catalogue when provider metadata is invalid", () => {
+    assert.equal(getEffectiveContextLimit("gpt-4o", { id: "gpt-4o", contextLimit: 0 }), 128_000)
+    assert.equal(getEffectiveContextLimit("gpt-4o", { id: "gpt-4o", contextLimit: Number.NaN }), 128_000)
   })
 })
 

@@ -23,7 +23,7 @@ import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSumma
 import { buildSkillRoutingSection, normalizeSkillActivation, type SkillActivation } from "./skill-routing"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { estimateMessageTokens, getModelConfig } from "../provider/models"
+import { estimateMessageTokens, getEffectiveContextLimit, getModelConfig } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildPrioritizedCompactionTranscript, compactionRetryTokenBudget, compactionTranscriptTokenBudget, COMPACTION_SUMMARY_TOKEN_BUDGET, cumulativeCompactionSourceCount, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
@@ -715,6 +715,10 @@ function App() {
   })
 
   const reasoningEffortLabel = createMemo(() => reasoningEffort() ?? "default")
+
+  // Provider metadata from /models describes the context actually available
+  // at its gateway, which can be lower than our upstream-model catalogue.
+  const currentContextLimit = () => getEffectiveContextLimit(currentModel, currentModelInfo)
 
   const modelStatusLabel = createMemo(() => {
     const model = modelLabel()
@@ -2510,7 +2514,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     const currentMessages = messages()
-    const contextLimit = getModelConfig(currentModel, currentModelInfo).contextLimit
+    const contextLimit = currentContextLimit()
     const { head, tail } = selectCompactionTail(currentMessages, contextLimit)
     if (head.length === 0) {
       if (!opts.automatic) {
@@ -2613,11 +2617,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
-    const cfg = getModelConfig(currentModel, currentModelInfo)
+    const contextLimit = currentContextLimit()
     const nearContextLimit = shouldAutoCompactContext(
       messages(),
       extraInput,
-      cfg.contextLimit,
+      contextLimit,
       autoCompressionThreshold(),
       compaction()?.summary,
     )

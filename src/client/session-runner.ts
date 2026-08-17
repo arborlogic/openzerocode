@@ -9,7 +9,7 @@ import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectLiteTools, selectPlanModeTools } from "../tool/selection"
 import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isRateLimitError, isTransientProviderError } from "./errors"
-import { estimateMessageRequestTokens, estimateTokens, getModelConfig, modelSupportsVision } from "../provider/models"
+import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
@@ -320,7 +320,7 @@ export async function* streamSession(
   const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
   const toolDefs = convertToolsToDefs(tools)
 
-  const { contextLimit } = getModelConfig(options.model, options.modelInfo)
+  const contextLimit = getEffectiveContextLimit(options.model, options.modelInfo)
   const toolSchemaCost = estimateToolDefinitionsTokens(toolDefs)
   const messageContextLimit = Math.max(1, contextLimit - toolSchemaCost)
   const basePrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]

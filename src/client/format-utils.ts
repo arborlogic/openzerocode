@@ -1,7 +1,7 @@
 import type { CompactionInfo } from "./sessions"
 import type { ModelInfo } from "../provider/types"
 export { contentToText } from "../provider/content"
-import { getKnownModelConfig, getModelConfig } from "../provider/models"
+import { getEffectiveContextLimit, getKnownModelConfig, getModelConfig } from "../provider/models"
 
 // File extension → tree-sitter filetype mapping
 const LANGUAGE_EXTENSIONS: Record<string, string> = {
@@ -216,9 +216,10 @@ export function fmtPrice(value: number) {
 export function modelHint(model: string, fallback?: ModelInfo) {
   const cfg = getKnownModelConfig(model) ?? (fallback?.contextLimit ? getModelConfig(model, fallback) : undefined)
   if (!cfg) return ""
-  if (!cfg.pricing) return fmtContextLimit(cfg.contextLimit)
-  if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(cfg.contextLimit)} • free`
-  return `${fmtContextLimit(cfg.contextLimit)} • ${fmtPrice(cfg.pricing.input)}/${fmtPrice(cfg.pricing.output)}`
+  const contextLimit = getEffectiveContextLimit(model, fallback)
+  if (!cfg.pricing) return fmtContextLimit(contextLimit)
+  if (cfg.pricing.input === 0 && cfg.pricing.output === 0) return `${fmtContextLimit(contextLimit)} • free`
+  return `${fmtContextLimit(contextLimit)} • ${fmtPrice(cfg.pricing.input)}/${fmtPrice(cfg.pricing.output)}`
 }
 
 export function isTransientPasteMarker(input: string) {

@@ -217,6 +217,18 @@ export function getModelConfig(model: string, fallback?: ModelInfo | ModelConfig
   return DEFAULT_CONFIG
 }
 
+/**
+ * Returns the usable context limit, preferring valid provider metadata over
+ * the static catalogue. Gateways may impose a lower per-model context window.
+ */
+export function getEffectiveContextLimit(model: string, metadata?: ModelInfo): number {
+  const contextLimit = metadata?.contextLimit
+  if (typeof contextLimit === "number" && Number.isFinite(contextLimit) && contextLimit > 0) {
+    return contextLimit
+  }
+  return getModelConfig(model).contextLimit
+}
+
 /** Check if a model natively supports vision/image input. */
 export function modelSupportsVision(model: string): boolean {
   const cfg = MODEL_CONFIGS[normalizeModelConfigKey(model)]
