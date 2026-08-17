@@ -41,6 +41,26 @@ describe("convertToolToDef", () => {
     assert.equal(params.type, "object")
     assert.ok(params.properties)
   })
+
+  it("does not advertise null for optional fields rejected by the runtime decoder", () => {
+    const def = new Def({
+      id: "optional",
+      description: "Optional argument tool",
+      parameters: Schema.Struct({ limit: Schema.optional(Schema.Number) }),
+      execute: () => Effect.succeed(new Result({ title: "Done", output: "ok" })),
+    })
+
+    const result = convertToolToDef(def)
+    const params = result.function.parameters as Record<string, any>
+    assert.deepEqual(params.properties.limit, {
+      anyOf: [
+        { type: "number" },
+        { type: "string", enum: ["NaN"] },
+        { type: "string", enum: ["Infinity"] },
+        { type: "string", enum: ["-Infinity"] },
+      ],
+    })
+  })
 })
 
 describe("convertToolsToDefs", () => {

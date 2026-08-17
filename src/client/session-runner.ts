@@ -9,7 +9,7 @@ import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectLiteTools, selectPlanModeTools } from "../tool/selection"
 import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isRateLimitError, isTransientProviderError } from "./errors"
-import { estimateMessageRequestTokens, getModelConfig, modelSupportsVision } from "../provider/models"
+import { estimateMessageRequestTokens, estimateTokens, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
 
@@ -66,6 +66,10 @@ type SessionRuntime = {
 
 function estimateMessagesTokens(messages: Message[]): number {
   return estimateMessageRequestTokens(messages)
+}
+
+function estimateToolDefinitionsTokens(tools: unknown[]): number {
+  return tools.length === 0 ? 0 : estimateTokens(JSON.stringify(tools))
 }
 
 function longestContinuationOverlap(previous: string, continuation: string): number {
@@ -298,16 +302,6 @@ export async function* streamSession(
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
-  const recentContextAnchor = (options.recentContextAnchor ?? recentContextAnchorEnabled())
-    ? createRecentContextAnchor(history)
-    : undefined
-  const recentContextAnchorMessages: Message[] = recentContextAnchor ? [recentContextAnchor] : []
-
-  const { contextLimit } = getModelConfig(options.model, options.modelInfo)
-  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
-  const sendHistory = trimHistoryForInitialRequest(permanentPrefix, history, contextLimit)
-
-  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, ...sendHistory, userMessage]
   const resultHistory: Message[] = [...history, userMessage]
   const turnProgressStart = resultHistory.length
   yield { type: "message", message: userMessage }
@@ -326,6 +320,21 @@ export async function* streamSession(
   const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
   const toolDefs = convertToolsToDefs(tools)
 
+  const { contextLimit } = getModelConfig(options.model, options.modelInfo)
+  const toolSchemaCost = estimateToolDefinitionsTokens(toolDefs)
+  const messageContextLimit = Math.max(1, contextLimit - toolSchemaCost)
+  const basePrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
+  const sendHistory = trimHistoryForInitialRequest(basePrefix, history, messageContextLimit)
+  // An anchor is useful only when budgeting omitted part of the history. When
+  // all history is already present it merely duplicates recent conversation.
+  const historyWasTrimmed = sendHistory.length < history.length
+  const recentContextAnchor = historyWasTrimmed && (options.recentContextAnchor ?? recentContextAnchorEnabled())
+    ? createRecentContextAnchor(history.slice(0, history.length - sendHistory.length))
+    : undefined
+  const recentContextAnchorMessages: Message[] = recentContextAnchor ? [recentContextAnchor] : []
+  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
+  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, ...sendHistory, userMessage]
+
   const currentTurnStart = allMessages.length
 
   for (let step = 0; step < maxSteps; step++) {
@@ -336,7 +345,7 @@ export async function* streamSession(
     for (let attempt = 0; attempt <= PROVIDER_RETRY_LIMIT; attempt++) {
       const requestMessages = step === 0
         ? allMessages
-        : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), contextLimit)
+        : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), messageContextLimit)
 
       stream = await runtime.runSync(Effect.gen(function* () {
         const p = yield* Provider

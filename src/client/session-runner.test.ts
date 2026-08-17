@@ -97,7 +97,7 @@ test("createRecentContextAnchor summarizes recent non-system messages", () => {
   assert.doesNotMatch(content, /old system note/)
 })
 
-test("streamSession injects a recent context anchor into provider requests without persisting it", async () => {
+test("streamSession does not duplicate fully retained history in a recent context anchor", async () => {
   const requests: CompletionRequest[] = []
   const stream = new ReadableStream({
     start(controller) {
@@ -128,10 +128,45 @@ test("streamSession injects a recent context anchor into provider requests witho
     && typeof message.content === "string"
     && message.content.includes("[Recent Context Anchor]"),
   )
-  assert.equal(anchorMessages.length, 1)
-  assert.match(String(anchorMessages[0]!.content), /previous task/)
+  assert.equal(anchorMessages.length, 0)
+  assert.equal(requests[0]!.messages.filter((message) => message.content === "previous task").length, 1)
   assert.deepEqual(done.value.map((message) => message.role), ["user", "assistant", "user", "assistant"])
   assert.equal(done.value.some((message) => String(message.content ?? "").includes("[Recent Context Anchor]")), false)
+})
+
+test("streamSession anchors only history omitted by context budgeting", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const history: Message[] = [
+    { role: "user", content: `old marker ${"x".repeat(10_000)}` },
+    { role: "assistant", content: `old answer ${"y".repeat(10_000)}` },
+    { role: "user", content: "recent request" },
+    { role: "assistant", content: "recent answer" },
+  ]
+
+  const gen = streamSession("new request", history, {
+    abort: new AbortController().signal,
+    model: "test-model",
+    modelInfo: { id: "test-model", contextLimit: 4_000 },
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+  while (!(await gen.next()).done) {}
+
+  const anchor = requests[0]!.messages.find((message) => String(message.content ?? "").includes("[Recent Context Anchor]"))
+  assert.ok(anchor)
+  assert.match(String(anchor.content), /old marker/)
+  assert.doesNotMatch(String(anchor.content), /recent request/)
+  assert.equal(requests[0]!.messages.some((message) =>
+    message.role !== "system" && String(message.content ?? "").includes("old marker")
+  ), false)
 })
 
 test("streamSession can disable recent context anchors per request", async () => {
