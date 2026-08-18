@@ -220,6 +220,25 @@ function recentContextAnchorEnabled(): boolean {
   return !["false", "0", "no", "off"].includes((process.env.OPENZEROCODE_RECENT_CONTEXT_ANCHOR ?? "true").toLowerCase())
 }
 
+/**
+ * Provider failures used to be persisted as assistant text. They are UI
+ * diagnostics rather than model output, and replaying one in the next request
+ * can make the model continue or react to the error instead of the user's task.
+ * Keep this narrow so a legitimate assistant answer that mentions an error is
+ * never removed.
+ */
+function isLegacyProviderFailureMessage(message: Message): boolean {
+  if (message.role !== "assistant" || message.tool_calls || typeof message.content !== "string") return false
+  return message.content.startsWith("Error: Provider error:")
+    || message.content === "Error: Network error while contacting provider. Please retry."
+    || message.content.startsWith("Error: Provider returned an empty assistant response")
+    || message.content.startsWith("Error: Provider returned reasoning without an assistant response")
+}
+
+function discardLegacyProviderFailures(history: Message[]): Message[] {
+  return history.filter((message) => !isLegacyProviderFailureMessage(message))
+}
+
 export type StreamOptions = {
   abort: AbortSignal
   model: string
@@ -257,6 +276,10 @@ export async function* streamSession(
   options: StreamOptions,
   runtime: SessionRuntime,
 ): AsyncGenerator<StreamChunk, Message[], void> {
+  // Also heal sessions saved by versions which persisted provider diagnostics
+  // as assistant messages. The cleaned result replaces that stale history when
+  // the caller saves the completed run.
+  const usableHistory = discardLegacyProviderFailures(history)
   const retry429 = ["true", "1", "yes"].includes((process.env.OPENZEROCODE_RETRY_429 ?? "").toLowerCase())
   // Max model round-trips per run. Each tool-using turn costs one step, so a
   // complex task (many edits/bash calls) can hit this. Configurable via env so
@@ -302,7 +325,7 @@ export async function* streamSession(
   const compactionMessage: Message[] = runtime.compactionSummary
     ? [{ role: "system", content: `[Compaction Summary]\n${runtime.compactionSummary}` }]
     : []
-  const resultHistory: Message[] = [...history, userMessage]
+  const resultHistory: Message[] = [...usableHistory, userMessage]
   const turnProgressStart = resultHistory.length
   yield { type: "message", message: userMessage }
 
@@ -324,18 +347,35 @@ export async function* streamSession(
   const toolSchemaCost = estimateToolDefinitionsTokens(toolDefs)
   const messageContextLimit = Math.max(1, contextLimit - toolSchemaCost)
   const basePrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
-  const sendHistory = trimHistoryForInitialRequest(basePrefix, history, messageContextLimit)
+  const sendHistory = trimHistoryForInitialRequest(basePrefix, usableHistory, messageContextLimit)
   // An anchor is useful only when budgeting omitted part of the history. When
   // all history is already present it merely duplicates recent conversation.
-  const historyWasTrimmed = sendHistory.length < history.length
+  const historyWasTrimmed = sendHistory.length < usableHistory.length
   const recentContextAnchor = historyWasTrimmed && (options.recentContextAnchor ?? recentContextAnchorEnabled())
-    ? createRecentContextAnchor(history.slice(0, history.length - sendHistory.length))
+    ? createRecentContextAnchor(usableHistory.slice(0, usableHistory.length - sendHistory.length))
     : undefined
   const recentContextAnchorMessages: Message[] = recentContextAnchor ? [recentContextAnchor] : []
   const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
   const allMessages: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, ...sendHistory, userMessage]
 
   const currentTurnStart = allMessages.length
+
+  // A gateway can accept an overlong request and then close its SSE response
+  // without sending either a provider error or a terminal chunk. Retrying that
+  // exact transcript only repeats the failure. After an empty interrupted
+  // initial response, progressively reduce retained history instead. This is
+  // intentionally limited to step zero: later steps must retain tool-call
+  // ordering and are compacted by compactCurrentTurnForRequest.
+  const initialRequestAfterEmptyInterruption = () => {
+    if (interruptionRecoveries === 0) return allMessages
+    const reducedLimit = Math.max(1, Math.floor(messageContextLimit / (2 ** interruptionRecoveries)))
+    return [
+      systemMessage,
+      ...compactionMessage,
+      ...trimHistoryForInitialRequest(basePrefix, usableHistory, reducedLimit),
+      userMessage,
+    ]
+  }
 
   for (let step = 0; step < maxSteps; step++) {
     yield { type: "status", text: `thinking (step ${step + 1}/${maxSteps})...` }
@@ -344,7 +384,7 @@ export async function* streamSession(
 
     for (let attempt = 0; attempt <= PROVIDER_RETRY_LIMIT; attempt++) {
       const requestMessages = step === 0
-        ? allMessages
+        ? initialRequestAfterEmptyInterruption()
         : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), messageContextLimit)
 
       stream = await runtime.runSync(Effect.gen(function* () {
@@ -386,9 +426,6 @@ export async function* streamSession(
     if (!stream) {
       const errorText = formatProviderError(lastError)
       yield { type: "notice", kind: "error", text: errorText }
-      const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
-      resultHistory.push(errorMsg)
-      yield { type: "message", message: errorMsg }
       yield { type: "error", message: errorText }
       return resultHistory
     }
@@ -545,8 +582,11 @@ export async function* streamSession(
       } else {
         // Nothing reached the UI, so safely repeat the same logical step rather
         // than consuming an agent step or adding a synthetic history message.
+        // The next initial request also trims more transcript context, because
+        // an empty unterminated stream is a common gateway symptom of a request
+        // that its effective context window cannot process.
         step--
-        yield { type: "notice", kind: "system", text: `provider stream interrupted before output; retrying (attempt ${interruptionRecoveries}/${PROVIDER_RETRY_LIMIT})` }
+        yield { type: "notice", kind: "system", text: `provider stream interrupted before output; retrying with reduced session context (attempt ${interruptionRecoveries}/${PROVIDER_RETRY_LIMIT})` }
       }
       yield { type: "status", text: `reconnecting in ${Math.round(wait / 1000)}s...` }
       await delay(wait)
@@ -567,12 +607,6 @@ export async function* streamSession(
     if (!content && hasReasoning && !toolCalls) {
       const errorText = "Provider returned reasoning without an assistant response"
       yield { type: "notice", kind: "error", text: errorText }
-      const errorMsg = createAssistantMessage({
-        content: `Error: ${errorText}`,
-        reasoning_content: reasoning || undefined,
-      })
-      resultHistory.push(errorMsg)
-      yield { type: "message", message: errorMsg }
       yield { type: "error", message: errorText }
       return resultHistory
     }
@@ -585,9 +619,6 @@ export async function* streamSession(
       }
       const errorText = "Provider returned an empty assistant response"
       yield { type: "notice", kind: "error", text: errorText }
-      const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
-      resultHistory.push(errorMsg)
-      yield { type: "message", message: errorMsg }
       yield { type: "error", message: errorText }
       return resultHistory
     }
@@ -775,7 +806,7 @@ export async function runSession(
     recentContextAnchor: recentContextAnchorEnabled(),
     harnessProfile: getHarnessProfile(),
   }, runtime)
-  const resultHistory: Message[] = [...history]
+  const resultHistory: Message[] = discardLegacyProviderFailures(history)
 
   try {
     while (true) {
@@ -830,9 +861,6 @@ export async function runSession(
     const errorText = formatProviderError(error)
     ui.notify(errorText, "error")
     ui.setStatus("error")
-    const errorMsg: Message = { role: "assistant", content: `Error: ${errorText}` }
-    resultHistory.push(errorMsg)
-    ui.addMessage(errorMsg)
     return resultHistory
   }
 }

@@ -302,6 +302,54 @@ test("streamSession retries a Codex stream interrupted before any output", async
   assert.ok(chunks.some((chunk) => chunk.type === "notice" && /before output; retrying/.test(chunk.text)))
 })
 
+test("streamSession reduces retained history after an empty interrupted zero-api stream", async () => {
+  let requestCount = 0
+  const requests: CompletionRequest[] = []
+  const legacyFailure: Message = {
+    role: "assistant",
+    content: "Error: Provider error: provider stream ended before completion",
+  }
+  const history: Message[] = [
+    ...Array.from({ length: 12 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      content: `history ${index}: ${"x".repeat(1_500)}`,
+    })),
+    legacyFailure,
+  ]
+  const makeStream = () => new ReadableStream({
+    pull(controller) {
+      requestCount++
+      if (requestCount === 1) controller.close()
+      else {
+        controller.enqueue({ delta: { content: "recovered" }, finish_reason: "stop" })
+        controller.close()
+      }
+    },
+  })
+
+  const gen = streamSession("hello", history, {
+    abort: new AbortController().signal,
+    model: "test-model",
+    modelInfo: { id: "test-model", contextLimit: 12_000 },
+    provider: "zero-api",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { onRequest: (request) => requests.push(request) }))
+
+  const notices: string[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) break
+    if (next.value.type === "notice") notices.push(next.value.text)
+  }
+
+  assert.equal(requests.length, 2)
+  assert.ok(requests[1]!.messages.length < requests[0]!.messages.length)
+  assert.ok(!requests[0]!.messages.includes(legacyFailure))
+  assert.ok(!requests[1]!.messages.includes(legacyFailure))
+  assert.ok(notices.some((text) => /reduced session context/.test(text)))
+})
+
 test("streamSession retries a transient zero-api fetch failure before a stream is returned", async () => {
   let requestCount = 0
   const makeStream = () => {
@@ -449,20 +497,23 @@ test("streamSession does not replay after a completed tool side-effect boundary"
   }, runtime(makeStream, { tools: [testTool("write")] }))
 
   let result: Message[] = []
+  const errors: string[] = []
   while (true) {
     const next = await gen.next()
     if (next.done) {
       result = next.value
       break
     }
+    if (next.value.type === "error") errors.push(next.value.message)
   }
 
   assert.equal(requestCount, 2)
   assert.equal(result.filter((message) => message.role === "tool").length, 1)
-  assert.match(String(result.at(-1)?.content), /Network error/)
+  assert.match(String(result.at(-1)?.content), /write\n---\nok/)
+  assert.deepEqual(errors, ["Network error while contacting provider. Please retry."])
 })
 
-test("runSession persists an assistant error message when provider stream reading fails", async () => {
+test("runSession reports a provider stream reading failure without persisting it as assistant context", async () => {
   const stream = new ReadableStream({
     pull(controller) {
       controller.enqueue({ delta: { content: "partial" } })
@@ -479,15 +530,13 @@ test("runSession persists an assistant error message when provider stream readin
     setStatus: (text) => statuses.push(text),
   }), runtime(stream))
 
-  assert.equal(messages.at(-1)?.role, "assistant")
-  assert.match(String(messages.at(-1)?.content), /upstream connection reset/)
-  assert.equal(result.at(-1)?.role, "assistant")
-  assert.match(String(result.at(-1)?.content), /upstream connection reset/)
+  assert.deepEqual(messages, [{ role: "user", content: "hello" }])
+  assert.deepEqual(result, [{ role: "user", content: "hello" }])
   assert.deepEqual(notices, ["error:Provider error: upstream connection reset"])
   assert.ok(statuses.includes("error"))
 })
 
-test("runSession persists an assistant error message when provider returns an empty response", async () => {
+test("runSession reports an empty provider response without persisting it as assistant context", async () => {
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue({ delta: {}, finish_reason: "stop" })
@@ -504,15 +553,13 @@ test("runSession persists an assistant error message when provider returns an em
     setStatus: (text) => statuses.push(text),
   }), runtime(stream))
 
-  assert.equal(messages.at(-1)?.role, "assistant")
-  assert.match(String(messages.at(-1)?.content), /Provider returned an empty assistant response/)
-  assert.equal(result.at(-1)?.role, "assistant")
-  assert.match(String(result.at(-1)?.content), /Provider returned an empty assistant response/)
+  assert.deepEqual(messages, [{ role: "user", content: "hello" }])
+  assert.deepEqual(result, [{ role: "user", content: "hello" }])
   assert.deepEqual(notices, ["error:Provider returned an empty assistant response"])
   assert.ok(statuses.includes("error"))
 })
 
-test("runSession reports an error when the provider returns reasoning without an answer", async () => {
+test("runSession reports reasoning without an answer without persisting it as assistant context", async () => {
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue({ delta: { reasoning_content: "I should inspect the project first." } })
@@ -531,11 +578,44 @@ test("runSession reports an error when the provider returns reasoning without an
   }), runtime(stream))
 
   assert.deepEqual(reasoning, ["I should inspect the project first."])
-  assert.equal(messages.at(-1)?.role, "assistant")
-  assert.match(String(messages.at(-1)?.content), /Provider returned reasoning without an assistant response/)
-  assert.equal(messages.at(-1)?.reasoning_content, "I should inspect the project first.")
-  assert.match(String(result.at(-1)?.content), /Provider returned reasoning without an assistant response/)
+  assert.deepEqual(messages, [{ role: "user", content: "hello" }])
+  assert.deepEqual(result, [{ role: "user", content: "hello" }])
   assert.deepEqual(notices, ["error:Provider returned reasoning without an assistant response"])
+})
+
+test("streamSession excludes legacy persisted provider failures from the next request and saved history", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "recovered" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const legacyFailure: Message = {
+    role: "assistant",
+    content: "Error: Provider error: provider stream ended before completion",
+  }
+
+  const gen = streamSession("try again", [
+    { role: "user", content: "original request" },
+    legacyFailure,
+  ], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(stream, { onRequest: (request) => requests.push(request) }))
+
+  let done: IteratorResult<any, Message[]>
+  do {
+    done = await gen.next()
+  } while (!done.done)
+
+  assert.equal(requests.length, 1)
+  assert.ok(!requests[0]!.messages.includes(legacyFailure))
+  assert.ok(!done.value.includes(legacyFailure))
+  assert.deepEqual(done.value.map((message) => message.content), ["original request", "try again", "recovered"])
 })
 
 test("streamSession treats empty stop after tool results as clean completion", async () => {
