@@ -169,6 +169,61 @@ test("streamSession anchors only history omitted by context budgeting", async ()
   ), false)
 })
 
+test("streamSession retries an explicit provider context overflow with less history", async () => {
+  const requests: CompletionRequest[] = []
+  let calls = 0
+  const history: Message[] = [
+    { role: "user", content: `old marker ${"x".repeat(80_000)}` },
+    { role: "assistant", content: `old answer ${"y".repeat(80_000)}` },
+    { role: "user", content: "recent request" },
+    { role: "assistant", content: "recent answer" },
+  ]
+  const providerLayer = Layer.succeed(Provider, {
+    complete: () => Effect.die("not implemented"),
+    stream: (request) => Effect.sync(() => {
+      requests.push({ ...request, messages: [...request.messages] })
+      calls++
+      if (calls === 1) {
+        throw new Error('upstream returned status 400: {"error":{"code":400,"message":"request (35373 tokens) exceeds the available context size (34048 tokens)"}}')
+      }
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+          controller.close()
+        },
+      })
+    }),
+    models: () => Effect.succeed([]),
+  })
+  const layer = Layer.merge(providerLayer, emptyToolsLayer)
+  const runtimeWithOverflow = {
+    ...runtime(new ReadableStream()),
+    runSync: <E, A>(effect: Effect.Effect<A, E, Provider | ToolRegistry>) => Effect.runPromise(effect.pipe(Effect.provide(layer))),
+  }
+
+  const gen = streamSession("new request", history, {
+    abort: new AbortController().signal,
+    model: "test-model",
+    modelInfo: { id: "test-model", contextLimit: 34_048 },
+    provider: "zero-api",
+    keyName: "test-key",
+    mode: "build",
+  }, runtimeWithOverflow)
+
+  while (!(await gen.next()).done) {}
+
+  assert.equal(requests.length, 2)
+  assert.ok(requests[1]!.messages.length < requests[0]!.messages.length)
+  const retryAnchor = requests[1]!.messages.find((message) =>
+    message.role === "system" && String(message.content ?? "").includes("[Recent Context Anchor]"),
+  )
+  assert.ok(retryAnchor)
+  assert.match(String(retryAnchor.content), /old marker/)
+  assert.equal(requests[1]!.messages.some((message) =>
+    message.role !== "system" && String(message.content ?? "").includes("old marker")
+  ), false)
+})
+
 test("streamSession can disable recent context anchors per request", async () => {
   const requests: CompletionRequest[] = []
   const stream = new ReadableStream({

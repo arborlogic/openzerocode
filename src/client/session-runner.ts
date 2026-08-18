@@ -8,7 +8,7 @@ import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectLiteTools, selectPlanModeTools } from "../tool/selection"
 import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
-import { delay, formatProviderError, isRateLimitError, isTransientProviderError } from "./errors"
+import { delay, formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { StreamChunk } from "../server/types"
@@ -19,6 +19,9 @@ export type RunMode = "build" | "plan" | "compose"
 const PROVIDER_RETRY_LIMIT = 3
 const PROVIDER_RETRY_BASE_MS = 1000
 const PROVIDER_RETRY_MAX_MS = 8000
+// Keep room for the model's response and serialization/tokenizer differences.
+// This is deliberately lower than the hard context limit, not a completion cap.
+const REQUEST_CONTEXT_TARGET_RATIO = 0.72
 
 function providerRetryDelay(retryNumber: number): number {
   const exponential = Math.min(PROVIDER_RETRY_BASE_MS * (2 ** Math.max(0, retryNumber - 1)), PROVIDER_RETRY_MAX_MS)
@@ -95,7 +98,7 @@ function trimHistoryForInitialRequest(
 ): Message[] {
   if (history.length === 0) return history
 
-  const targetTotal = Math.floor(contextLimit * 0.72)
+  const targetTotal = Math.floor(contextLimit * REQUEST_CONTEXT_TARGET_RATIO)
   const prefixCost = estimateMessagesTokens(permanentPrefix)
   const historyBudget = Math.max(0, targetTotal - prefixCost)
   let used = 0
@@ -120,22 +123,19 @@ function compactCurrentTurnForRequest(
 ): Message[] {
   if (currentTurnMessages.length === 0) return permanentPrefix
 
-  const targetTotal = Math.floor(contextLimit * 0.72)
+  const targetTotal = Math.floor(contextLimit * REQUEST_CONTEXT_TARGET_RATIO)
   const prefixCost = estimateMessagesTokens(permanentPrefix)
-  const turnBudget = Math.max(2_000, targetTotal - prefixCost)
+  const turnBudget = Math.max(0, targetTotal - prefixCost)
   if (estimateMessagesTokens(currentTurnMessages) <= turnBudget) {
     return [...permanentPrefix, ...currentTurnMessages]
   }
 
   let used = 0
   let tailStart = currentTurnMessages.length
-  const minTailMessages = Math.min(6, currentTurnMessages.length)
-
   for (let i = currentTurnMessages.length - 1; i >= 0; i--) {
     const message = currentTurnMessages[i]!
     const cost = estimateMessagesTokens([message])
-    const mustKeep = currentTurnMessages.length - i <= minTailMessages
-    if (!mustKeep && used + cost > turnBudget) break
+    if (used + cost > turnBudget) break
     used += cost
     tailStart = i
   }
@@ -347,16 +347,31 @@ export async function* streamSession(
   const toolSchemaCost = estimateToolDefinitionsTokens(toolDefs)
   const messageContextLimit = Math.max(1, contextLimit - toolSchemaCost)
   const basePrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
-  const sendHistory = trimHistoryForInitialRequest(basePrefix, usableHistory, messageContextLimit)
-  // An anchor is useful only when budgeting omitted part of the history. When
-  // all history is already present it merely duplicates recent conversation.
-  const historyWasTrimmed = sendHistory.length < usableHistory.length
-  const recentContextAnchor = historyWasTrimmed && (options.recentContextAnchor ?? recentContextAnchorEnabled())
-    ? createRecentContextAnchor(usableHistory.slice(0, usableHistory.length - sendHistory.length))
-    : undefined
-  const recentContextAnchorMessages: Message[] = recentContextAnchor ? [recentContextAnchor] : []
-  const permanentPrefix: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, userMessage]
-  const allMessages: Message[] = [systemMessage, ...compactionMessage, ...recentContextAnchorMessages, ...sendHistory, userMessage]
+  const includeRecentContextAnchor = options.recentContextAnchor ?? recentContextAnchorEnabled()
+  const buildInitialRequest = (historyLimit: number): { messages: Message[]; permanentPrefix: Message[] } => {
+    const retainedHistory = trimHistoryForInitialRequest(basePrefix, usableHistory, historyLimit)
+    // An anchor is useful only when budgeting omitted part of the history. Build
+    // it from this request's omission, rather than reusing the initial anchor:
+    // overflow retries can omit additional messages that otherwise lose the
+    // conversational bridge to the retained tail.
+    const omittedHistory = usableHistory.slice(0, usableHistory.length - retainedHistory.length)
+    const recentContextAnchor = omittedHistory.length > 0 && includeRecentContextAnchor
+      ? createRecentContextAnchor(omittedHistory)
+      : undefined
+    const permanentPrefix: Message[] = [
+      systemMessage,
+      ...compactionMessage,
+      ...(recentContextAnchor ? [recentContextAnchor] : []),
+      userMessage,
+    ]
+    return {
+      messages: [...permanentPrefix.slice(0, -1), ...retainedHistory, userMessage],
+      permanentPrefix,
+    }
+  }
+  const initialRequest = buildInitialRequest(messageContextLimit)
+  const permanentPrefix = initialRequest.permanentPrefix
+  const allMessages = initialRequest.messages
 
   const currentTurnStart = allMessages.length
 
@@ -366,15 +381,16 @@ export async function* streamSession(
   // initial response, progressively reduce retained history instead. This is
   // intentionally limited to step zero: later steps must retain tool-call
   // ordering and are compacted by compactCurrentTurnForRequest.
-  const initialRequestAfterEmptyInterruption = () => {
-    if (interruptionRecoveries === 0) return allMessages
-    const reducedLimit = Math.max(1, Math.floor(messageContextLimit / (2 ** interruptionRecoveries)))
-    return [
-      systemMessage,
-      ...compactionMessage,
-      ...trimHistoryForInitialRequest(basePrefix, usableHistory, reducedLimit),
-      userMessage,
-    ]
+  // Both silent gateway disconnects and explicit upstream context-limit
+  // responses are recoverable before the first response byte: resend a smaller
+  // history rather than surfacing an error for a request which the user never
+  // saw. `contextLimit` is a provider ceiling, while estimates can differ from
+  // its tokenizer and wrapper serialization by thousands of tokens.
+  let initialContextRecoveries = 0
+  const initialRequestWithReducedContext = () => {
+    if (initialContextRecoveries === 0) return allMessages
+    const reducedLimit = Math.max(1, Math.floor(messageContextLimit / (2 ** initialContextRecoveries)))
+    return buildInitialRequest(reducedLimit).messages
   }
 
   for (let step = 0; step < maxSteps; step++) {
@@ -384,7 +400,7 @@ export async function* streamSession(
 
     for (let attempt = 0; attempt <= PROVIDER_RETRY_LIMIT; attempt++) {
       const requestMessages = step === 0
-        ? initialRequestAfterEmptyInterruption()
+        ? initialRequestWithReducedContext()
         : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), messageContextLimit)
 
       stream = await runtime.runSync(Effect.gen(function* () {
@@ -406,6 +422,17 @@ export async function* streamSession(
         return undefined
       })
       if (stream) break
+      // Gateways commonly wrap a provider context error in a 502. Handle this
+      // before generic transient retries so we do not submit the same oversized
+      // 35k-token payload again. This is safe only before tools/response data.
+      const retryContextLimit = step === 0 && isCompactionRetryableError(lastError)
+      if (retryContextLimit && !crossedToolBoundary && attempt < PROVIDER_RETRY_LIMIT) {
+        initialContextRecoveries++
+        debugProviderRetry(`provider rejected context; retrying with reduced history (${initialContextRecoveries}/${PROVIDER_RETRY_LIMIT})`, lastError)
+        yield { type: "status", text: "context limit reached, reducing session context..." }
+        yield { type: "notice", kind: "system", text: `provider context limit reached; retrying with reduced session context (attempt ${initialContextRecoveries}/${PROVIDER_RETRY_LIMIT})` }
+        continue
+      }
       const retryRateLimit = retry429 && isRateLimitError(lastError)
       const retryTransient = isRecoverableProviderSession && isTransientProviderError(lastError)
       if (crossedToolBoundary || (!retryRateLimit && !retryTransient) || attempt >= PROVIDER_RETRY_LIMIT) {
@@ -565,6 +592,7 @@ export async function* streamSession(
       if (!canRecover) throw streamError
 
       interruptionRecoveries++
+      if (!content) initialContextRecoveries++
       const wait = providerRetryDelay(interruptionRecoveries)
       debugProviderRetry(`stream interrupted; recovery ${interruptionRecoveries}/${PROVIDER_RETRY_LIMIT} in ${wait}ms`, streamError)
       if (content) {

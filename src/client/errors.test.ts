@@ -108,6 +108,7 @@ describe("isCompactionRetryableError", () => {
     assert.ok(isCompactionRetryableError(new Error("Request timed out after 300000ms")))
     assert.ok(isCompactionRetryableError(new DOMException("The operation was aborted", "AbortError")))
     assert.ok(isCompactionRetryableError(new Error("context_length_exceeded: too many tokens")))
+    assert.ok(isCompactionRetryableError(new Error('upstream returned status 400: {"error":{"code":400,"message":"request (35373 tokens) exceeds the available context size (34048 tokens)"}}')))
     assert.ok(isCompactionRetryableError(new Error("Compaction summary request exceeds its context budget")))
   })
 
