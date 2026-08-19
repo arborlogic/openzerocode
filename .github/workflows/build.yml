@@ -239,6 +239,27 @@ jobs:
 
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Generate release manifest
+        if: steps.release_tag.outputs.release_tag != ''
+        shell: bash
+        run: |
+          mkdir -p release-manifest
+          cat <<EOF > release-manifest/manifest.json
+          {
+            "version": "${{ steps.release_tag.outputs.release_tag }}",
+            "archives": {}
+          }
+          EOF
+          
+          for archive in artifacts/binary-archive-*/*; do
+            if [[ -f "$archive" ]]; then
+              filename="$(basename "$archive")"
+              sha256="$(sha256sum "$archive" | awk '{print $1}')"
+              jq --arg f "$filename" --arg sha "$sha256" '.archives[$f] = $sha' release-manifest/manifest.json > release-manifest/tmp.json
+              mv release-manifest/tmp.json release-manifest/manifest.json
+            fi
+          done
+
       - name: Create GitHub Release
         if: steps.release_tag.outputs.release_tag != ''
         uses: softprops/action-gh-release@v2
@@ -249,4 +270,5 @@ jobs:
           files: |
             artifacts/**/*.tgz
             artifacts/binary-archive-*/*
+            release-manifest/manifest.json
             install
