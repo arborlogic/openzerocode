@@ -262,6 +262,21 @@ function App() {
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
+  
+  const [latestVersion, setLatestVersion] = createSignal<string | null>(null)
+  const [isUpdating, setIsUpdating] = createSignal(false)
+
+  void fetch("https://api.github.com/repos/arborlogic/openzerocode/releases/latest")
+    .then(res => res.json())
+    .then((data: any) => {
+      if (data && data.tag_name) {
+        const v = data.tag_name.replace(/^v/, "")
+        if (v !== VERSION) {
+          setLatestVersion(v)
+        }
+      }
+    })
+    .catch(() => {})
   const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
   const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
     setModeRaw((prev) => {
@@ -1009,7 +1024,34 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
     geassRevision()
-    return [
+    
+    const items: PaletteItem[] = []
+    
+    const v = latestVersion()
+    if (v) {
+      items.push({
+        label: "Update openzerocode",
+        hint: `v${v} is available (current: v${VERSION})`,
+        onSelect: () => {
+          if (isUpdating()) return
+          setShowPalette(false)
+          setIsUpdating(true)
+          setStatus(`updating to v${v}...`)
+          import("node:child_process").then(({ exec }) => {
+            exec("curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash", (error, stdout, stderr) => {
+              setIsUpdating(false)
+              if (error) {
+                setStatus(`update failed: ${error.message}`)
+              } else {
+                setStatus("update complete! Please restart openzerocode.")
+              }
+            })
+          })
+        }
+      })
+    }
+    
+    items.push(
       {
         label: "INPUT",
         kind: "section",
@@ -1251,7 +1293,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             },
           } satisfies PaletteItem]
         : []),
-    ]
+    )
+    return items
   })
 
   const sessionPaletteItems = createMemo<PaletteItem[]>(() => {
