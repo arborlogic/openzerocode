@@ -39,6 +39,7 @@ export type CommandContext = {
   currentSessionId: () => string | null
   openSessionList: () => void
   openQueuedMessages: () => void
+  steer: (instruction: string) => { ok: boolean; message: string }
   openProviderList: () => void
   openModelList: () => void
   openHelp: () => void
@@ -81,6 +82,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
+  { name: "steer", description: "Guide the active agent now: /steer <instruction>" },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
@@ -311,6 +313,16 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "queue" || cmd === "queued") {
     ctx.openQueuedMessages()
+    return true
+  }
+
+  if (cmd === "steer") {
+    if (!arg) {
+      notifyCommand(ctx, "error", "Usage", "/steer <instruction>")
+      return true
+    }
+    const result = ctx.steer(arg)
+    notifyCommand(ctx, result.ok ? "success" : "warning", result.ok ? "Agent steered" : "Unable to steer", result.message)
     return true
   }
 

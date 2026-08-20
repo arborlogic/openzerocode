@@ -719,6 +719,139 @@ test("streamSession treats empty stop after tool results as clean completion", a
   )
 })
 
+test("streamSession applies steering to the active run at the next model boundary", async () => {
+  const requests: CompletionRequest[] = []
+  let requestCount = 0
+  let steering = ["Use the targeted test instead of the full suite."]
+  const makeStream = () => new ReadableStream({
+    start(controller) {
+      requestCount++
+      if (requestCount === 1) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: "call_1",
+            function: { name: "read", arguments: "{}" },
+          }],
+        })
+      } else {
+        controller.enqueue({ delta: { content: "Adjusted." }, finish_reason: "stop" })
+      }
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("fix the tests", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    consumeSteeringMessages: () => steering.splice(0),
+  }, runtime(makeStream, {
+    tools: [testTool("read")],
+    // Providers receive the live message array. Snapshot each request so later
+    // loop mutations do not rewrite what the first request contained.
+    onRequest: (request) => requests.push({ ...request, messages: request.messages.map((message) => ({ ...message })) }),
+  }))
+
+  const chunks: any[] = []
+  let done: IteratorResult<any, Message[]>
+  do {
+    done = await gen.next()
+    if (!done.done) chunks.push(done.value)
+  } while (!done.done)
+
+  assert.equal(requestCount, 2)
+  assert.equal(requests[0]!.messages.some((message) => String(message.content).includes("Steering instruction")), false)
+  assert.equal(requests[1]!.messages.some((message) => String(message.content).includes("Use the targeted test")), true)
+  assert.equal(chunks.some((chunk) => chunk.type === "notice" && chunk.text.includes("Steering applied")), true)
+  assert.equal(done.value.some((message) => message.role === "user" && String(message.content).includes("Use the targeted test")), true)
+})
+
+test("streamSession closes steering before a final assistant step and does not drain late guidance", async () => {
+  const steering = ["This must not leak into another run."]
+  const availability: boolean[] = []
+  let consumeCount = 0
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "Finished." }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("finish now", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    maxSteps: 1,
+    consumeSteeringMessages: () => {
+      consumeCount++
+      return steering.splice(0)
+    },
+    setSteeringAvailable: (available) => availability.push(available),
+  }, runtime(stream))
+
+  let done: IteratorResult<any, Message[]>
+  do {
+    done = await gen.next()
+  } while (!done.done)
+
+  assert.deepEqual(availability, [false])
+  assert.equal(consumeCount, 0)
+  assert.deepEqual(steering, ["This must not leak into another run."])
+  assert.equal(done.value.some((message) => String(message.content).includes("must not leak")), false)
+})
+
+test("streamSession closes steering before tools execute on the final permitted step", async () => {
+  const steering = ["Too late for this run."]
+  const availability: boolean[] = []
+  let consumeCount = 0
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({
+        delta: {},
+        tool_calls: [{
+          index: 0,
+          id: "call_1",
+          function: { name: "read", arguments: "{}" },
+        }],
+      })
+      controller.close()
+    },
+  })
+
+  const gen = streamSession("read once", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    maxSteps: 1,
+    consumeSteeringMessages: () => {
+      consumeCount++
+      return steering.splice(0)
+    },
+    setSteeringAvailable: (available) => availability.push(available),
+  }, runtime(stream, { tools: [testTool("read")] }))
+
+  const chunks: any[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) break
+    chunks.push(next.value)
+  }
+
+  assert.deepEqual(availability, [false])
+  assert.equal(consumeCount, 0)
+  assert.deepEqual(steering, ["Too late for this run."])
+  assert.equal(chunks.some((chunk) => chunk.type === "notice" && chunk.code === "step_limit_reached"), true)
+  assert.equal(chunks.some((chunk) => String(chunk.message?.content).includes("Too late")), false)
+})
+
 test("streamSession treats empty EOF after tool results as clean completion", async () => {
   let requestCount = 0
   const makeStream = () => new ReadableStream({

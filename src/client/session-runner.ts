@@ -57,6 +57,10 @@ type SessionUi = {
   origin?: { peer: string }
   /** Selectable tool groups to hide from the model (denylist; core tools always on). */
   disabledToolGroups?: string[]
+  /** Drain user guidance submitted with /steer during this active run. */
+  consumeSteeringMessages?: () => string[]
+  /** Report whether this run still has a future model boundary for steering. */
+  setSteeringAvailable?: (available: boolean) => void
 }
 
 type SessionRuntime = {
@@ -258,6 +262,10 @@ export type StreamOptions = {
   disabledToolGroups?: string[]
   /** Inject a short request-time summary of recent history. Defaults to true. */
   recentContextAnchor?: boolean
+  /** Drain user guidance submitted while the current agent run is active. */
+  consumeSteeringMessages?: () => string[]
+  /** Report whether guidance submitted now can be consumed by this run. */
+  setSteeringAvailable?: (available: boolean) => void
   /** Capability profile for this request. Defaults to OPENZEROCODE_HARNESS_PROFILE. */
   harnessProfile?: HarnessProfile
 }
@@ -394,6 +402,26 @@ export async function* streamSession(
   }
 
   for (let step = 0; step < maxSteps; step++) {
+    // Steering is deliberately part of the current agent run, not the normal
+    // input queue. Pick it up at model boundaries so it can affect the very
+    // next decision without interrupting an in-flight tool side effect.
+    if (step > 0) {
+      const steering = options.consumeSteeringMessages?.() ?? []
+      if (steering.length > 0) {
+        const steeringMessage: Message = {
+          role: "user",
+          content: `[Steering instruction — adjust the current task immediately]\n${steering.join("\n")}`,
+        }
+        allMessages.push(steeringMessage)
+        resultHistory.push(steeringMessage)
+        yield { type: "message", message: steeringMessage }
+        yield { type: "notice", kind: "system", text: "↪ Steering applied to the active agent run." }
+      }
+    }
+    // Guidance submitted while the final permitted request is in flight cannot
+    // be applied by this run. Close admission before that request starts so the
+    // TUI cannot acknowledge an instruction which would otherwise be orphaned.
+    options.setSteeringAvailable?.(step + 1 < maxSteps)
     yield { type: "status", text: `thinking (step ${step + 1}/${maxSteps})...` }
     let stream: ReadableStream<any> | undefined
     let lastError: unknown
@@ -668,6 +696,21 @@ export async function* streamSession(
         continue
       }
       allMessages.push(assistantMessage)
+      const steering = step + 1 < maxSteps
+        ? (options.consumeSteeringMessages?.() ?? [])
+        : []
+      if (steering.length > 0) {
+        const steeringMessage: Message = {
+          role: "user",
+          content: `[Steering instruction — adjust the current task immediately]\n${steering.join("\n")}`,
+        }
+        allMessages.push(steeringMessage)
+        resultHistory.push(steeringMessage)
+        yield { type: "message", message: steeringMessage }
+        yield { type: "notice", kind: "system", text: "↪ Steering applied to the active agent run." }
+        yield { type: "status", text: "applying steering..." }
+        continue
+      }
       yield { type: "done" }
       return resultHistory
     }
@@ -831,6 +874,8 @@ export async function runSession(
     maxSteps: ui.maxSteps,
     origin: ui.origin,
     disabledToolGroups: ui.disabledToolGroups,
+    consumeSteeringMessages: ui.consumeSteeringMessages,
+    setSteeringAvailable: ui.setSteeringAvailable,
     recentContextAnchor: recentContextAnchorEnabled(),
     harnessProfile: getHarnessProfile(),
   }, runtime)

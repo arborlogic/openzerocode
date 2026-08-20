@@ -40,6 +40,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     currentSessionId: mock(() => "ses_test123"),
     openSessionList: mock(() => {}),
     openQueuedMessages: mock(() => {}),
+    steer: mock(() => ({ ok: true, message: "steering accepted" })),
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
@@ -81,6 +82,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("queue"))
+    assert.ok(names.includes("steer"))
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
@@ -336,6 +338,31 @@ describe("executeCommand", () => {
       const result = await executeCommand("/queued", ctx)
       assert.ok(result)
       assert.ok((ctx.openQueuedMessages as any).mock.calls.length > 0)
+    })
+  })
+
+  describe("/steer", () => {
+    it("sends guidance through the steering callback", async () => {
+      const steer = mock(() => ({ ok: true, message: "accepted" }))
+      const ctx = stubCtx({ steer })
+      const result = await executeCommand("/steer focus on the failing test", ctx)
+
+      assert.ok(result)
+      const steerCall: any = steer.mock.calls[0]
+      const toastCall: any = (ctx.showToast as any).mock.calls[0]
+      assert.equal((steerCall.arguments ?? steerCall)[0], "focus on the failing test")
+      assert.equal((toastCall.arguments ?? toastCall)[0], "success")
+    })
+
+    it("requires a non-empty instruction", async () => {
+      const steer = mock(() => ({ ok: true, message: "accepted" }))
+      const ctx = stubCtx({ steer })
+      const result = await executeCommand("/steer", ctx)
+
+      assert.ok(result)
+      assert.equal(steer.mock.calls.length, 0)
+      const toastCall: any = (ctx.showToast as any).mock.calls[0]
+      assert.equal((toastCall.arguments ?? toastCall)[0], "error")
     })
   })
 

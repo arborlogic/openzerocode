@@ -469,6 +469,8 @@ function App() {
   let autocompleteApi: AutocompleteApi | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
+  let pendingSteeringMessages: string[] = []
+  let steeringOpen = false
   let autopilotAbort: AbortController | undefined
   let autopilotSupervisorRunning = false
   let autopilotRateLimitTimer: ReturnType<typeof setTimeout> | undefined
@@ -505,6 +507,7 @@ function App() {
         setQueuedInputItems(inputQueue.pendingItems())
       },
       onDrainEnd: () => {
+        pendingSteeringMessages = []
         if (autopilotEnabled()) scheduleAutopilotCheck()
         else setStatus("waiting for input")
       },
@@ -2721,6 +2724,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     abortSignal.addEventListener("abort", () => runAbort?.abort(), { once: true })
     streamState.reset()
     refreshAgentsInstruction()
+    pendingSteeringMessages = []
+    steeringOpen = false
     setRunning(true)
     setStatus(formatQueueStatus("thinking...", queuedInputs()))
     setNotices([])
@@ -2766,6 +2771,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         reasoning_effort: reasoningEffort(),
         maxSteps: maxSteps(),
         disabledToolGroups: disabledToolGroups(),
+        consumeSteeringMessages: () => pendingSteeringMessages.splice(0),
+        setSteeringAvailable: (available) => { steeringOpen = available },
         onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),
@@ -2844,6 +2851,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     } finally {
       unmarkSessionActive(activeSessionId)
       runAbort = undefined
+      steeringOpen = false
+      pendingSteeringMessages = []
       setRunning(false)
     }
     if (completedResponse && !abortSignal.aborted) {
@@ -2951,6 +2960,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setSessionScope("cwd")
         },
         openQueuedMessages: openQueuedMessagesPalette,
+        steer: (instruction) => {
+          if (!running() || !steeringOpen || !runAbort || runAbort.signal.aborted) {
+            return { ok: false, message: "No agent run is active. Send it as a normal message instead." }
+          }
+          pendingSteeringMessages.push(instruction)
+          setStatus(formatQueueStatus("steering received — applying at the next model step", queuedInputs()))
+          return { ok: true, message: "Instruction will be applied at the next safe model boundary; it was not added to the queue." }
+        },
         openHelp: () => {
           setShowPalette(true)
           setReferenceTitle("Help")

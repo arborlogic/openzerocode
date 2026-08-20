@@ -22,6 +22,8 @@ Commands
   /review [target]       Review changes using the review-helper skill
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
+  /queue                 View or cancel queued messages
+  /steer <instruction>   Guide the active agent at its next safe model step (never queued)
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
