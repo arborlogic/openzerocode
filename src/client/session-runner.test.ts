@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { Effect, Layer, Schema } from "effect"
-import { createRecentContextAnchor, runSession, streamSession } from "./session-runner"
+import { createRecentContextAnchor, runSession, streamSession, toolErrorFingerprint } from "./session-runner"
 import { Provider } from "../provider/types"
 import { ToolRegistry } from "../tool/registry"
 import { Def, Result } from "../tool/types"
@@ -307,17 +307,65 @@ test("streamSession surfaces non-abort provider stream read errors", async () =>
     },
   })
 
+  const outcomes: any[] = []
+  const onOutcome = (outcome: any) => outcomes.push(outcome)
   const gen = streamSession("hello", [], {
     abort: new AbortController().signal,
     model: "test-model",
     provider: "test-provider",
     keyName: "test-key",
     mode: "build",
+    onOutcome,
   }, runtime(stream))
 
-  await gen.next() // user message
-  await gen.next() // thinking status
-  await assert.rejects(() => gen.next(), /upstream connection reset/)
+  // Drain the generator. Previously this rejected with the provider error;
+  // after introducing the RunOutcome contract, non-recoverable provider
+  // errors surface as a `provider_error` outcome chunk before the generator
+  // re-throws to the runSession() wrapper.
+  let caught: unknown
+  while (true) {
+    try {
+      const next = await gen.next()
+      if (next.done) break
+    } catch (error) {
+      caught = error
+      break
+    }
+  }
+  assert.ok(caught, "expected the generator to re-throw the provider error so the runSession() wrapper can surface it")
+  assert.match(String(caught instanceof Error ? caught.message : caught), /upstream connection reset/)
+  const providerError = outcomes.find((outcome) => outcome.kind === "provider_error")
+  assert.ok(providerError, "expected a provider_error outcome for a non-recoverable provider stream read failure")
+  assert.match(providerError.message, /upstream connection reset/)
+})
+
+test("streamSession emits a provider_error outcome when a provider request fails before streaming", async () => {
+  const outcomes: any[] = []
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    onOutcome: (outcome) => outcomes.push(outcome),
+  }, runtime(() => {
+    throw new Error("provider is unavailable")
+  }))
+
+  const chunks: any[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) break
+    chunks.push(next.value)
+  }
+
+  assert.deepEqual(outcomes.map((outcome) => outcome.kind), ["provider_error"])
+  const outcomeIndex = chunks.findIndex((chunk) => chunk.type === "outcome")
+  const errorIndex = chunks.findIndex((chunk) => chunk.type === "error")
+  assert.ok(outcomeIndex >= 0, "expected a provider_error outcome chunk")
+  assert.ok(errorIndex >= 0, "expected the legacy error chunk")
+  assert.ok(outcomeIndex < errorIndex, "expected the outcome before the legacy error chunk")
+  assert.match(outcomes[0].message, /provider is unavailable/)
 })
 
 test("streamSession retries a Codex stream interrupted before any output", async () => {
@@ -1043,20 +1091,28 @@ test("streamSession treats abort-time stream cancellation as interruption", asyn
     },
   })
 
+  const outcomes: any[] = []
+  const onOutcome = (outcome: any) => outcomes.push(outcome)
   const gen = streamSession("hello", [], {
     abort: abort.signal,
     model: "test-model",
     provider: "test-provider",
     keyName: "test-key",
     mode: "build",
+    onOutcome,
   }, runtime(stream))
 
   await gen.next() // user message
   await gen.next() // thinking status
-  const pending = gen.next()
   abort.abort()
-  const result = await pending
-  assert.equal(result.done, true)
+  // Drain the rest. Aborts now surface as an `aborted` outcome chunk before
+  // the generator returns, instead of closing immediately on the abort path.
+  while (true) {
+    const next = await gen.next()
+    if (next.done) break
+  }
+  const aborted = outcomes.find((outcome) => outcome.kind === "aborted")
+  assert.ok(aborted, "expected an aborted outcome for an interrupt-time cancellation")
 })
 
 test("streamSession exposes all tools in build mode", async () => {
@@ -1162,4 +1218,255 @@ test("streamSession exposes only read-only inspection tools in plan mode", async
     requests[0]?.tools?.map((tool) => tool.function.name),
     ["read", "grep", "glob", "web_fetch", "analyze_image"],
   )
+})
+
+test("streamSession emits a step_limit_reached outcome before the matching notice", async () => {
+  const previousMaxSteps = process.env.OPENZEROCODE_MAX_STEPS
+  process.env.OPENZEROCODE_MAX_STEPS = "1"
+  try {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: "call_1",
+            function: { name: "missing_tool", arguments: "{}" },
+          }],
+        })
+        controller.close()
+      },
+    })
+
+    const outcomes: any[] = []
+    const onOutcome = (outcome: any) => outcomes.push(outcome)
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model: "test-model",
+      provider: "test-provider",
+      keyName: "test-key",
+      mode: "build",
+      onOutcome,
+    }, runtime(stream))
+
+    const chunks: any[] = []
+    while (true) {
+      const next = await gen.next()
+      if (next.done) break
+      chunks.push(next.value)
+    }
+
+    assert.equal(outcomes.length, 1)
+    assert.equal(outcomes[0].kind, "step_limit_reached")
+    assert.equal(outcomes[0].maxSteps, 1)
+
+    // The outcome chunk should be yielded before the matching notice so a
+    // supervisor reading the stream can react before the human sees the toast.
+    const outcomeIndex = chunks.findIndex((chunk) => chunk.type === "outcome")
+    const noticeIndex = chunks.findIndex((chunk) => chunk.type === "notice" && chunk.code === "step_limit_reached")
+    assert.ok(outcomeIndex >= 0, "expected an outcome chunk")
+    assert.ok(noticeIndex >= 0, "expected a step_limit_reached notice chunk")
+    assert.ok(outcomeIndex < noticeIndex, "expected the outcome chunk to precede the notice chunk")
+  } finally {
+    if (previousMaxSteps === undefined) delete process.env.OPENZEROCODE_MAX_STEPS
+    else process.env.OPENZEROCODE_MAX_STEPS = previousMaxSteps
+  }
+})
+
+test("streamSession emits a completed outcome at the end of a normal turn", async () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "all done" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+
+  const outcomes: any[] = []
+  const onOutcome = (outcome: any) => outcomes.push(outcome)
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    onOutcome,
+  }, runtime(stream))
+
+  while (true) {
+    const next = await gen.next()
+    if (next.done) break
+  }
+
+  assert.equal(outcomes.length, 1)
+  assert.equal(outcomes[0].kind, "completed")
+})
+
+test("streamSession emits a replan_needed outcome when a single tool error fires three times", async () => {
+  const previousMaxSteps = process.env.OPENZEROCODE_MAX_STEPS
+  process.env.OPENZEROCODE_MAX_STEPS = "10"
+  try {
+    // Each step the model asks for "bash" with the same input, so the same
+    // tool-error fingerprint accumulates 3 times across steps 0..2. The run
+    // must terminate immediately rather than spending its remaining 7 steps.
+    let stepIndex = 0
+    const makeStream = () => new ReadableStream({
+      start(controller) {
+        stepIndex++
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: `call_${stepIndex}`,
+            function: { name: "bash", arguments: JSON.stringify({ cmd: "false" }) },
+          }],
+        })
+        controller.close()
+      },
+    })
+
+    const failingBash = new Def({
+      id: "bash",
+      description: "always fails the same way",
+      parameters: Schema.Struct({}),
+      execute: () => Effect.succeed(new Result({
+        title: "Error",
+        output: "command exited with code 1: missing libfoo.so",
+      })),
+    })
+
+    const outcomes: any[] = []
+    const onOutcome = (outcome: any) => outcomes.push(outcome)
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model: "test-model",
+      provider: "test-provider",
+      keyName: "test-key",
+      mode: "build",
+      onOutcome,
+    }, runtime(makeStream, { tools: [failingBash] }))
+
+    while (true) {
+      const next = await gen.next()
+      if (next.done) break
+    }
+
+    const replan = outcomes.find((outcome) => outcome.kind === "replan_needed")
+    assert.ok(replan, "expected a replan_needed outcome after the same tool error fired 3 times")
+    assert.match(replan.reason, /bash failed with the same error 3 times/)
+    assert.equal(replan.recentErrors[0]?.tool, "bash")
+    assert.match(replan.recentErrors[0]?.signature ?? "", /bash::/)
+    assert.equal(stepIndex, 3, "expected the third matching failure to terminate the run immediately")
+    assert.deepEqual(outcomes.map((outcome) => outcome.kind), ["replan_needed"])
+  } finally {
+    if (previousMaxSteps === undefined) delete process.env.OPENZEROCODE_MAX_STEPS
+    else process.env.OPENZEROCODE_MAX_STEPS = previousMaxSteps
+  }
+})
+
+test("streamSession emits one internal_error outcome before rethrowing unexpected runtime failures", async () => {
+  const outcomes: any[] = []
+  const chunks: any[] = []
+  const baseRuntime = runtime(new ReadableStream())
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    onOutcome: (outcome) => outcomes.push(outcome),
+  }, {
+    ...baseRuntime,
+    systemPrompt: () => { throw new Error("system prompt exploded") },
+  })
+
+  let caught: unknown
+  while (true) {
+    try {
+      const next = await gen.next()
+      if (next.done) break
+      chunks.push(next.value)
+    } catch (error) {
+      caught = error
+      break
+    }
+  }
+
+  assert.match(caught instanceof Error ? caught.message : String(caught), /system prompt exploded/)
+  assert.deepEqual(outcomes, [{ kind: "internal_error", message: "system prompt exploded" }])
+  assert.deepEqual(
+    chunks.filter((chunk) => chunk.type === "outcome").map((chunk) => chunk.outcome.kind),
+    ["internal_error"],
+  )
+})
+
+test("streamSession does NOT emit replan_needed when a tool error fingerprint only fires twice", async () => {
+  const previousMaxSteps = process.env.OPENZEROCODE_MAX_STEPS
+  process.env.OPENZEROCODE_MAX_STEPS = "2"
+  try {
+    let stepIndex = 0
+    const makeStream = () => new ReadableStream({
+      start(controller) {
+        stepIndex++
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: `call_${stepIndex}`,
+            function: { name: "bash", arguments: JSON.stringify({ cmd: "false" }) },
+          }],
+        })
+        controller.close()
+      },
+    })
+    const failingBash = new Def({
+      id: "bash",
+      description: "always fails the same way",
+      parameters: Schema.Struct({}),
+      execute: () => Effect.succeed(new Result({
+        title: "Error",
+        output: "command exited with code 1: missing libfoo.so",
+      })),
+    })
+
+    const outcomes: any[] = []
+    const onOutcome = (outcome: any) => outcomes.push(outcome)
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model: "test-model",
+      provider: "test-provider",
+      keyName: "test-key",
+      mode: "build",
+      onOutcome,
+    }, runtime(makeStream, { tools: [failingBash] }))
+
+    while (true) {
+      const next = await gen.next()
+      if (next.done) break
+    }
+
+    assert.equal(outcomes.some((outcome) => outcome.kind === "replan_needed"), false)
+    // The run did hit the cap, so it should still emit a step_limit_reached
+    // outcome — the test is about replan_needed specifically, not about
+    // suppressing the normal step-limit signal.
+    const stepLimit = outcomes.find((outcome) => outcome.kind === "step_limit_reached")
+    assert.ok(stepLimit, "expected a step_limit_reached outcome for a cap-bound run")
+  } finally {
+    if (previousMaxSteps === undefined) delete process.env.OPENZEROCODE_MAX_STEPS
+    else process.env.OPENZEROCODE_MAX_STEPS = previousMaxSteps
+  }
+})
+
+test("toolErrorFingerprint normalises hex addresses and digits so minor wording changes don't reset the count", () => {
+  // Two exit codes of the same kind share a fingerprint, so the count isn't
+  // reset every time the kernel picks a different exit value.
+  const a = toolErrorFingerprint("bash", "command exited with code 1: missing libfoo.so")
+  const b = toolErrorFingerprint("bash", "command exited with code 2: missing libfoo.so")
+  assert.equal(a, b, "expected different exit codes to share a fingerprint")
+
+  // Hex addresses and decimal counts are interchangeable for fingerprinting
+  // purposes; only the shape of the message matters.
+  const c = toolErrorFingerprint("bash", "alloc failed at 0xdeadbeef: 5 retries left")
+  const d = toolErrorFingerprint("bash", "alloc failed at 0xcafef00d: 9 retries left")
+  assert.equal(c, d, "expected hex addresses and decimal counts to be normalised in the fingerprint")
+  assert.match(c, /^bash::/)
 })

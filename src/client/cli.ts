@@ -11,6 +11,7 @@ import { buildSystemPrompt, shouldAppendSkillInstructions } from "./system-promp
 import { testConnection, isConnected, setEnabled, readPage } from "../browser/geass-client"
 import { resolveSkillDirs, matchSkillByUrl, buildSkillSection, type LoadedSkill } from "./skill-loader"
 import { writeRunRecord, type RunToolEvent, type RunOutcome } from "./run-capture"
+import type { RunOutcome as SessionRunOutcome } from "../server/types"
 
 export async function handleCli(args: string[], version: string): Promise<void> {
   if (args.includes("--version") || args.includes("-v")) {
@@ -127,6 +128,7 @@ async function handleHeadlessRun(args: string[]): Promise<void> {
 
   let finalContent = ""
   let runOutcome: RunOutcome = "success"
+  let sessionOutcome: SessionRunOutcome | undefined
   let runError: string | undefined
   const runTools: RunToolEvent[] = []
   const runStart = new Date()
@@ -162,7 +164,22 @@ async function handleHeadlessRun(args: string[]): Promise<void> {
         runOutcome = "fail"
         runError = chunk.message
         break
+      case "outcome":
+        sessionOutcome = chunk.outcome
+        if (chunk.outcome.kind !== "completed") {
+          runOutcome = "fail"
+          if ("message" in chunk.outcome) runError = chunk.outcome.message
+          else if (chunk.outcome.kind === "replan_needed") runError = chunk.outcome.reason
+          else if (chunk.outcome.kind === "step_limit_reached") runError = `step limit reached (${chunk.outcome.steps}/${chunk.outcome.maxSteps})`
+          else if (chunk.outcome.kind === "aborted") runError = "aborted"
+        }
+        break
     }
+  }
+
+  if (!sessionOutcome) {
+    runOutcome = "fail"
+    runError ??= "run ended without a terminal outcome"
   }
 
   let runRecordPath: string | undefined

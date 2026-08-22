@@ -384,36 +384,25 @@ describe("executeCommand", () => {
       assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "off")
     })
 
-    it("enables proactive mode", async () => {
+    it("enables goal mode", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/autopilot proactive", ctx)
+      const result = await executeCommand("/autopilot goal", ctx)
       assert.ok(result)
-      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "proactive")
+      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "goal")
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-      assert.equal(args[1], "Proactive Autopilot enabled")
-      assert.ok(args[2].includes("aligned with the existing plan"))
-      assert.ok(args[2].includes("pause on uncertainty"))
-    })
-
-    it("enables continuous execution for an approved TODO list", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/autopilot execute", ctx)
-      assert.ok(result)
-      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "execute")
-      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-      assert.equal(args[1], "Execute Plan Autopilot enabled")
-      assert.ok(args[2].includes("approved TODO list continuously"))
-      assert.ok(args[2].includes("review once at the end"))
+      assert.equal(args[1], "Goal Autopilot enabled")
+      assert.ok(args[2].includes("drive your stated goal to completion"))
+      assert.ok(args[2].includes("propose new ones for your approval"))
     })
 
     it("shows status", async () => {
-      const ctx = stubCtx({ getAutopilotMode: mock((): AutopilotMode => "proactive") })
+      const ctx = stubCtx({ getAutopilotMode: mock((): AutopilotMode => "goal") })
       const result = await executeCommand("/autopilot", ctx)
       assert.ok(result)
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
       assert.equal(args[0], "info")
       assert.equal(args[1], "Autopilot")
-      assert.equal(args[2], "PROACTIVE")
+      assert.equal(args[2], "GOAL")
     })
 
     it("rejects invalid options", async () => {

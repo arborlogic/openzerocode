@@ -14,6 +14,7 @@ import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpSer
 import { createStreamState } from "./stream-state"
 import { STREAM_TEST_RESPONSE, streamTestChunks } from "./stream-test"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
+import type { RunOutcome } from "../server/types"
 import { SlashAutocomplete } from "./autocomplete"
 import { cycleCommandArgument } from "./autocomplete-logic"
 import type { AutocompleteApi } from "./autocomplete"
@@ -69,6 +70,7 @@ import {
   formatAutopilotRetryDelay,
   parseAutopilotDecision,
   retriesAutopilotRateLimits,
+  shouldAutopilotConsultOnOutcome,
   type AutopilotDecision,
   type AutopilotMode,
 } from "./autopilot"
@@ -380,6 +382,7 @@ function App() {
   const [autoCompressionThreshold, setAutoCompressionThreshold] = createSignal(_uiPrefs.autoCompressionThreshold)
   const [autopilotMode, setAutopilotMode] = createSignal<AutopilotMode>("off")
   const autopilotEnabled = () => autopilotMode() !== "off"
+  const [pendingSuggestion, setPendingSuggestion] = createSignal<string | undefined>(undefined)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -542,7 +545,7 @@ function App() {
     autopilotAbort = new AbortController()
     const signal = autopilotAbort.signal
     const mode = autopilotMode()
-    if (mode === "off") return { confidence: "low", instruction: "", reason: "autopilot is off" }
+    if (mode === "off") return { action: "blocked", reason: "autopilot is off" }
     const supervisorPrompt = buildAutopilotSupervisorPrompt(mode)
     const msgHistory = sanitizeMessages(messages())
     const result = await runSync(Effect.gen(function* () {
@@ -616,7 +619,7 @@ function App() {
       const decision = await runAutopilotSupervisor()
       if (!autopilotEnabled()) return
       clearAutopilotRateLimitRetry()
-      if (decision.confidence === "low") {
+      if (decision.action === "blocked") {
         setStatus("autopilot ready — waiting for your input")
         if (decision.reason) {
           setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autopilot paused: ${decision.reason}` }])
@@ -624,6 +627,24 @@ function App() {
         }
         return
       }
+      if (decision.action === "accept") {
+        setStatus("autopilot ready — goal complete")
+        if (decision.reason) {
+          setNotices((prev) => [...prev, { kind: "system", text: `✓ Autopilot complete: ${decision.reason}` }])
+          queueMicrotask(scrollBottom)
+        }
+        return
+      }
+      if (decision.action === "suggest") {
+        // Surface the proposed prompt for the human to accept (Enter) or
+        // decline (Esc) before it is run, so suggestions never run unauthorised.
+        setPendingSuggestion(decision.instruction)
+        setStatus("autopilot suggestion — press Enter to run, Esc to decline")
+        showToast("info", "Autopilot suggestion", decision.instruction, 6000)
+        return
+      }
+      // action === "direct": a previously approved goal is clearly unfinished,
+      // so queue the concrete continuation prompt without asking.
       showToast("info", "Autopilot continuing", decision.instruction, 4000)
       inputQueue?.enqueue(decision.instruction)
       setStatus("autopilot queued next prompt")
@@ -651,7 +672,7 @@ function App() {
       rateLimitRetryPending: Boolean(autopilotRateLimitTimer),
       running: running(),
       compacting: compacting(),
-      awaitingApproval: Boolean(pendingApproval()),
+      awaitingApproval: Boolean(pendingApproval()) || Boolean(pendingSuggestion()),
       queuedInputCount: inputQueue?.depth() ?? 0,
       inputQueueDraining: inputQueue?.isDraining() ?? false,
     })) return
@@ -662,6 +683,7 @@ function App() {
     autopilotAbort?.abort()
     autopilotAbort = undefined
     clearAutopilotRateLimitRetry()
+    setPendingSuggestion(undefined)
     setAutopilotMode(mode)
     if (mode !== "off") {
       if (messages().length > 0) scheduleAutopilotCheck()
@@ -1980,13 +2002,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setShowPalette(false)
       showToast(
         "success",
-        mode === "off" ? "Autopilot stopped" : mode === "execute" ? "Execute Plan Autopilot enabled" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+        mode === "off" ? "Autopilot stopped" : mode === "goal" ? "Goal Autopilot enabled" : "Standard Autopilot enabled",
         mode === "off"
           ? "AI will wait for your next message."
-          : mode === "execute"
-            ? "AI will execute your approved TODO list continuously, then verify and review once at the end."
-            : mode === "proactive"
-            ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
+          : mode === "goal"
+            ? "AI will drive your stated goal to completion: continue approved sub-steps, propose new ones for your approval, and stop when done."
             : "AI will answer routine continuation questions when the next step is clear and safe.",
       )
     }
@@ -2002,14 +2022,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => selectMode("standard"),
       },
       {
-        label: "Proactive",
-        hint: "plan-aligned continuation",
-        onSelect: () => selectMode("proactive"),
-      },
-      {
-        label: "Execute Plan",
-        hint: "continuous TODO execution",
-        onSelect: () => selectMode("execute"),
+        label: "Goal",
+        hint: "drive a goal to completion",
+        onSelect: () => selectMode("goal"),
       },
       ...(current !== "off"
         ? [{ label: "Turn off", hint: "wait for input", onSelect: () => selectMode("off") } satisfies PaletteItem]
@@ -2733,6 +2748,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const activeSessionId = sessionId()
     markSessionActive(activeSessionId)
     let completedResponse = false
+    // Captured by the onOutcome callback so the post-run hook can decide
+    // whether to kick the autopilot supervisor. We keep it as a closure
+    // variable (not a signal) because the consumer of the run is already
+    // drained by the time the post-run hook runs.
+    let lastOutcome: RunOutcome | undefined
 
     let noticesCleared = false
     const clearNoticesOnce = () => {
@@ -2784,6 +2804,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             cachedInputTokens,
             sessionId: sessionId(),
           })
+        },
+        onOutcome: (outcome) => {
+          lastOutcome = outcome
         },
       }, {
         runSync,
@@ -2845,8 +2868,13 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         const msg = err instanceof Error ? err.message : String(err)
         setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
         setStatus(formatQueueStatus("error", queuedInputs()))
+        // streamSession normally emits this before rethrowing. Keep a fallback
+        // for failures outside the generator, but do not misclassify unknown
+        // application errors as provider failures.
+        lastOutcome ??= { kind: "internal_error", message: msg }
       } else {
         setStatus(formatQueueStatus("interrupted", queuedInputs()))
+        lastOutcome = { kind: "aborted" }
       }
     } finally {
       unmarkSessionActive(activeSessionId)
@@ -2857,6 +2885,17 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
     if (completedResponse && !abortSignal.aborted) {
       await maybeAutoCompactContext("")
+    }
+    // Hand any non-completed outcome to the autopilot supervisor so the
+    // session can keep moving without forcing the human to type "continue"
+    // after a step limit, a replan signal, or a provider error. The helper
+    // returns false for `completed` / no-outcome so a normal turn never
+    // re-triggers the supervisor loop. This runs for both successful runs
+    // (step_limit_reached, replan_needed) and synthesised error outcomes
+    // produced in the catch above. Aborts and internal errors intentionally
+    // pause instead of starting another model turn.
+    if (!abortSignal.aborted && shouldAutopilotConsultOnOutcome(lastOutcome)) {
+      scheduleAutopilotCheck()
     }
   }
 
@@ -3129,6 +3168,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       } else if (event.name === "n" || event.name === "escape" || event.name === "q") {
         setPendingApproval(undefined)
         approval.reject(new Error("denied by user"))
+      }
+      event.preventDefault()
+      return
+    }
+    // Autopilot suggestion: the supervisor proposed a next prompt that needs
+    // the human's confirmation before it is run.
+    const suggestion = pendingSuggestion()
+    if (suggestion !== undefined) {
+      if (event.name === "return" || event.name === "enter") {
+        setPendingSuggestion(undefined)
+        inputQueue?.enqueue(suggestion)
+        setStatus("autopilot queued suggested prompt")
+        queueMicrotask(scrollBottom)
+      } else if (event.name === "escape" || event.name === "q") {
+        setPendingSuggestion(undefined)
+        setStatus("autopilot suggestion declined")
+      } else {
+        // Ignore other keys while a suggestion is pending so typing cannot
+        // accidentally overwrite it.
+        event.preventDefault()
+        return
       }
       event.preventDefault()
       return
@@ -3905,6 +3965,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         )}
       </Show>
 
+      <Show when={pendingSuggestion()}>
+        {(suggestion: () => string) => (
+          <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#d29922" backgroundColor={THEME.surface}>
+            <text style={{ fg: "#d29922" }}>AUTOPILOT SUGGESTION</text>
+            <text style={{ fg: THEME.text }}>{suggestion()}</text>
+            <box flexDirection="row" gap={2} marginTop={0}>
+              <text
+                style={{ fg: THEME.accent }}
+                onMouseDown={() => { const s = pendingSuggestion(); if (s !== undefined) { setPendingSuggestion(undefined); inputQueue?.enqueue(s); setStatus("autopilot queued suggested prompt"); queueMicrotask(scrollBottom) } }}
+              >{"[Enter] run"}</text>
+              <text
+                style={{ fg: THEME.muted }}
+                onMouseDown={() => { setPendingSuggestion(undefined); setStatus("autopilot suggestion declined") }}
+              >{"[Esc] decline"}</text>
+            </box>
+          </box>
+        )}
+      </Show>
+
       <box flexShrink={0} flexDirection="column" border={["left"]} borderColor={THEME.border}>
         <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
             <box flexDirection="column">
@@ -3987,7 +4066,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               </Show>
               <Show when={autopilotEnabled()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-                <text style={{ fg: "#d29922" }}>{autopilotMode() === "execute" ? "PILOT▶" : autopilotMode() === "proactive" ? "PILOT+" : "PILOT"}</text>
+                <text style={{ fg: "#d29922" }}>{autopilotMode() === "goal" ? "PILOT▶" : "PILOT"}</text>
               </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>

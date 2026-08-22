@@ -11,7 +11,7 @@ import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, getModelConfig, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
-import type { StreamChunk } from "../server/types"
+import type { RunOutcome, StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build" | "plan" | "compose"
@@ -36,6 +36,68 @@ function debugProviderRetry(message: string, error?: unknown): void {
   console.error(`[openzerocode:provider-retry] ${message}${detail ? ` (${detail})` : ""}`)
 }
 
+/**
+ * Stable fingerprint for a tool failure. Two tool errors with the same
+ * fingerprint are treated as the same recurring failure by the
+ * replan-needed detector. We hash on `tool name` + a normalised slice of the
+ * first line of the error message so wording changes don't reset the count.
+ */
+export function toolErrorFingerprint(tool: string, output: string): string {
+  const firstLine = String(output).split("\n").find((line) => line.trim().length > 0) ?? ""
+  const normalized = firstLine
+    .replace(/0x[0-9a-fA-F]+/g, "<hex>")
+    .replace(/\b\d+\b/g, "<n>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+  return `${tool}::${normalized}`
+}
+
+/** Stable fingerprint for a provider-level failure message. */
+export function providerErrorSignature(message: string): string {
+  return message
+    .replace(/0x[0-9a-fA-F]+/g, "<hex>")
+    .replace(/\b\d+\b/g, "<n>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120)
+}
+
+const REPLAN_REPEAT_THRESHOLD = 3
+
+/**
+ * Build the outcome chunk for a given RunOutcome. The public streamSession()
+ * wrapper dispatches onOutcome while enforcing the one-terminal-outcome rule.
+ */
+function makeOutcome(outcome: RunOutcome): StreamChunk {
+  return { type: "outcome", outcome }
+}
+
+/**
+ * If any single tool error fingerprint has fired at least
+ * REPLAN_REPEAT_THRESHOLD times this run, return a `replan_needed` outcome
+ * summarising the recent recurring errors. Otherwise return undefined.
+ */
+function dominantToolErrorOutcome(
+  counts: Map<string, { tool: string; signature: string; count: number }>,
+): RunOutcome | undefined {
+  let dominant: { tool: string; signature: string; count: number } | undefined
+  for (const entry of counts.values()) {
+    if (entry.count < REPLAN_REPEAT_THRESHOLD) continue
+    if (!dominant || entry.count > dominant.count) dominant = entry
+  }
+  if (!dominant) return undefined
+  // Surface the worst few fingerprints, ordered by count desc, so the
+  // follow-up prompt can name them concretely.
+  const recent = [...counts.values()]
+    .filter((entry) => entry.count >= REPLAN_REPEAT_THRESHOLD)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map((entry) => ({ tool: entry.tool, signature: entry.signature }))
+  const reason = `${dominant.tool} failed with the same error ${dominant.count} times this run (${dominant.signature})`
+  return { kind: "replan_needed", reason, recentErrors: recent }
+}
+
 type SessionUi = {
   abort: AbortSignal
   modelInfo?: ModelInfo
@@ -53,6 +115,13 @@ type SessionUi = {
   keyName: string
   reasoning_effort?: "low" | "medium" | "high" | "max"
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
+  /**
+   * Called for every machine-readable run outcome (step limit, provider error,
+   * replan-needed, completed, abort). Equivalent to the `onOutcome` option on
+   * StreamOptions; this duplicate exists so TUI-style callers that go through
+   * runSession() can react without consuming the generator directly.
+   */
+  onOutcome?: (outcome: RunOutcome) => void
   maxSteps?: number
   origin?: { peer: string }
   /** Selectable tool groups to hide from the model (denylist; core tools always on). */
@@ -268,6 +337,12 @@ export type StreamOptions = {
   setSteeringAvailable?: (available: boolean) => void
   /** Capability profile for this request. Defaults to OPENZEROCODE_HARNESS_PROFILE. */
   harnessProfile?: HarnessProfile
+  /**
+   * Called for every machine-readable run outcome (step limit, provider error,
+   * repeated tool error, clean completion, abort). Use this instead of parsing
+   * `notice.text` for any automated continuation / replan / scheduler logic.
+   */
+  onOutcome?: (outcome: RunOutcome) => void
 }
 
 /**
@@ -278,7 +353,7 @@ export type StreamOptions = {
  * The full message list (including the user message and all assistant/tool
  * messages produced this run) is exposed via the generator's return value.
  */
-export async function* streamSession(
+async function* streamSessionImpl(
   userInput: string,
   history: Message[],
   options: StreamOptions,
@@ -315,6 +390,10 @@ export async function* streamSession(
   let continuationOverlapReference: string | undefined
   let accumulatedVisibleText = ""
   const workdir = options.workdir ?? process.cwd()
+  // Tracks how many times each tool-error fingerprint has fired this run, so
+  // the loop can surface a `replan_needed` outcome once a single failure
+  // pattern has been retried past the point of diminishing returns.
+  const toolErrorCounts = new Map<string, { tool: string; signature: string; count: number }>()
   // Only pass reasoning_effort to models that support it (e.g. DeepSeek V4 Pro).
   // Sending it to non-reasoning models can cause API errors (OpenAI) or is silently ignored.
   const effectiveReasoningEffort = (() => {
@@ -480,6 +559,11 @@ export async function* streamSession(
 
     if (!stream) {
       const errorText = formatProviderError(lastError)
+      const signature = providerErrorSignature(errorText)
+      // A request can fail before a stream exists, so it never reaches the
+      // reader-error path below. Emit the same structured terminal outcome
+      // before the legacy display/error chunks for all provider failures.
+      yield makeOutcome({ kind: "provider_error", message: errorText, signature })
       yield { type: "notice", kind: "error", text: errorText }
       yield { type: "error", message: errorText }
       return resultHistory
@@ -600,6 +684,7 @@ export async function* streamSession(
     }
 
     if (options.abort.aborted) {
+      yield makeOutcome({ kind: "aborted" })
       return resultHistory
     }
 
@@ -617,7 +702,15 @@ export async function* streamSession(
         // Hidden reasoning without visible text is neither transparent nor a
         // safe textual continuation context, so surface that interruption.
         && (content.length > 0 || !hasReasoning)
-      if (!canRecover) throw streamError
+      if (!canRecover) {
+        // Surface a machine-readable provider_error outcome before throwing,
+        // so consumers (autopilot, scheduler) can react even though the
+        // generator then unwinds via the runSession() catch block.
+        const providerMessage = streamError instanceof Error ? streamError.message : String(streamError)
+        const signature = providerErrorSignature(providerMessage)
+        yield makeOutcome({ kind: "provider_error", message: providerMessage, signature })
+        throw streamError
+      }
 
       interruptionRecoveries++
       if (!content) initialContextRecoveries++
@@ -662,6 +755,8 @@ export async function* streamSession(
     // surface that invalid completion rather than silently ending the turn.
     if (!content && hasReasoning && !toolCalls) {
       const errorText = "Provider returned reasoning without an assistant response"
+      const signature = providerErrorSignature(errorText)
+      yield makeOutcome({ kind: "provider_error", message: errorText, signature })
       yield { type: "notice", kind: "error", text: errorText }
       yield { type: "error", message: errorText }
       return resultHistory
@@ -670,10 +765,14 @@ export async function* streamSession(
     if (!content && !hasReasoning && !toolCalls) {
       const hadProgressThisTurn = resultHistory.length > turnProgressStart
       if (hadProgressThisTurn && finishReason !== "length") {
+        const replan = dominantToolErrorOutcome(toolErrorCounts)
+        yield makeOutcome(replan ?? { kind: "completed" })
         yield { type: "done" }
         return resultHistory
       }
       const errorText = "Provider returned an empty assistant response"
+      const signature = providerErrorSignature(errorText)
+      yield makeOutcome({ kind: "provider_error", message: errorText, signature })
       yield { type: "notice", kind: "error", text: errorText }
       yield { type: "error", message: errorText }
       return resultHistory
@@ -711,6 +810,8 @@ export async function* streamSession(
         yield { type: "status", text: "applying steering..." }
         continue
       }
+      const replan = dominantToolErrorOutcome(toolErrorCounts)
+      yield makeOutcome(replan ?? { kind: "completed" })
       yield { type: "done" }
       return resultHistory
     }
@@ -718,6 +819,7 @@ export async function* streamSession(
     allMessages.push(assistantMessage)
 
     if (options.abort.aborted) {
+      yield makeOutcome({ kind: "aborted" })
       return resultHistory
     }
 
@@ -771,7 +873,10 @@ export async function* streamSession(
     }
 
     for (let i = 0; i < toolCalls.length;) {
-      if (options.abort.aborted) return resultHistory
+      if (options.abort.aborted) {
+        yield makeOutcome({ kind: "aborted" })
+        return resultHistory
+      }
       const call = toolCalls[i]!
       const batch = canRunInParallel(call)
         ? toolCalls.slice(i).findIndex((candidate) => !canRunInParallel(candidate))
@@ -780,7 +885,10 @@ export async function* streamSession(
       const currentCalls = toolCalls.slice(i, i + batchSize)
 
       for (const currentCall of currentCalls) {
-        if (options.abort.aborted) return resultHistory
+        if (options.abort.aborted) {
+          yield makeOutcome({ kind: "aborted" })
+          return resultHistory
+        }
         yield* emitToolStart(currentCall)
       }
 
@@ -789,17 +897,40 @@ export async function* streamSession(
         : [await runTool(call)]
 
       for (const { call: finishedCall, name, result } of execResults) {
-        if (options.abort.aborted) return resultHistory
+        if (options.abort.aborted) {
+          yield makeOutcome({ kind: "aborted" })
+          return resultHistory
+        }
         if (result === null) {
           const errorMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: `Unknown tool: ${name}`, error: true })
           allMessages.push(errorMsg)
           resultHistory.push(errorMsg)
+          const unknownSig = toolErrorFingerprint(name, `Unknown tool: ${name}`)
+          toolErrorCounts.set(unknownSig, {
+            tool: name,
+            signature: unknownSig,
+            count: (toolErrorCounts.get(unknownSig)?.count ?? 0) + 1,
+          })
           yield { type: "tool_result", id: finishedCall.id, name, output: `Unknown tool: ${name}`, error: true }
           yield { type: "message", message: errorMsg }
+          const replan = dominantToolErrorOutcome(toolErrorCounts)
+          if (replan) {
+            yield makeOutcome(replan)
+            yield { type: "done" }
+            return resultHistory
+          }
           continue
         }
         let toolContent = convertToolResult(result)
         const isError = result.title === "Error"
+        if (isError) {
+          const sig = toolErrorFingerprint(name, toolContent.text)
+          toolErrorCounts.set(sig, {
+            tool: name,
+            signature: sig,
+            count: (toolErrorCounts.get(sig)?.count ?? 0) + 1,
+          })
+        }
 
         // Vision fallback: when the model doesn't support images, use local VLM
         // to analyze images and strip them from the content sent to the API.
@@ -831,6 +962,12 @@ export async function* streamSession(
         allMessages.push(toolMsg)
         resultHistory.push(toolMsg)
         yield { type: "message", message: toolMsg }
+        const replan = dominantToolErrorOutcome(toolErrorCounts)
+        if (replan) {
+          yield makeOutcome(replan)
+          yield { type: "done" }
+          return resultHistory
+        }
       }
 
       i += batchSize
@@ -843,6 +980,7 @@ export async function* streamSession(
 
   // Reached the step cap without the model finishing. Surface it so the run
   // isn't mistaken for a clean completion — and tell the user how to allow more.
+  yield makeOutcome({ kind: "step_limit_reached", steps: maxSteps, maxSteps })
   yield {
     type: "notice",
     kind: "error",
@@ -851,6 +989,47 @@ export async function* streamSession(
   }
   yield { type: "done" }
   return resultHistory
+}
+
+/**
+ * Public stream wrapper. Every run emits exactly one terminal outcome. It also
+ * converts unexpected application failures into `internal_error` without
+ * misclassifying them as provider failures; the original error is rethrown
+ * after consumers have received the outcome.
+ */
+export async function* streamSession(
+  userInput: string,
+  history: Message[],
+  options: StreamOptions,
+  runtime: SessionRuntime,
+): AsyncGenerator<StreamChunk, Message[], void> {
+  const gen = streamSessionImpl(userInput, history, options, runtime)
+  let terminalOutcome: RunOutcome | undefined
+  try {
+    while (true) {
+      const next = await gen.next()
+      if (next.done) return next.value
+      const chunk = next.value
+      if (chunk.type === "outcome") {
+        if (terminalOutcome) continue
+        terminalOutcome = chunk.outcome
+        options.onOutcome?.(chunk.outcome)
+      }
+      yield chunk
+    }
+  } catch (error) {
+    if (!terminalOutcome) {
+      const outcome: RunOutcome = options.abort.aborted
+        ? { kind: "aborted" }
+        : { kind: "internal_error", message: error instanceof Error ? error.message : String(error) }
+      terminalOutcome = outcome
+      options.onOutcome?.(outcome)
+      yield { type: "outcome", outcome }
+    }
+    throw error
+  } finally {
+    await gen.return(history).catch(() => undefined)
+  }
 }
 
 /**
@@ -878,6 +1057,7 @@ export async function runSession(
     setSteeringAvailable: ui.setSteeringAvailable,
     recentContextAnchor: recentContextAnchorEnabled(),
     harnessProfile: getHarnessProfile(),
+    onOutcome: ui.onOutcome,
   }, runtime)
   const resultHistory: Message[] = discardLegacyProviderFailures(history)
 
@@ -914,6 +1094,10 @@ export async function runSession(
           break
         case "notice":
           ui.notify(chunk.text, chunk.kind, chunk.code)
+          break
+        case "outcome":
+          // Callback already fired inside the generator via makeOutcome; this
+          // case exists so the chunk isn't silently dropped from the stream.
           break
         case "usage":
           ui.onUsage?.(chunk.inputTokens, chunk.outputTokens, chunk.cachedInputTokens)

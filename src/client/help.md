@@ -14,8 +14,8 @@
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
-  /autopilot [standard|proactive|execute|off]
-                         Continue routine prompts, advance a plan, or execute an approved TODO list
+  /autopilot [standard|goal|off]
+                         Continue routine prompts, or drive a stated goal to completion
   /commit                Generate a commit message from current changes
   /exit  [/quit]         Exit the app
   exit  quit             Also work without the slash
@@ -36,7 +36,7 @@
   INPUT
     Focus input          Return focus to the composer
     Auto-approve         Toggle automatic tool approval
-    Autopilot            Choose standard, proactive, or continuous TODO execution
+    Autopilot            Choose standard continuation, or goal-driven completion
 
   DISPLAY
     Display settings     Toggle tools, thinking, layout
