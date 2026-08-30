@@ -234,6 +234,14 @@ export function toolsToResponsesTools(tools: ToolDef[] | undefined) {
 
 export function toResponsesRequestBody(req: CompletionRequest) {
   const { instructions, messages } = splitInstructions(req.messages)
+  const reasoning = req.reasoning_effort
+    ? {
+        // The Responses API nests reasoning controls rather than accepting the
+        // Chat Completions `reasoning_effort` field at the request root.
+        effort: req.reasoning_effort,
+        summary: "auto" as const,
+      }
+    : undefined
   return {
     model: req.model,
     instructions,
@@ -241,6 +249,7 @@ export function toResponsesRequestBody(req: CompletionRequest) {
     tools: toolsToResponsesTools(req.tools),
     stream: req.stream,
     max_output_tokens: req.max_tokens,
+    reasoning,
     store: false,
   }
 }

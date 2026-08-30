@@ -300,6 +300,36 @@ test("streamSession forwards reasoning effort for Codex GPT-5.5 and GPT-5.6", as
   }
 })
 
+test("streamSession normalizes advanced reasoning effort for the selected model", async () => {
+  const cases = [
+    { model: "openaicodex/gpt-5.6-sol", effort: "max" as const, expected: "max" },
+    { model: "openaicodex/gpt-5.5", effort: "max" as const, expected: "high" },
+    { model: "deepseek-v4-pro", effort: "xhigh" as const, expected: "high" },
+  ]
+
+  for (const { model, effort, expected } of cases) {
+    const requests: CompletionRequest[] = []
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+        controller.close()
+      },
+    })
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model,
+      provider: "zero-api",
+      keyName: "test-key",
+      mode: "build",
+      reasoning_effort: effort,
+    }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+    while (!(await gen.next()).done) {}
+
+    assert.equal(requests[0]?.reasoning_effort, expected, model)
+  }
+})
+
 test("streamSession surfaces non-abort provider stream read errors", async () => {
   const stream = new ReadableStream({
     pull(controller) {

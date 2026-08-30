@@ -1,9 +1,9 @@
 import type { Setter } from "solid-js"
 import { HELP_CONTENT } from "./help-content"
 import type { DisplayBlock } from "./response-entry"
-import type { Message } from "../provider/types"
+import type { Message, ReasoningEffort } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
-import { getModelConfig } from "../provider/models"
+import { getModelConfig, normalizeReasoningEffort } from "../provider/models"
 import type { PeerEntry } from "../peer/registry"
 import type { AutopilotMode } from "./autopilot"
 import { findSkill, listSkills, resolveSkillDirs, type SkillSummary } from "./skill-loader"
@@ -25,8 +25,8 @@ export type CommandContext = {
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
   mode: "build" | "plan" | "compose"
   setMode: (mode: "build" | "plan" | "compose") => void
-  reasoningEffort: "low" | "medium" | "high" | "max" | undefined
-  setReasoningEffort: (effort: "low" | "medium" | "high" | "max" | undefined) => void
+  reasoningEffort: ReasoningEffort | undefined
+  setReasoningEffort: (effort: ReasoningEffort | undefined) => void
   messages: () => Message[]
   setMessages: Setter<Message[]>
   setDraft: (text: string) => void
@@ -73,7 +73,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
   { name: "mode", description: "Switch mode: /mode build|plan|compose (no arg toggles)", argumentOptions: ["build", "plan", "compose"] },
   { name: "learn", description: "Extract non-obvious learnings from this session" },
-  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off", argumentOptions: ["low", "medium", "high", "max", "off"] },
+  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|xhigh|max or /reasoning off", argumentOptions: ["low", "medium", "high", "xhigh", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
   { name: "skills", description: "List skills or configure automatic routing", argumentOptions: ["auto", "clear", "status"] },
   { name: "skill", description: "Show a skill's instructions: /skill <name>" },
@@ -219,15 +219,18 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     if (!arg || arg === "off") {
       ctx.setReasoningEffort(undefined)
       notifyCommand(ctx, "info", "Reasoning effort", "Disabled (default)")
-    } else if (arg === "low" || arg === "medium" || arg === "high" || arg === "max") {
+    } else if (arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh" || arg === "max") {
       ctx.setReasoningEffort(arg)
       const modelCfg = getModelConfig(ctx.currentModel, undefined)
+      const effectiveEffort = normalizeReasoningEffort(ctx.currentModel, arg)
       const msg = modelCfg.reasoning
-        ? `Set to ${arg}`
+        ? effectiveEffort === arg
+          ? `Set to ${effectiveEffort}`
+          : `Set to ${effectiveEffort} (requested ${arg}; normalized for ${ctx.currentModel})`
         : `Set to ${arg} (note: current model "${ctx.currentModel}" does not support reasoning_effort; it will be ignored until you switch to a reasoning model like deepseek-v4-pro)`
       notifyCommand(ctx, modelCfg.reasoning ? "success" : "warning", "Reasoning effort", msg)
     } else {
-      notifyCommand(ctx, "error", "Invalid reasoning effort", "Usage: /reasoning low|medium|high|max|off")
+      notifyCommand(ctx, "error", "Invalid reasoning effort", "Usage: /reasoning low|medium|high|xhigh|max|off")
     }
     return true
   }

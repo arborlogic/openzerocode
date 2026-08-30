@@ -40,6 +40,8 @@ export type ToolDef = {
   }
 }
 
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max"
+
 export type CompletionRequest = {
   model: string
   messages: Message[]
@@ -53,9 +55,10 @@ export type CompletionRequest = {
    * - "low": minimal reasoning tokens, faster responses
    * - "medium": balanced (default)
    * - "high": more reasoning tokens, better for complex tasks
-   * - "max": maximum reasoning effort (DeepSeek V4 Pro extended level)
+   * - "xhigh": extra-high reasoning depth (supported by current Codex models)
+   * - "max": maximum reasoning effort (supported by GPT-5.6 and DeepSeek V4 Pro)
    */
-  reasoning_effort?: "low" | "medium" | "high" | "max"
+  reasoning_effort?: ReasoningEffort
   /**
    * Optional AbortSignal threaded into the underlying fetch so the upstream
    * HTTP request is torn down promptly when the caller cancels. Without this,

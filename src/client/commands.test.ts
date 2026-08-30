@@ -94,6 +94,11 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("exit"))
   })
 
+  it("offers every supported GPT-5.6 reasoning effort", () => {
+    const command = BUILTIN_COMMANDS.find(({ name }) => name === "reasoning")
+    assert.deepEqual(command?.argumentOptions, ["low", "medium", "high", "xhigh", "max", "off"])
+  })
+
   describe("/review", () => {
     it("starts a review of the supplied target", async () => {
       const ctx = stubCtx()
@@ -221,6 +226,30 @@ describe("executeCommand", () => {
       const result = await executeCommand("/mode invalid", ctx)
       assert.ok(result)
       assert.ok((ctx.setMode as any).mock.calls.length === 0)
+    })
+  })
+
+  describe("/reasoning", () => {
+    it("reports the effective effort when an advanced level is normalized", async () => {
+      const ctx = stubCtx({ currentModel: "gpt-5.5" })
+      const result = await executeCommand("/reasoning max", ctx)
+
+      assert.ok(result)
+      assert.equal((ctx.setReasoningEffort as any).mock.calls[0][0], "max")
+      const call = (ctx.showToast as any).mock.calls[0]
+      const args = call.arguments ?? call
+      assert.equal(args[0], "success")
+      assert.equal(args[1], "Reasoning effort")
+      assert.equal(args[2], "Set to high (requested max; normalized for gpt-5.5)")
+    })
+
+    it("reports an advanced effort unchanged when the model supports it", async () => {
+      const ctx = stubCtx({ currentModel: "openai-codex/gpt-5.6-sol" })
+      await executeCommand("/reasoning max", ctx)
+
+      const call = (ctx.showToast as any).mock.calls[0]
+      const args = call.arguments ?? call
+      assert.equal(args[2], "Set to max")
     })
   })
 

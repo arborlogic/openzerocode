@@ -8,7 +8,7 @@ import { buildSystemPrompt, shouldAppendSkillInstructions } from "../client/syst
 import { loadAgentsInstruction, loadContextInstruction } from "../client/workspace-memory"
 import { buildSkillRoutingSection, normalizeSkillActivation } from "../client/skill-routing"
 import { resolveSkillDirs } from "../client/skill-loader"
-import type { Message } from "../provider/types"
+import type { Message, ReasoningEffort } from "../provider/types"
 import type { StreamChunk } from "./types"
 
 type ServeOptions = {
@@ -186,7 +186,7 @@ function handleDeleteSession(id: string): Response {
 
 async function handlePrompt(id: string, req: Request): Promise<Response> {
   const body = await req.json().catch(() => null) as
-    | { text?: string; mode?: RunMode; reasoning_effort?: "low" | "medium" | "high" | "max" }
+    | { text?: string; mode?: RunMode; reasoning_effort?: ReasoningEffort }
     | null
   if (!body || typeof body.text !== "string" || !body.text.length) {
     return errorResponse("text is required", "BAD_REQUEST", 400)

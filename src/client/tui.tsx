@@ -6,7 +6,7 @@ import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, nor
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider, type ModelInfo } from "../provider/types"
-import type { Message } from "../provider/types"
+import type { Message, ReasoningEffort } from "../provider/types"
 import type { PermissionRequest, Def } from "../tool/types"
 import { listSelectableGroups, toggleGroup, TOOL_GROUPS } from "../tool/selection"
 import { loadMcpConfig, mcpGroupId } from "../mcp/config"
@@ -24,7 +24,7 @@ import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSumma
 import { buildSkillRoutingSection, normalizeSkillActivation, type SkillActivation } from "./skill-routing"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { estimateMessageTokens, getEffectiveContextLimit, getModelConfig } from "../provider/models"
+import { estimateMessageTokens, getEffectiveContextLimit, getModelConfig, normalizeReasoningEffort } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildPrioritizedCompactionTranscript, compactionRetryTokenBudget, compactionTranscriptTokenBudget, COMPACTION_SUMMARY_TOKEN_BUDGET, cumulativeCompactionSourceCount, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
@@ -286,7 +286,8 @@ function App() {
       return resolved
     })
   }
-  const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
+  // OpenAI's recommended GPT-5.6 Power setting is Sol with medium reasoning.
+  const [reasoningEffort, setReasoningEffort] = createSignal<ReasoningEffort | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   const [skillActivation, setSkillActivation] = createSignal<SkillActivation>(initialSkillActivation)
@@ -754,7 +755,10 @@ function App() {
     return getModelConfig(currentModel, currentModelInfo).reasoning === true
   })
 
-  const reasoningEffortLabel = createMemo(() => reasoningEffort() ?? "default")
+  // Display the normalized value that the session runner will actually send,
+  // rather than a requested advanced level that this model cannot accept.
+  const effectiveReasoningEffort = createMemo(() => normalizeReasoningEffort(currentModel, reasoningEffort()))
+  const reasoningEffortLabel = createMemo(() => effectiveReasoningEffort() ?? "default")
 
   // Provider metadata from /models describes the context actually available
   // at its gateway, which can be lower than our upstream-model catalogue.
@@ -774,10 +778,14 @@ function App() {
         : current === "medium"
           ? "high"
           : current === "high"
-            ? "max"
-            : undefined
+            ? "xhigh"
+            : current === "xhigh"
+              ? "max"
+              : undefined
     setReasoningEffort(next)
-    setStatus(`reasoning effort -> ${next ?? "default"}`)
+    const effective = normalizeReasoningEffort(currentModel, next)
+    const normalizedSuffix = next && effective !== next ? ` (requested ${next})` : ""
+    setStatus(`reasoning effort -> ${effective ?? "default"}${normalizedSuffix}`)
   }
 
   const activeProviderKeyLabel = createMemo(() => {

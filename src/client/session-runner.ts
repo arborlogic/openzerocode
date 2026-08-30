@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
-import type { Message, ToolCall, ModelInfo } from "../provider/types"
+import type { Message, ToolCall, ModelInfo, ReasoningEffort } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
@@ -9,7 +9,7 @@ import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectLiteTools, selectPlanModeTools } from "../tool/selection"
 import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError } from "./errors"
-import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, getModelConfig, modelSupportsVision } from "../provider/models"
+import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, normalizeReasoningEffort, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { RunOutcome, StreamChunk } from "../server/types"
 
@@ -113,7 +113,7 @@ type SessionUi = {
   mode: RunMode
   provider: string
   keyName: string
-  reasoning_effort?: "low" | "medium" | "high" | "max"
+  reasoning_effort?: ReasoningEffort
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
   /**
    * Called for every machine-readable run outcome (step limit, provider error,
@@ -320,7 +320,7 @@ export type StreamOptions = {
   provider: string
   keyName: string
   /** Reasoning effort for supported models (e.g. DeepSeek V4 Pro, OpenAI o-series). */
-  reasoning_effort?: "low" | "medium" | "high" | "max"
+  reasoning_effort?: ReasoningEffort
   /** Working directory passed to tools as cwd/root. Defaults to process.cwd(). */
   workdir?: string
   /** Max model round-trips per run. Defaults to OPENZEROCODE_MAX_STEPS or 50. */
@@ -394,17 +394,9 @@ async function* streamSessionImpl(
   // the loop can surface a `replan_needed` outcome once a single failure
   // pattern has been retried past the point of diminishing returns.
   const toolErrorCounts = new Map<string, { tool: string; signature: string; count: number }>()
-  // Only pass reasoning_effort to models that support it (e.g. DeepSeek V4 Pro).
-  // Sending it to non-reasoning models can cause API errors (OpenAI) or is silently ignored.
-  const effectiveReasoningEffort = (() => {
-    if (!options.reasoning_effort) return undefined
-    const modelCfg = getModelConfig(options.model, options.modelInfo)
-    if (!modelCfg.reasoning) {
-      // Silently skip: the /reasoning command already warns the user in the UI.
-      return undefined
-    }
-    return options.reasoning_effort
-  })()
+  // Only send levels accepted by the selected model. In particular, older
+  // Codex models reject GPT-5.6's `max` level instead of silently ignoring it.
+  const effectiveReasoningEffort = normalizeReasoningEffort(options.model, options.reasoning_effort)
   const systemMessage: Message = { role: "system", content: runtime.systemPrompt(options.mode) }
   const userMessage: Message = options.origin
     ? { role: "user", content: userInput, origin: options.origin }

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { getEffectiveContextLimit, getKnownModelConfig, getModelConfig, estimateTokens, estimateMessageTokens, estimateMessageRequestTokens, estimateCost, modelSupportsVision, IMAGE_REQUEST_TOKEN_ALLOWANCE } from "./models"
+import { getEffectiveContextLimit, getKnownModelConfig, getModelConfig, normalizeReasoningEffort, estimateTokens, estimateMessageTokens, estimateMessageRequestTokens, estimateCost, modelSupportsVision, IMAGE_REQUEST_TOKEN_ALLOWANCE } from "./models"
 import type { ModelInfo } from "./types"
 
 describe("getKnownModelConfig", () => {
@@ -20,19 +20,27 @@ describe("getKnownModelConfig", () => {
     assert.equal(getKnownModelConfig("unknown-model"), undefined)
   })
 
-  it("uses the 372K application budget for provider-prefixed Codex GPT-5.5", () => {
+  it("uses the standard 272K context window for provider-prefixed Codex GPT-5.5", () => {
     const cfg = getKnownModelConfig("openaicodex/gpt-5.5")
     assert.ok(cfg)
-    assert.equal(cfg.contextLimit, 372_000)
+    assert.equal(cfg.contextLimit, 272_000)
     assert.equal(cfg.reasoning, true)
   })
 
-  it("uses the 372K application budget for all Codex GPT-5.6 variants", () => {
+  it("uses the standard 272K context window for all Codex GPT-5.6 variants", () => {
     for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       const cfg = getKnownModelConfig(`openaicodex/${model}`)
       assert.ok(cfg, `expected config for ${model}`)
-      assert.equal(cfg.contextLimit, 372_000)
+      assert.equal(cfg.contextLimit, 272_000)
       assert.equal(cfg.reasoning, true)
+    }
+  })
+
+  it("marks every advertised Codex GPT-5.x model as reasoning-capable", () => {
+    for (const model of ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2"]) {
+      const cfg = getKnownModelConfig(model)
+      assert.ok(cfg, `expected config for ${model}`)
+      assert.equal(cfg.reasoning, true, `expected reasoning support for ${model}`)
     }
   })
 
@@ -153,6 +161,28 @@ describe("getEffectiveContextLimit", () => {
   it("falls back to the catalogue when provider metadata is invalid", () => {
     assert.equal(getEffectiveContextLimit("gpt-4o", { id: "gpt-4o", contextLimit: 0 }), 128_000)
     assert.equal(getEffectiveContextLimit("gpt-4o", { id: "gpt-4o", contextLimit: Number.NaN }), 128_000)
+  })
+})
+
+describe("normalizeReasoningEffort", () => {
+  it("preserves every GPT-5.6 reasoning level", () => {
+    assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.6-sol", "xhigh"), "xhigh")
+    assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.6-terra", "max"), "max")
+  })
+
+  it("downgrades advanced levels for older Codex models", () => {
+    assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.5", "max"), "high")
+    assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.5", "xhigh"), "high")
+    assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.4", "max"), "high")
+  })
+
+  it("preserves DeepSeek V4 Pro max and downgrades its unsupported xhigh", () => {
+    assert.equal(normalizeReasoningEffort("deepseek-v4-pro", "xhigh"), "high")
+    assert.equal(normalizeReasoningEffort("deepseek-v4-pro", "max"), "max")
+  })
+
+  it("omits reasoning effort for unsupported models", () => {
+    assert.equal(normalizeReasoningEffort("gpt-4o", "high"), undefined)
   })
 })
 

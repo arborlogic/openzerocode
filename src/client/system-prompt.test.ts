@@ -82,6 +82,9 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /Drive the task to completion/)
     assert.match(prompt, /Do not ask the user whether to continue/)
     assert.match(prompt, /Reporting when done/)
+    assert.match(prompt, /smallest complete change that fixes the root cause/)
+    assert.match(prompt, /Never claim success without fresh command results/)
+    assert.match(prompt, /Do not overwrite or revert unrelated user changes/)
   })
 
   it("includes an environment section with the working directory", () => {

@@ -1,4 +1,4 @@
-import type { Message, ModelInfo } from "./types"
+import type { Message, ModelInfo, ReasoningEffort } from "./types"
 
 export type ModelConfig = {
   contextLimit: number
@@ -38,29 +38,29 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     reasoning: true,
     vision: true,
   },
-  // OpenAI documents a 1,050,000-token context window for the current
-  // ChatGPT Codex model family (GPT-5.5 and all GPT-5.6 variants). Keep the
-  // usable application budget at 372K to leave room for output and overhead.
+  // Match the standard context window advertised by the current Codex model
+  // catalogue. GPT-5.6 can expose a larger opt-in window, but this client does
+  // not currently send that opt-in, so budgeting against 872K would overrun.
   "gpt-5.5": {
-    contextLimit: 372_000,
+    contextLimit: 272_000,
     pricing: { input: 0, output: 0 },
     reasoning: true,
     vision: true,
   },
   "gpt-5.6-sol": {
-    contextLimit: 372_000,
+    contextLimit: 272_000,
     pricing: { input: 0, output: 0 },
     reasoning: true,
     vision: true,
   },
   "gpt-5.6-terra": {
-    contextLimit: 372_000,
+    contextLimit: 272_000,
     pricing: { input: 0, output: 0 },
     reasoning: true,
     vision: true,
   },
   "gpt-5.6-luna": {
-    contextLimit: 372_000,
+    contextLimit: 272_000,
     pricing: { input: 0, output: 0 },
     reasoning: true,
     vision: true,
@@ -68,16 +68,43 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "gpt-5.4-codex": {
     contextLimit: 400_000,
     pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
+  "gpt-5.4": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
+  "gpt-5.4-mini": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
+  "gpt-5.3-codex": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
+  "gpt-5.3-codex-spark": {
+    contextLimit: 400_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.2": {
     contextLimit: 400_000,
     pricing: { input: 1.75, output: 14 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.2-codex": {
     contextLimit: 400_000,
     pricing: { input: 1.75, output: 14 },
+    reasoning: true,
     vision: true,
   },
   "gpt-5.2-chat-latest": {
@@ -227,6 +254,22 @@ export function getEffectiveContextLimit(model: string, metadata?: ModelInfo): n
     return contextLimit
   }
   return getModelConfig(model).contextLimit
+}
+
+/**
+ * Return a reasoning effort accepted by the selected model.
+ *
+ * Advanced levels are model-specific: GPT-5.6 accepts both `xhigh` and `max`,
+ * while older Codex models accept only low/medium/high. DeepSeek V4 Pro keeps
+ * its existing `max` level; other advanced values fall back safely to `high`.
+ */
+export function normalizeReasoningEffort(model: string, effort?: ReasoningEffort): ReasoningEffort | undefined {
+  if (!effort || !getModelConfig(model).reasoning) return undefined
+  const normalizedModel = normalizeModelConfigKey(model).toLowerCase()
+  if ((effort === "xhigh" || effort === "max") && /^gpt-5\.6(?:-|$)/.test(normalizedModel)) return effort
+  if (effort === "max" && normalizedModel === "deepseek-v4-pro") return effort
+  if (effort === "xhigh" || effort === "max") return "high"
+  return effort
 }
 
 /** Check if a model natively supports vision/image input. */
