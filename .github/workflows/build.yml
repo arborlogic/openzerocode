@@ -131,34 +131,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
-          always-auth: true
 
       - name: Download all npm packages
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Verify npm auth is configured
-        shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
-            echo "NPM_TOKEN secret is not configured for this repository/environment." >&2
-            exit 1
-          fi
-
-      - name: Verify npm authentication
-        shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm whoami
-
       - name: Publish npm packages
         shell: bash
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
 
