@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.8.6 - 2026-09-04
+
+### Fixed
+
+- Updated the `toml` dependency override to version 4.2.0 to remediate the reported vulnerability.
+
 ## 0.8.5 - 2026-09-04
 
 ### Added
