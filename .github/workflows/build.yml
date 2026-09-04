@@ -162,7 +162,19 @@ jobs:
             fi
 
             echo "Publishing $name@$version from $tarball"
-            npm publish "$tarball" --access public --provenance
+            if npm publish "$tarball" --access public --provenance; then
+              return 0
+            fi
+
+            # Another release run can publish the same immutable version between
+            # the preflight check above and npm publish. Treat that race as success.
+            if package_exists "$name" "$version"; then
+              echo "$name@$version was published by another run; continuing."
+              return 0
+            fi
+
+            echo "Failed to publish $name@$version, and it is not available on npm." >&2
+            return 1
           }
 
           root_package="$(find artifacts -path '*/npm-package-root/*.tgz' | head -n 1)"
