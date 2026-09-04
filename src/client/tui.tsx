@@ -2796,6 +2796,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         mode: mode(),
         provider: currentProvider,
         keyName: getActiveConfiguredProviderKeyName(currentProvider) ?? "anonymous",
+        sessionId: activeSessionId,
         reasoning_effort: reasoningEffort(),
         maxSteps: maxSteps(),
         disabledToolGroups: disabledToolGroups(),

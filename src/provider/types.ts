@@ -66,6 +66,11 @@ export type CompletionRequest = {
    * keeps running in the background until the upstream finishes.
    */
   signal?: AbortSignal
+  /**
+   * Transport-only headers for a single provider request. These must never be
+   * serialized into the OpenAI-compatible request body.
+   */
+  requestHeaders?: Record<string, string>
 }
 
 export type Usage = {

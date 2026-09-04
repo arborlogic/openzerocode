@@ -232,6 +232,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           mode,
           provider,
           keyName: "server",
+          sessionId: id,
           workdir,
           reasoning_effort: body.reasoning_effort,
         }, {

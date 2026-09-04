@@ -95,20 +95,21 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
       const baseURL = input.baseURL ?? DEFAULT_BASE
       const defaultModel = input.model ?? ANONYMOUS_DEFAULT_MODEL
 
-      function headers() {
+      function headers(requestHeaders?: Record<string, string>) {
         return {
           "Content-Type": "application/json",
           Authorization: `Bearer ${input.apiKey || "public"}`,
+          ...requestHeaders,
         }
       }
 
       const complete = (req: CompletionRequest) =>
         Effect.gen(function* () {
-          const { signal, ...wire } = req
+          const { signal, requestHeaders, ...wire } = req
           const res = yield* Effect.promise(() =>
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
-              headers: headers(),
+              headers: headers(requestHeaders),
               body: JSON.stringify({ ...wire, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: false }),
               signal,
             })
@@ -133,11 +134,11 @@ export const layer = (input: { apiKey: string; baseURL?: string; model?: string;
 
       const stream = (req: CompletionRequest) =>
         Effect.gen(function* () {
-          const { signal, ...wire } = req
+          const { signal, requestHeaders, ...wire } = req
           const res = yield* Effect.promise(() =>
             fetch(`${baseURL}/chat/completions`, {
               method: "POST",
-              headers: headers(),
+              headers: headers(requestHeaders),
               body: JSON.stringify({ ...wire, messages: sanitizeMessages(req.messages), model: req.model || defaultModel, stream: true, stream_options: { include_usage: true } }),
               signal,
             })

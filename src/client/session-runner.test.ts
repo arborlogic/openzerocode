@@ -435,6 +435,45 @@ test("streamSession retries a Codex stream interrupted before any output", async
   assert.ok(chunks.some((chunk) => chunk.type === "notice" && /before output; retrying/.test(chunk.text)))
 })
 
+test("streamSession retries an interrupted OpenCode Zen stream and keeps session affinity", async () => {
+  let requestCount = 0
+  const requests: CompletionRequest[] = []
+  const makeStream = () => new ReadableStream({
+    pull(controller) {
+      requestCount++
+      if (requestCount === 1) controller.error(new Error("upstream connection reset"))
+      else {
+        controller.enqueue({ delta: { content: "recovered" }, finish_reason: "stop" })
+        controller.close()
+      }
+    },
+  })
+
+  const gen = streamSession("hello", [], {
+    abort: new AbortController().signal,
+    model: "big-pickle",
+    provider: "opencode-zen",
+    keyName: "anonymous",
+    sessionId: "zen-session-1",
+    mode: "build",
+  }, runtime(makeStream, { onRequest: (request) => requests.push(request) }))
+
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+  }
+
+  assert.equal(requestCount, 2)
+  assert.equal(result.at(-1)?.content, "recovered")
+  assert.equal(requests[0]?.requestHeaders?.["x-opencode-session"], "zen-session-1")
+  assert.equal(requests[0]?.requestHeaders?.["x-opencode-session"], requests[1]?.requestHeaders?.["x-opencode-session"])
+  assert.equal(requests[0]?.requestHeaders?.["x-opencode-client"], "openzerocode")
+})
+
 test("streamSession reduces retained history after an empty interrupted zero-api stream", async () => {
   let requestCount = 0
   const requests: CompletionRequest[] = []

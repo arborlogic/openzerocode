@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { randomUUID } from "crypto"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message, ToolCall, ModelInfo, ReasoningEffort } from "../provider/types"
@@ -113,6 +114,8 @@ type SessionUi = {
   mode: RunMode
   provider: string
   keyName: string
+  /** Stable ID used by providers that support session-affinity routing. */
+  sessionId?: string
   reasoning_effort?: ReasoningEffort
   onUsage?: (inputTokens: number, outputTokens: number, cachedInputTokens: number) => void
   /**
@@ -319,6 +322,8 @@ export type StreamOptions = {
   mode: RunMode
   provider: string
   keyName: string
+  /** Stable ID used by providers that support session-affinity routing. */
+  sessionId?: string
   /** Reasoning effort for supported models (e.g. DeepSeek V4 Pro, OpenAI o-series). */
   reasoning_effort?: ReasoningEffort
   /** Working directory passed to tools as cwd/root. Defaults to process.cwd(). */
@@ -384,7 +389,19 @@ async function* streamSessionImpl(
   const providerName = options.provider.toLowerCase()
   const isRecoverableProviderSession = providerName.includes("zero-api")
     || providerName.includes("codex")
+    || providerName.includes("opencode-zen")
     || options.model.toLowerCase().includes("codex")
+  // Zen uses this stable ID to select and retain an upstream provider for a
+  // session. Without it, every tool-loop request can be routed independently,
+  // which is notably less reliable for anonymous Big Pickle traffic.
+  const providerRequestHeaders = providerName.includes("opencode-zen")
+    ? {
+        "x-opencode-session": options.sessionId ?? randomUUID(),
+        "x-opencode-request": randomUUID(),
+        "x-opencode-client": "openzerocode",
+        "User-Agent": "openzerocode",
+      }
+    : undefined
   let interruptionRecoveries = 0
   let crossedToolBoundary = false
   let continuationOverlapReference: string | undefined
@@ -510,6 +527,7 @@ async function* streamSessionImpl(
           tools: toolDefs.length > 0 ? toolDefs : undefined,
           stream: true,
           reasoning_effort: effectiveReasoningEffort,
+          requestHeaders: providerRequestHeaders,
           // Threading abort into the provider's fetch so the upstream HTTP
           // request is torn down when the user cancels — without this, the
           // read loop below would break out but the network request kept
@@ -1041,6 +1059,7 @@ export async function runSession(
     mode: ui.mode,
     provider: ui.provider,
     keyName: ui.keyName,
+    sessionId: ui.sessionId,
     reasoning_effort: ui.reasoning_effort,
     maxSteps: ui.maxSteps,
     origin: ui.origin,
