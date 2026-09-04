@@ -1,5 +1,19 @@
 import type { Def } from "./types"
 
+/**
+ * The intentionally tiny, stable coding-tool surface sent to 4K local models
+ * by the Lite harness. New registry/MCP/browser tools must be explicitly added
+ * here rather than silently consuming the model's context window.
+ */
+export const LITE_TOOL_IDS = new Set([
+  "read",
+  "grep",
+  "glob",
+  "edit",
+  "write",
+  "bash",
+])
+
 const PLAN_MODE_READONLY_TOOL_IDS = new Set([
   "read",
   "grep",
@@ -57,6 +71,11 @@ export function selectEnabledTools(
   if (disabledGroups.length === 0) return [...tools]
   const disabled = new Set(disabledGroups)
   return tools.filter((t) => !t.group || !disabled.has(t.group))
+}
+
+/** Restrict Lite runs to their fixed capability set before other filters. */
+export function selectLiteTools(tools: readonly Def[]): Def[] {
+  return tools.filter((tool) => LITE_TOOL_IDS.has(tool.id))
 }
 
 /**

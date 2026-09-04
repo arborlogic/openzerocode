@@ -94,9 +94,12 @@ mkdir -p "$INSTALL_DIR"
 install_file() {
   local source=$1
   local destination=$2
+  local tmp_destination="${destination}.tmp"
 
-  cp "$source" "$destination"
-  chmod 755 "$destination"
+  cp "$source" "$tmp_destination"
+  chmod 755 "$tmp_destination"
+  
+  mv "$tmp_destination" "$destination"
 }
 
 # Bundled skills live in a dedicated, installer-managed directory. Replacing
@@ -115,8 +118,18 @@ install_bundled_skills() {
     return
   fi
 
-  rm -rf "$destination"
-  cp -R "$source" "$destination"
+  local staging="$destination.new"
+  local old="$destination.old"
+  rm -rf "$staging" "$old"
+  cp -R "$source" "$staging"
+
+  if [[ -d "$destination" ]]; then
+    mv "$destination" "$old"
+    mv "$staging" "$destination"
+    rm -rf "$old"
+  else
+    mv "$staging" "$destination"
+  fi
 }
 
 if [[ -n "$binary_path" ]]; then
@@ -240,6 +253,33 @@ install_from_release() {
     exit 1
   fi
 
+  local manifest_url="$GITHUB_BASE_URL/$REPO/releases/download/v${specific_version}/manifest.json"
+  if [[ "$GITHUB_BASE_URL" == file://* ]]; then
+    manifest_url="${GITHUB_BASE_URL}/manifest.json"
+  fi
+  
+  if curl -fL -s -o "$tmp_dir/manifest.json" "$manifest_url"; then
+    local expected_checksum
+    expected_checksum=$(grep -o "\"$package_name\": *\"[^\"]*\"" "$tmp_dir/manifest.json" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
+    if [[ -n "$expected_checksum" ]]; then
+      local actual_checksum=""
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual_checksum=$(sha256sum "$tmp_dir/$package_name" | awk '{print $1}')
+      elif command -v shasum >/dev/null 2>&1; then
+        actual_checksum=$(shasum -a 256 "$tmp_dir/$package_name" | awk '{print $1}')
+      fi
+      
+      if [[ -n "$actual_checksum" && "$expected_checksum" != "$actual_checksum" ]]; then
+        echo -e "${RED}Error: Checksum mismatch for $package_name${NC}" >&2
+        echo -e "${RED}Expected: $expected_checksum${NC}" >&2
+        echo -e "${RED}Actual:   $actual_checksum${NC}" >&2
+        exit 1
+      elif [[ -n "$actual_checksum" ]]; then
+        print_message info "${MUTED}Checksum verified successfully.${NC}"
+      fi
+    fi
+  fi
+
   extract_archive "$tmp_dir/$package_name" "$tmp_dir"
 
   binary_name="$APP"
@@ -250,6 +290,12 @@ install_from_release() {
   binary_path_in_package=$(find "$tmp_dir" -path "*/$binary_name" -type f -print -quit)
   if [[ -z "$binary_path_in_package" ]]; then
     echo -e "${RED}Error: Could not find $binary_name inside $package_name${NC}" >&2
+    exit 1
+  fi
+
+  chmod 755 "$binary_path_in_package"
+  if ! "$binary_path_in_package" --version >/dev/null 2>&1; then
+    echo -e "${RED}Error: Downloaded binary is not executable on this system.${NC}" >&2
     exit 1
   fi
 

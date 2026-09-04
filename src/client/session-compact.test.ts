@@ -14,6 +14,7 @@ import {
   cumulativeCompactionSourceCount,
   createCompactSummaryMessage,
   estimateContextTokens,
+  estimateRequestContextTokens,
   shouldAutoCompactContext,
   CONTEXT_WARNING_THRESHOLD,
   COMPACTION_RETRY_TOKEN_CAP,
@@ -175,6 +176,37 @@ describe("shouldAutoCompactContext", () => {
 
     assert.equal(shouldAutoCompactContext(messages, "", estimate + 1, 1, summary), false)
     assert.equal(shouldAutoCompactContext(messages, "", estimate - 1, 1, summary), true)
+  })
+
+  it("includes image allowances when deciding whether to compact", () => {
+    const image: Message = {
+      role: "user",
+      content: [
+        { type: "text", text: "image" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(16_000)}` } },
+      ],
+    }
+    const messages = [image, image, image, image]
+    const textOnlyEstimate = estimateContextTokens(messages)
+    const requestEstimate = estimateRequestContextTokens(messages)
+    const limit = Math.ceil((textOnlyEstimate + requestEstimate) / 2)
+
+    assert.ok(requestEstimate > textOnlyEstimate)
+    assert.equal(shouldAutoCompactContext(messages, "", limit, 1), true)
+  })
+})
+
+describe("estimateRequestContextTokens", () => {
+  it("reserves provider context for vision attachments", () => {
+    const image: Message = {
+      role: "user",
+      content: [
+        { type: "text", text: "Please inspect this image" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(16_000)}` } },
+      ],
+    }
+
+    assert.ok(estimateRequestContextTokens([image]) > estimateContextTokens([image]))
   })
 })
 
@@ -426,7 +458,7 @@ describe("selectCompactionTail", () => {
     assert.ok(!result.tail.some((message) => message.role === "tool" && typeof message.content === "string" && message.content.length > 10_000))
   })
 
-  it("does not let an image payload alone trigger compaction", () => {
+  it("does not let one image allowance alone trigger compaction", () => {
     const contextLimit = 10_000
     const imageDataUrl = `data:image/png;base64,${"A".repeat(80_000)}`
     const msgs: Message[] = [
@@ -445,7 +477,7 @@ describe("selectCompactionTail", () => {
 
     const result = selectCompactionTail(msgs, contextLimit)
 
-    assert.equal(result.head.length, 0, "only textual context should determine compaction")
+    assert.equal(result.head.length, 0)
     assert.equal(result.tail.length, msgs.length)
   })
 

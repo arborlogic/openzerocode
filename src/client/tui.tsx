@@ -6,7 +6,7 @@ import { buildLayer, autoDetectProvider, defaultModelForProvider, PROVIDERS, nor
 import { layer as toolLayer } from "../tool/registry"
 import { ToolRegistry } from "../tool/registry"
 import { Provider, type ModelInfo } from "../provider/types"
-import type { Message } from "../provider/types"
+import type { Message, ReasoningEffort } from "../provider/types"
 import type { PermissionRequest, Def } from "../tool/types"
 import { listSelectableGroups, toggleGroup, TOOL_GROUPS } from "../tool/selection"
 import { loadMcpConfig, mcpGroupId } from "../mcp/config"
@@ -14,6 +14,7 @@ import { setConfiguredServers, getConfiguredServers, loadMcpServer, unloadMcpSer
 import { createStreamState } from "./stream-state"
 import { STREAM_TEST_RESPONSE, streamTestChunks } from "./stream-test"
 import { runSession, type RunMode, type StreamOptions } from "./session-runner"
+import type { RunOutcome } from "../server/types"
 import { SlashAutocomplete } from "./autocomplete"
 import { cycleCommandArgument } from "./autocomplete-logic"
 import type { AutocompleteApi } from "./autocomplete"
@@ -23,7 +24,7 @@ import { buildExplicitSkillSection, findSkill, resolveSkillDirs, type SkillSumma
 import { buildSkillRoutingSection, normalizeSkillActivation, type SkillActivation } from "./skill-routing"
 import { Sidebar, type GitFile } from "./sidebar"
 import { createSession, deleteSession, getCurrentSessionId, loadSessionState, saveSession, setCurrentSessionId, currentSessionMeta, listSessions, updateSessionMeta, markSessionActive, unmarkSessionActive, isSessionActive, getSessionActiveInfo, isDefaultTitle, deriveTitle, type CompactionInfo } from "./sessions"
-import { estimateMessageTokens, getModelConfig } from "../provider/models"
+import { estimateMessageTokens, getEffectiveContextLimit, getModelConfig, normalizeReasoningEffort } from "../provider/models"
 import { formatQueueStatus, summaryPreview, formatCompactionMarker, normalizeDiffHunkCounts, tryParseJSON, formatToolCallInput, formatToolResultPreview, stripAnsi, truncateText, fmtContextLimit, fmtPrice, modelHint, isTransientPasteMarker, maskKey, contentToText } from "./format-utils"
 import { homeDir, expandHome, displayPath, resolveDirectoryPath, isDirectory, directoryCandidates } from "./path-utils"
 import { buildPrioritizedCompactionTranscript, compactionRetryTokenBudget, compactionTranscriptTokenBudget, COMPACTION_SUMMARY_TOKEN_BUDGET, cumulativeCompactionSourceCount, selectCompactionTail, stripCompactSummaryMessages, shouldAutoCompactContext } from "./session-compact"
@@ -32,7 +33,7 @@ import { ensureGlobalMemoryFiles, loadAgentsInstruction, loadContextInstruction 
 import { getActiveConfiguredProviderKeyName, getProviderConfigPath, listConfiguredProviderKeys, setActiveConfiguredProviderKey, addConfiguredProviderKey, removeConfiguredProviderKey, readProviderConfig, writeProviderConfig, getStoredProviderConfig, setConfiguredProviderBaseURL } from "../provider/config"
 import { startCodexBrowserAuthorization, startCodexDeviceAuthorization, isOAuthCallbackUrl, extractCallbackCode, listCodexAuths, activateCodexAuth, deleteCodexAuth, setCodexAuthKeyname } from "../provider/codex-auth"
 import { hasXaiAuth, startXaiDeviceAuthorization, deleteXaiAuth } from "../provider/xai-auth"
-import { buildSystemPrompt } from "./system-prompt"
+import { buildSystemPrompt, shouldAppendSkillInstructions } from "./system-prompt"
 import { addDefaultParsers } from "@opentui/core"
 import parsers from "../../parsers-config"
 
@@ -69,6 +70,7 @@ import {
   formatAutopilotRetryDelay,
   parseAutopilotDecision,
   retriesAutopilotRateLimits,
+  shouldAutopilotConsultOnOutcome,
   type AutopilotDecision,
   type AutopilotMode,
 } from "./autopilot"
@@ -262,6 +264,21 @@ function App() {
   const [compacting, setCompacting] = createSignal(false)
   const [queuedInputs, setQueuedInputs] = createSignal(0)
   const [queuedInputItems, setQueuedInputItems] = createSignal<QueueItem[]>([])
+  
+  const [latestVersion, setLatestVersion] = createSignal<string | null>(null)
+  const [isUpdating, setIsUpdating] = createSignal(false)
+
+  void fetch("https://api.github.com/repos/arborlogic/openzerocode/releases/latest")
+    .then(res => res.json())
+    .then((data: any) => {
+      if (data && data.tag_name) {
+        const v = data.tag_name.replace(/^v/, "")
+        if (v !== VERSION) {
+          setLatestVersion(v)
+        }
+      }
+    })
+    .catch(() => {})
   const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
   const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
     setModeRaw((prev) => {
@@ -269,7 +286,8 @@ function App() {
       return resolved
     })
   }
-  const [reasoningEffort, setReasoningEffort] = createSignal<"low" | "medium" | "high" | "max" | undefined>("medium")
+  // OpenAI's recommended GPT-5.6 Power setting is Sol with medium reasoning.
+  const [reasoningEffort, setReasoningEffort] = createSignal<ReasoningEffort | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
   const [permissionRules, setPermissionRules] = createSignal<PermissionRule[]>(initialPermissionRules)
   const [skillActivation, setSkillActivation] = createSignal<SkillActivation>(initialSkillActivation)
@@ -365,6 +383,7 @@ function App() {
   const [autoCompressionThreshold, setAutoCompressionThreshold] = createSignal(_uiPrefs.autoCompressionThreshold)
   const [autopilotMode, setAutopilotMode] = createSignal<AutopilotMode>("off")
   const autopilotEnabled = () => autopilotMode() !== "off"
+  const [pendingSuggestion, setPendingSuggestion] = createSignal<string | undefined>(undefined)
   const [composerCollapsed, setComposerCollapsed] = createSignal(false)
   const [layoutMode, setLayoutMode] = createSignal<"horizontal" | "vertical">(
     _uiPrefs.layoutMode ?? (dimensions().height > dimensions().width ? "vertical" : "horizontal")
@@ -454,6 +473,8 @@ function App() {
   let autocompleteApi: AutocompleteApi | undefined
   let exitTask: Promise<void> | undefined
   let runAbort: AbortController | undefined
+  let pendingSteeringMessages: string[] = []
+  let steeringOpen = false
   let autopilotAbort: AbortController | undefined
   let autopilotSupervisorRunning = false
   let autopilotRateLimitTimer: ReturnType<typeof setTimeout> | undefined
@@ -490,6 +511,7 @@ function App() {
         setQueuedInputItems(inputQueue.pendingItems())
       },
       onDrainEnd: () => {
+        pendingSteeringMessages = []
         if (autopilotEnabled()) scheduleAutopilotCheck()
         else setStatus("waiting for input")
       },
@@ -524,7 +546,7 @@ function App() {
     autopilotAbort = new AbortController()
     const signal = autopilotAbort.signal
     const mode = autopilotMode()
-    if (mode === "off") return { confidence: "low", instruction: "", reason: "autopilot is off" }
+    if (mode === "off") return { action: "blocked", reason: "autopilot is off" }
     const supervisorPrompt = buildAutopilotSupervisorPrompt(mode)
     const msgHistory = sanitizeMessages(messages())
     const result = await runSync(Effect.gen(function* () {
@@ -598,7 +620,7 @@ function App() {
       const decision = await runAutopilotSupervisor()
       if (!autopilotEnabled()) return
       clearAutopilotRateLimitRetry()
-      if (decision.confidence === "low") {
+      if (decision.action === "blocked") {
         setStatus("autopilot ready — waiting for your input")
         if (decision.reason) {
           setNotices((prev) => [...prev, { kind: "system", text: `⟳ Autopilot paused: ${decision.reason}` }])
@@ -606,6 +628,24 @@ function App() {
         }
         return
       }
+      if (decision.action === "accept") {
+        setStatus("autopilot ready — goal complete")
+        if (decision.reason) {
+          setNotices((prev) => [...prev, { kind: "system", text: `✓ Autopilot complete: ${decision.reason}` }])
+          queueMicrotask(scrollBottom)
+        }
+        return
+      }
+      if (decision.action === "suggest") {
+        // Surface the proposed prompt for the human to accept (Enter) or
+        // decline (Esc) before it is run, so suggestions never run unauthorised.
+        setPendingSuggestion(decision.instruction)
+        setStatus("autopilot suggestion — press Enter to run, Esc to decline")
+        showToast("info", "Autopilot suggestion", decision.instruction, 6000)
+        return
+      }
+      // action === "direct": a previously approved goal is clearly unfinished,
+      // so queue the concrete continuation prompt without asking.
       showToast("info", "Autopilot continuing", decision.instruction, 4000)
       inputQueue?.enqueue(decision.instruction)
       setStatus("autopilot queued next prompt")
@@ -633,7 +673,7 @@ function App() {
       rateLimitRetryPending: Boolean(autopilotRateLimitTimer),
       running: running(),
       compacting: compacting(),
-      awaitingApproval: Boolean(pendingApproval()),
+      awaitingApproval: Boolean(pendingApproval()) || Boolean(pendingSuggestion()),
       queuedInputCount: inputQueue?.depth() ?? 0,
       inputQueueDraining: inputQueue?.isDraining() ?? false,
     })) return
@@ -644,6 +684,7 @@ function App() {
     autopilotAbort?.abort()
     autopilotAbort = undefined
     clearAutopilotRateLimitRetry()
+    setPendingSuggestion(undefined)
     setAutopilotMode(mode)
     if (mode !== "off") {
       if (messages().length > 0) scheduleAutopilotCheck()
@@ -714,7 +755,14 @@ function App() {
     return getModelConfig(currentModel, currentModelInfo).reasoning === true
   })
 
-  const reasoningEffortLabel = createMemo(() => reasoningEffort() ?? "default")
+  // Display the normalized value that the session runner will actually send,
+  // rather than a requested advanced level that this model cannot accept.
+  const effectiveReasoningEffort = createMemo(() => normalizeReasoningEffort(currentModel, reasoningEffort()))
+  const reasoningEffortLabel = createMemo(() => effectiveReasoningEffort() ?? "default")
+
+  // Provider metadata from /models describes the context actually available
+  // at its gateway, which can be lower than our upstream-model catalogue.
+  const currentContextLimit = () => getEffectiveContextLimit(currentModel, currentModelInfo)
 
   const modelStatusLabel = createMemo(() => {
     const model = modelLabel()
@@ -730,10 +778,14 @@ function App() {
         : current === "medium"
           ? "high"
           : current === "high"
-            ? "max"
-            : undefined
+            ? "xhigh"
+            : current === "xhigh"
+              ? "max"
+              : undefined
     setReasoningEffort(next)
-    setStatus(`reasoning effort -> ${next ?? "default"}`)
+    const effective = normalizeReasoningEffort(currentModel, next)
+    const normalizedSuffix = next && effective !== next ? ` (requested ${next})` : ""
+    setStatus(`reasoning effort -> ${effective ?? "default"}${normalizedSuffix}`)
   }
 
   const activeProviderKeyLabel = createMemo(() => {
@@ -1005,7 +1057,34 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     sessionRevision()
     selectionRevision()
     geassRevision()
-    return [
+    
+    const items: PaletteItem[] = []
+    
+    const v = latestVersion()
+    if (v) {
+      items.push({
+        label: "Update openzerocode",
+        hint: `v${v} is available (current: v${VERSION})`,
+        onSelect: () => {
+          if (isUpdating()) return
+          setShowPalette(false)
+          setIsUpdating(true)
+          setStatus(`updating to v${v}...`)
+          import("node:child_process").then(({ exec }) => {
+            exec("curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash", (error, stdout, stderr) => {
+              setIsUpdating(false)
+              if (error) {
+                setStatus(`update failed: ${error.message}`)
+              } else {
+                setStatus("update complete! Please restart openzerocode.")
+              }
+            })
+          })
+        }
+      })
+    }
+    
+    items.push(
       {
         label: "INPUT",
         kind: "section",
@@ -1247,7 +1326,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             },
           } satisfies PaletteItem]
         : []),
-    ]
+    )
+    return items
   })
 
   const sessionPaletteItems = createMemo<PaletteItem[]>(() => {
@@ -1930,13 +2010,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setShowPalette(false)
       showToast(
         "success",
-        mode === "off" ? "Autopilot stopped" : mode === "execute" ? "Execute Plan Autopilot enabled" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
+        mode === "off" ? "Autopilot stopped" : mode === "goal" ? "Goal Autopilot enabled" : "Standard Autopilot enabled",
         mode === "off"
           ? "AI will wait for your next message."
-          : mode === "execute"
-            ? "AI will execute your approved TODO list continuously, then verify and review once at the end."
-            : mode === "proactive"
-            ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
+          : mode === "goal"
+            ? "AI will drive your stated goal to completion: continue approved sub-steps, propose new ones for your approval, and stop when done."
             : "AI will answer routine continuation questions when the next step is clear and safe.",
       )
     }
@@ -1952,14 +2030,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         onSelect: () => selectMode("standard"),
       },
       {
-        label: "Proactive",
-        hint: "plan-aligned continuation",
-        onSelect: () => selectMode("proactive"),
-      },
-      {
-        label: "Execute Plan",
-        hint: "continuous TODO execution",
-        onSelect: () => selectMode("execute"),
+        label: "Goal",
+        hint: "drive a goal to completion",
+        onSelect: () => selectMode("goal"),
       },
       ...(current !== "off"
         ? [{ label: "Turn off", hint: "wait for input", onSelect: () => selectMode("off") } satisfies PaletteItem]
@@ -2510,7 +2583,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     }
 
     const currentMessages = messages()
-    const contextLimit = getModelConfig(currentModel, currentModelInfo).contextLimit
+    const contextLimit = currentContextLimit()
     const { head, tail } = selectCompactionTail(currentMessages, contextLimit)
     if (head.length === 0) {
       if (!opts.automatic) {
@@ -2613,11 +2686,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
   }
 
   const maybeAutoCompactContext = async (extraInput: string, opts: { warnWhenDisabled?: boolean } = {}) => {
-    const cfg = getModelConfig(currentModel, currentModelInfo)
+    const contextLimit = currentContextLimit()
     const nearContextLimit = shouldAutoCompactContext(
       messages(),
       extraInput,
-      cfg.contextLimit,
+      contextLimit,
       autoCompressionThreshold(),
       compaction()?.summary,
     )
@@ -2674,6 +2747,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     abortSignal.addEventListener("abort", () => runAbort?.abort(), { once: true })
     streamState.reset()
     refreshAgentsInstruction()
+    pendingSteeringMessages = []
+    steeringOpen = false
     setRunning(true)
     setStatus(formatQueueStatus("thinking...", queuedInputs()))
     setNotices([])
@@ -2681,6 +2756,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     const activeSessionId = sessionId()
     markSessionActive(activeSessionId)
     let completedResponse = false
+    // Captured by the onOutcome callback so the post-run hook can decide
+    // whether to kick the autopilot supervisor. We keep it as a closure
+    // variable (not a signal) because the consumer of the run is already
+    // drained by the time the post-run hook runs.
+    let lastOutcome: RunOutcome | undefined
 
     let noticesCleared = false
     const clearNoticesOnce = () => {
@@ -2719,6 +2799,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         reasoning_effort: reasoningEffort(),
         maxSteps: maxSteps(),
         disabledToolGroups: disabledToolGroups(),
+        consumeSteeringMessages: () => pendingSteeringMessages.splice(0),
+        setSteeringAvailable: (available) => { steeringOpen = available },
         onUsage: (inputTokens, outputTokens, cachedInputTokens) => {
           appendUsageEntry({
             timestamp: Date.now(),
@@ -2731,12 +2813,19 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             sessionId: sessionId(),
           })
         },
+        onOutcome: (outcome) => {
+          lastOutcome = outcome
+        },
       }, {
         runSync,
         systemPrompt: (runMode: RunMode) => {
           const base = systemPrompt(runMode)
-          const routingSection = buildSkillRoutingSection(skillActivation(), skillDirs)
-          const skillSections = [routingSection, reviewSkill ? buildExplicitSkillSection(reviewSkill) : undefined].filter(Boolean).join("\n\n")
+          const skillSections = shouldAppendSkillInstructions()
+            ? [
+                buildSkillRoutingSection(skillActivation(), skillDirs),
+                reviewSkill ? buildExplicitSkillSection(reviewSkill) : undefined,
+              ].filter(Boolean).join("\n\n")
+            : ""
           const withSkills = skillSections ? `${base}\n\n${skillSections}` : base
           return peerOrigin ? withSkills + peerRequestSystemPrompt(peerOrigin, oneWay) : withSkills
         },
@@ -2787,16 +2876,34 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         const msg = err instanceof Error ? err.message : String(err)
         setNotices((prev) => [...prev, { kind: "error", text: `Error: ${msg}` }])
         setStatus(formatQueueStatus("error", queuedInputs()))
+        // streamSession normally emits this before rethrowing. Keep a fallback
+        // for failures outside the generator, but do not misclassify unknown
+        // application errors as provider failures.
+        lastOutcome ??= { kind: "internal_error", message: msg }
       } else {
         setStatus(formatQueueStatus("interrupted", queuedInputs()))
+        lastOutcome = { kind: "aborted" }
       }
     } finally {
       unmarkSessionActive(activeSessionId)
       runAbort = undefined
+      steeringOpen = false
+      pendingSteeringMessages = []
       setRunning(false)
     }
     if (completedResponse && !abortSignal.aborted) {
       await maybeAutoCompactContext("")
+    }
+    // Hand any non-completed outcome to the autopilot supervisor so the
+    // session can keep moving without forcing the human to type "continue"
+    // after a step limit, a replan signal, or a provider error. The helper
+    // returns false for `completed` / no-outcome so a normal turn never
+    // re-triggers the supervisor loop. This runs for both successful runs
+    // (step_limit_reached, replan_needed) and synthesised error outcomes
+    // produced in the catch above. Aborts and internal errors intentionally
+    // pause instead of starting another model turn.
+    if (!abortSignal.aborted && shouldAutopilotConsultOnOutcome(lastOutcome)) {
+      scheduleAutopilotCheck()
     }
   }
 
@@ -2900,6 +3007,14 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           setSessionScope("cwd")
         },
         openQueuedMessages: openQueuedMessagesPalette,
+        steer: (instruction) => {
+          if (!running() || !steeringOpen || !runAbort || runAbort.signal.aborted) {
+            return { ok: false, message: "No agent run is active. Send it as a normal message instead." }
+          }
+          pendingSteeringMessages.push(instruction)
+          setStatus(formatQueueStatus("steering received — applying at the next model step", queuedInputs()))
+          return { ok: true, message: "Instruction will be applied at the next safe model boundary; it was not added to the queue." }
+        },
         openHelp: () => {
           setShowPalette(true)
           setReferenceTitle("Help")
@@ -3061,6 +3176,27 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       } else if (event.name === "n" || event.name === "escape" || event.name === "q") {
         setPendingApproval(undefined)
         approval.reject(new Error("denied by user"))
+      }
+      event.preventDefault()
+      return
+    }
+    // Autopilot suggestion: the supervisor proposed a next prompt that needs
+    // the human's confirmation before it is run.
+    const suggestion = pendingSuggestion()
+    if (suggestion !== undefined) {
+      if (event.name === "return" || event.name === "enter") {
+        setPendingSuggestion(undefined)
+        inputQueue?.enqueue(suggestion)
+        setStatus("autopilot queued suggested prompt")
+        queueMicrotask(scrollBottom)
+      } else if (event.name === "escape" || event.name === "q") {
+        setPendingSuggestion(undefined)
+        setStatus("autopilot suggestion declined")
+      } else {
+        // Ignore other keys while a suggestion is pending so typing cannot
+        // accidentally overwrite it.
+        event.preventDefault()
+        return
       }
       event.preventDefault()
       return
@@ -3837,6 +3973,25 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         )}
       </Show>
 
+      <Show when={pendingSuggestion()}>
+        {(suggestion: () => string) => (
+          <box flexShrink={0} paddingLeft={2} paddingRight={2} paddingTop={1} paddingBottom={1} border={["left", "top"]} borderColor="#d29922" backgroundColor={THEME.surface}>
+            <text style={{ fg: "#d29922" }}>AUTOPILOT SUGGESTION</text>
+            <text style={{ fg: THEME.text }}>{suggestion()}</text>
+            <box flexDirection="row" gap={2} marginTop={0}>
+              <text
+                style={{ fg: THEME.accent }}
+                onMouseDown={() => { const s = pendingSuggestion(); if (s !== undefined) { setPendingSuggestion(undefined); inputQueue?.enqueue(s); setStatus("autopilot queued suggested prompt"); queueMicrotask(scrollBottom) } }}
+              >{"[Enter] run"}</text>
+              <text
+                style={{ fg: THEME.muted }}
+                onMouseDown={() => { setPendingSuggestion(undefined); setStatus("autopilot suggestion declined") }}
+              >{"[Esc] decline"}</text>
+            </box>
+          </box>
+        )}
+      </Show>
+
       <box flexShrink={0} flexDirection="column" border={["left"]} borderColor={THEME.border}>
         <box backgroundColor={THEME.surface} paddingLeft={2} paddingRight={2} paddingTop={1}>
             <box flexDirection="column">
@@ -3919,7 +4074,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               </Show>
               <Show when={autopilotEnabled()}>
                 <text style={{ fg: THEME.muted }}>{"  •  "}</text>
-                <text style={{ fg: "#d29922" }}>{autopilotMode() === "execute" ? "PILOT▶" : autopilotMode() === "proactive" ? "PILOT+" : "PILOT"}</text>
+                <text style={{ fg: "#d29922" }}>{autopilotMode() === "goal" ? "PILOT▶" : "PILOT"}</text>
               </Show>
               {/* Sidebar toggle in vertical mode */}
               <Show when={layoutMode() === "vertical"}>

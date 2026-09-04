@@ -8,6 +8,22 @@ import type { Message } from "../provider/types"
 // reconstruct conversation state, while the TUI uses them to commit streamed
 // content into discrete message blocks.
 
+/**
+ * Machine-readable final state of a streamSession() run. Emitted as a single
+ * `outcome` chunk immediately before `done` whenever the run terminated in a
+ * way the TUI / autopilot / scheduler may want to react to automatically
+ * (continue, retry, replan, pause). Human-readable notices are still emitted
+ * alongside — outcomes are for code, not for the human.
+ */
+export type RunOutcome =
+  | { kind: "completed" }
+  | { kind: "step_limit_reached"; steps: number; maxSteps: number }
+  | { kind: "provider_error"; message: string; signature: string }
+  | { kind: "tool_error"; tool: string; message: string; signature: string }
+  | { kind: "replan_needed"; reason: string; recentErrors: Array<{ tool: string; signature: string }> }
+  | { kind: "internal_error"; message: string }
+  | { kind: "aborted" }
+
 export type StreamChunk =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
@@ -17,6 +33,7 @@ export type StreamChunk =
   | { type: "message"; message: Message }
   | { type: "status"; text: string }
   | { type: "notice"; kind: string; text: string; code?: string }
+  | { type: "outcome"; outcome: RunOutcome }
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens: number }
   | { type: "error"; message: string }
   | { type: "done" }

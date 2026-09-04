@@ -2,7 +2,7 @@ import { describe, it } from "node:test"
 import assert from "node:assert"
 import { Schema } from "effect"
 import { Def } from "./types"
-import { selectEnabledTools, selectPlanModeTools, listSelectableGroups, toggleGroup, isSelectable } from "./selection"
+import { selectEnabledTools, selectLiteTools, selectPlanModeTools, listSelectableGroups, toggleGroup, isSelectable } from "./selection"
 
 const mk = (id: string, group?: string) =>
   new Def({
@@ -56,6 +56,18 @@ describe("tool selection", () => {
     ])
 
     assert.deepEqual(enabled.map((t) => t.id), ["read", "grep", "glob", "web_fetch", "analyze_image"])
+  })
+
+  it("excludes dynamic and delegation tools in Lite mode", () => {
+    const enabled = selectLiteTools([
+      mk("read"),
+      mk("bash"),
+      mk("todowrite"),
+      mk("call_peer", "peer"),
+      mk("mcp_custom", "mcp"),
+    ])
+
+    assert.deepEqual(enabled.map((t) => t.id), ["read", "bash"])
   })
 
   it("lists selectable groups with counts and enabled state", () => {

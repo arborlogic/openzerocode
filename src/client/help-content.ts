@@ -22,11 +22,13 @@ Commands
   /review [target]       Review changes using the review-helper skill
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
+  /queue                 View or cancel queued messages
+  /steer <instruction>   Guide the active agent at its next safe model step (never queued)
   /tools                 Toggle completed tool details
   /thinking              Toggle thinking blocks
   /auto                  Toggle auto-approve mode
-  /autopilot [standard|proactive|execute|off]
-                         Continue routine prompts, advance a plan, or execute an approved TODO list
+  /autopilot [standard|goal|off]
+                         Continue routine prompts, or drive a stated goal to completion
   /usage                 Open token usage dashboard
   /compact               Summarize and compress earlier session history
   /commit                Generate a commit message from current changes
@@ -49,7 +51,7 @@ Command Palette  (Ctrl+P / F2)
   INPUT
     Focus input          Return focus to the composer
     Auto-approve         Toggle automatic tool approval
-    Autopilot            Choose standard, proactive, or continuous TODO execution
+    Autopilot            Choose standard continuation, or goal-driven completion
 
   DISPLAY
     Display settings     Toggle tools, thinking, layout

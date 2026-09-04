@@ -10,3 +10,4 @@ openzerocode-*.tgz
 workspace/
 openzerocode-exports/
 .mimocode/
+deploy-remote.sh

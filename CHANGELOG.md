@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Consolidated Autopilot modes to `off` / `standard` / `goal`. `proactive` and `execute` were merged into a single **Goal** mode (`/autopilot goal`) that drives a stated goal to completion: it continues already-approved sub-steps directly, proposes new or expanded work for your approval before running it, and stops (accepts) when the goal is complete. In **Standard** mode, the supervisor only answers routine continuation questions and accepts once the requested task is done.
+- Autopilot now emits structured decisions (`direct` / `suggest` / `accept` / `blocked`) instead of the old confidence/instruction pair. Suggestions are surfaced in the TUI for you to run with Enter or decline with Esc before they are executed.
+- Updated ChatGPT Codex defaults for the GPT-5.6 generation: Sol with medium reasoning, native `xhigh`/`max` effort forwarding, Responses Lite all-turn reasoning context, and the current 272K standard context window. Deprecated GPT-5.2–5.4 entries are no longer advertised in the Codex model picker.
+
 ## 0.8.4 - 2026-08-11
 
 ### Added

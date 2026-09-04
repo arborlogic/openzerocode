@@ -110,6 +110,24 @@ export function estimateContextTokens(
   return estimateMessageTokens([...summaryMessages, ...clean]) + estimateTokens(extraInput)
 }
 
+/**
+ * Estimate what the provider receives, including a conservative allowance for
+ * vision attachments. Use this for admission/compaction decisions; retaining
+ * a group of images can overflow a request even though their base64 payload is
+ * intentionally excluded from the human-readable context meter.
+ */
+export function estimateRequestContextTokens(
+  messages: Message[],
+  extraInput: string = "",
+  compactionSummary: string = "",
+): number {
+  const clean = stripCompactSummaryMessages(messages)
+  const summaryMessages: Message[] = compactionSummary
+    ? [{ role: "system", content: `[Compaction Summary]\n${compactionSummary}` }]
+    : []
+  return estimateMessageRequestTokens([...summaryMessages, ...clean]) + estimateTokens(extraInput)
+}
+
 export function shouldAutoCompactContext(
   messages: Message[],
   extraInput: string,
@@ -117,7 +135,7 @@ export function shouldAutoCompactContext(
   threshold: number = CONTEXT_WARNING_THRESHOLD,
   compactionSummary: string = "",
 ): boolean {
-  return estimateContextTokens(messages, extraInput, compactionSummary) > contextLimit * threshold
+  return estimateRequestContextTokens(messages, extraInput, compactionSummary) > contextLimit * threshold
 }
 
 export function selectCompactionTail(messages: Message[], contextLimit: number): { head: Message[]; tail: Message[] } {
@@ -125,7 +143,7 @@ export function selectCompactionTail(messages: Message[], contextLimit: number):
   // Normally a short exchange is not worth compacting. An oversized tool
   // result is an exception: retaining even one such message can leave the
   // session over its context limit after a successful compaction.
-  if (clean.length <= 6 && estimateContextTokens(clean) <= contextLimit * CONTEXT_WARNING_THRESHOLD) {
+  if (clean.length <= 6 && estimateRequestContextTokens(clean) <= contextLimit * CONTEXT_WARNING_THRESHOLD) {
     return { head: [], tail: clean }
   }
 

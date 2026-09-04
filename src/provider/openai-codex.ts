@@ -14,12 +14,6 @@ const MODELS = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.4-codex",
-  "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
-  "gpt-5.2",
 ]
 
 export function toCodexRequestBody(req: CompletionRequest) {
@@ -27,8 +21,16 @@ export function toCodexRequestBody(req: CompletionRequest) {
   // `complete()` below consumes that stream and returns an aggregated result.
   // Unlike the public OpenAI Responses API, it also rejects
   // `max_output_tokens` (including when it is undefined).
-  const { max_output_tokens: _maxOutputTokens, ...body } = toResponsesRequestBody({ ...req, stream: true })
-  return body
+  const { max_output_tokens: _maxOutputTokens, ...body } = toResponsesRequestBody({
+    ...req,
+    stream: true,
+  })
+  // Current Codex models use Responses Lite. Match the official Codex client:
+  // retain reasoning context across turns while forwarding all advertised
+  // effort values, including xhigh and max, unchanged on the wire.
+  return body.reasoning
+    ? { ...body, reasoning: { ...body.reasoning, context: "all_turns" as const } }
+    : body
 }
 
 export async function collectCodexCompletion(
@@ -83,7 +85,8 @@ export const layer = (input: { model?: string }) =>
   Layer.effect(
     Provider,
     Effect.gen(function* () {
-      const defaultModel = input.model ?? "gpt-5.4"
+      // OpenAI recommends Sol as the default quality-first GPT-5.6 model.
+      const defaultModel = input.model ?? "gpt-5.6-sol"
 
       async function headers() {
         const auth = await resolveCodexAuth()
@@ -148,7 +151,7 @@ export const layer = (input: { model?: string }) =>
 export const def: ProviderDef = {
   id: "openai-codex",
   name: "OpenAI Codex",
-  defaultModel: "gpt-5.4",
+  defaultModel: "gpt-5.6-sol",
   authOptional: true,
   detectAuth: hasCodexAuth,
   factory: (cfg) => layer({ model: cfg.model }),

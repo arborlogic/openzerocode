@@ -40,6 +40,7 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     currentSessionId: mock(() => "ses_test123"),
     openSessionList: mock(() => {}),
     openQueuedMessages: mock(() => {}),
+    steer: mock(() => ({ ok: true, message: "steering accepted" })),
     openProviderList: mock(() => {}),
     openModelList: mock(() => {}),
     openHelp: mock(() => {}),
@@ -81,6 +82,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("model"))
     assert.ok(names.includes("sessions"))
     assert.ok(names.includes("queue"))
+    assert.ok(names.includes("steer"))
     assert.ok(names.includes("tools"))
     assert.ok(names.includes("thinking"))
     assert.ok(names.includes("auto"))
@@ -90,6 +92,11 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("compact"))
     assert.ok(names.includes("export"))
     assert.ok(names.includes("exit"))
+  })
+
+  it("offers every supported GPT-5.6 reasoning effort", () => {
+    const command = BUILTIN_COMMANDS.find(({ name }) => name === "reasoning")
+    assert.deepEqual(command?.argumentOptions, ["low", "medium", "high", "xhigh", "max", "off"])
   })
 
   describe("/review", () => {
@@ -222,6 +229,30 @@ describe("executeCommand", () => {
     })
   })
 
+  describe("/reasoning", () => {
+    it("reports the effective effort when an advanced level is normalized", async () => {
+      const ctx = stubCtx({ currentModel: "gpt-5.5" })
+      const result = await executeCommand("/reasoning max", ctx)
+
+      assert.ok(result)
+      assert.equal((ctx.setReasoningEffort as any).mock.calls[0][0], "max")
+      const call = (ctx.showToast as any).mock.calls[0]
+      const args = call.arguments ?? call
+      assert.equal(args[0], "success")
+      assert.equal(args[1], "Reasoning effort")
+      assert.equal(args[2], "Set to high (requested max; normalized for gpt-5.5)")
+    })
+
+    it("reports an advanced effort unchanged when the model supports it", async () => {
+      const ctx = stubCtx({ currentModel: "openai-codex/gpt-5.6-sol" })
+      await executeCommand("/reasoning max", ctx)
+
+      const call = (ctx.showToast as any).mock.calls[0]
+      const args = call.arguments ?? call
+      assert.equal(args[2], "Set to max")
+    })
+  })
+
   describe("/provider", () => {
     it("shows current provider without argument", async () => {
       const ctx = stubCtx()
@@ -339,6 +370,31 @@ describe("executeCommand", () => {
     })
   })
 
+  describe("/steer", () => {
+    it("sends guidance through the steering callback", async () => {
+      const steer = mock(() => ({ ok: true, message: "accepted" }))
+      const ctx = stubCtx({ steer })
+      const result = await executeCommand("/steer focus on the failing test", ctx)
+
+      assert.ok(result)
+      const steerCall: any = steer.mock.calls[0]
+      const toastCall: any = (ctx.showToast as any).mock.calls[0]
+      assert.equal((steerCall.arguments ?? steerCall)[0], "focus on the failing test")
+      assert.equal((toastCall.arguments ?? toastCall)[0], "success")
+    })
+
+    it("requires a non-empty instruction", async () => {
+      const steer = mock(() => ({ ok: true, message: "accepted" }))
+      const ctx = stubCtx({ steer })
+      const result = await executeCommand("/steer", ctx)
+
+      assert.ok(result)
+      assert.equal(steer.mock.calls.length, 0)
+      const toastCall: any = (ctx.showToast as any).mock.calls[0]
+      assert.equal((toastCall.arguments ?? toastCall)[0], "error")
+    })
+  })
+
   describe("/autopilot", () => {
     it("enables autopilot", async () => {
       const ctx = stubCtx()
@@ -357,36 +413,25 @@ describe("executeCommand", () => {
       assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "off")
     })
 
-    it("enables proactive mode", async () => {
+    it("enables goal mode", async () => {
       const ctx = stubCtx()
-      const result = await executeCommand("/autopilot proactive", ctx)
+      const result = await executeCommand("/autopilot goal", ctx)
       assert.ok(result)
-      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "proactive")
+      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "goal")
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-      assert.equal(args[1], "Proactive Autopilot enabled")
-      assert.ok(args[2].includes("aligned with the existing plan"))
-      assert.ok(args[2].includes("pause on uncertainty"))
-    })
-
-    it("enables continuous execution for an approved TODO list", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/autopilot execute", ctx)
-      assert.ok(result)
-      assert.equal((ctx.setAutopilotMode as any).mock.calls[0][0], "execute")
-      const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
-      assert.equal(args[1], "Execute Plan Autopilot enabled")
-      assert.ok(args[2].includes("approved TODO list continuously"))
-      assert.ok(args[2].includes("review once at the end"))
+      assert.equal(args[1], "Goal Autopilot enabled")
+      assert.ok(args[2].includes("drive your stated goal to completion"))
+      assert.ok(args[2].includes("propose new ones for your approval"))
     })
 
     it("shows status", async () => {
-      const ctx = stubCtx({ getAutopilotMode: mock((): AutopilotMode => "proactive") })
+      const ctx = stubCtx({ getAutopilotMode: mock((): AutopilotMode => "goal") })
       const result = await executeCommand("/autopilot", ctx)
       assert.ok(result)
       const args = (ctx.showToast as any).mock.calls[0].arguments ?? (ctx.showToast as any).mock.calls[0]
       assert.equal(args[0], "info")
       assert.equal(args[1], "Autopilot")
-      assert.equal(args[2], "PROACTIVE")
+      assert.equal(args[2], "GOAL")
     })
 
     it("rejects invalid options", async () => {
