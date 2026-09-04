@@ -162,7 +162,7 @@ jobs:
             fi
 
             echo "Publishing $name@$version from $tarball"
-            npm publish "$tarball" --access public
+            npm publish "$tarball" --access public --provenance
           }
 
           root_package="$(find artifacts -path '*/npm-package-root/*.tgz' | head -n 1)"
