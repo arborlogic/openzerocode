@@ -24,8 +24,8 @@ Primary implementation: [`src/client/session-runner.ts`](../src/client/session-r
 
 `streamSession()` is an **async generator**. It yields a `StreamChunk` for every
 token, reasoning chunk, tool-call delta, tool result, status update, notice,
-usage event, and the final `done`/`error`. Its generator **return value** is the
-full message history produced this run.
+usage event, machine-readable terminal outcome, and the final `done`/`error`.
+Its generator **return value** is the full message history produced this run.
 
 ---
 
@@ -41,10 +41,11 @@ A "turn" is one user input. The loop runs up to `maxSteps` model round-trips
    stream was cut by a token limit; see [Continue-after-length](#continue-after-length)).
 5. If the model **did** call tools → execute them, append the results, loop again.
 
-If the loop reaches `maxSteps` without the model finishing, it emits a
-`step_limit_reached` notice telling the user to type `continue` or raise
-`OPENZEROCODE_MAX_STEPS`, rather than silently presenting an unfinished run as
-complete.
+Every run emits exactly one terminal outcome. If the loop reaches `maxSteps`
+without the model finishing, it emits a
+`step_limit_reached` outcome followed by a notice telling the user to type
+`continue` or raise `OPENZEROCODE_MAX_STEPS`, rather than silently presenting
+an unfinished run as complete.
 
 ---
 
@@ -104,6 +105,44 @@ Tool results are converted to text (`convertToolResult`, which truncates large
 output) and appended as `tool` messages to both the request list and the result
 history. An unknown tool name yields an error `tool` message so the model can
 recover instead of stalling.
+
+### Recurring tool failures
+
+Tool failures are fingerprinted from the tool name and a normalized first line
+of output (numbers, hex addresses, and whitespace do not create a new
+fingerprint). If one fingerprint occurs at least three times in a run, tool
+execution stops immediately with `replan_needed`; it does not spend the
+remaining step budget retrying. Its `reason` and `recentErrors` name the recurring tool
+failures so an automation controller can ask the agent to change approach rather
+than blindly retrying the same command.
+
+---
+
+## Terminal outcomes
+
+Before every terminal `done` or `error` condition, the production loop emits
+exactly one `{ type: "outcome", outcome: RunOutcome }` chunk and calls the
+optional `StreamOptions.onOutcome` callback. Consumers should use this
+machine-readable contract for scheduling; notices remain human-facing context.
+
+| Outcome | Meaning | Typical automated reaction |
+|---|---|---|
+| `completed` | The model ended normally. | Do not automatically re-consult Autopilot. |
+| `step_limit_reached` | The run consumed its `maxSteps`. | Offer or schedule a bounded continuation. |
+| `provider_error` | A request, stream, or invalid provider completion failed. | Retry, wait, or pause based on provider policy. |
+| `tool_error` | A caller-specific policy terminated on one tool failure. | Repair or change the tool invocation. |
+| `replan_needed` | A single tool-error fingerprint recurred three or more times. | Ask for a changed approach using `reason` / `recentErrors`. |
+| `internal_error` | Unexpected application/runtime code failed outside provider handling. | Pause and surface the defect; do not retry as a provider failure. |
+| `aborted` | The caller cancelled the run. | Stop; do not resume without a new instruction. |
+
+`tool_error` is reserved for callers that choose to terminate on an individual
+tool failure. The built-in loop normally gives the model the tool result and a
+chance to recover, so it emits `replan_needed` only once errors become
+repetitive.
+
+Autopilot may consult its supervisor for step-limit, provider, tool, and replan
+outcomes. It never starts a follow-up after `completed`, an explicit `aborted`,
+or an `internal_error` outcome.
 
 ---
 

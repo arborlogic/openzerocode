@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+## 0.8.5 - 2026-09-04
+
+### Added
+
+- Added **Goal** Autopilot mode (`/autopilot goal`) to drive a stated goal to completion, while continuing approved sub-steps directly and asking for approval before expanded work.
+- Added structured Autopilot decisions (`direct` / `suggest` / `accept` / `blocked`), with TUI suggestions that can be accepted with Enter or declined with Esc.
+- Added `/steer` to send guidance to an active run.
+- Added a one-click in-app updater in the command palette.
+- Added a Lite local-model harness profile with focused prompts and tool selection.
+- Added staged, atomic installation with checksum validation.
+
+### Changed
+
+- Consolidated Autopilot modes to `off` / `standard` / `goal`; the former `proactive` and `execute` modes are now covered by **Goal** mode.
+- Updated ChatGPT Codex defaults for the GPT-5.6 generation: Sol with medium reasoning, native `xhigh`/`max` effort forwarding, Responses Lite all-turn reasoning context, and the current 272K standard context window. Deprecated GPT-5.2–5.4 entries are no longer advertised in the Codex model picker.
+- Reduced unnecessary context use and invalid tool retries in the agent harness.
+- Documented clipboard setup and the update process.
+
+### Fixed
+
+- Improved provider-stream reliability by preserving session routing throughout streamed responses and recovering transient interruptions or empty streams with reduced context.
+- Recover from provider context-limit rejections with reduced history and retry compaction after transient provider errors.
+- Honor provider-specific context limits when estimating and displaying available context.
+
 ## 0.8.4 - 2026-08-11
 
 ### Added

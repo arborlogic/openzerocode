@@ -69,6 +69,26 @@ This repo is actively implemented. Current capabilities include:
 
 For source development, use **bun** ≥ 1.2 and **npm** on your `PATH`.
 
+#### Linux clipboard support
+
+OpenZeroCode uses a system clipboard tool for copy and paste on Linux. Install the package that matches your desktop session:
+
+- **Wayland** (including Kubuntu running a Wayland session): `wl-clipboard`
+- **X11/Xorg**: `xclip` or `xsel`
+
+For Debian, Ubuntu, or Kubuntu:
+
+```bash
+# Wayland
+sudo apt install wl-clipboard
+
+# X11/Xorg (choose either one)
+sudo apt install xclip
+# or: sudo apt install xsel
+```
+
+OpenZeroCode tries Wayland and X11 tools in the order appropriate for the current session. WSL uses the Windows clipboard through `clip.exe` and PowerShell when available.
+
 ### Install script
 
 The release installer follows opencode's user-level install style: it installs the binary to `~/.openzerocode/bin` and updates your shell config to add that directory to `PATH` when needed.
@@ -120,12 +140,36 @@ npm run dev
 
 ### Updating
 
+OpenZeroCode does not currently update itself or download updates in the background. Users must update it manually using the same method they originally used to install it.
+
+**Install script:** rerun the installer to replace the installed binary with the latest GitHub Release:
+
+```bash
+curl -fsSL https://github.com/arborlogic/openzerocode/releases/latest/download/install | bash
+```
+
+If you originally set `OPENZEROCODE_INSTALL_DIR`, set it to the same directory when updating.
+
+**npm:** install the latest published version globally:
+
+```bash
+npm install -g openzerocode@latest
+```
+
+**Source checkout:** pull the latest source and rebuild the local development installation:
+
 ```bash
 git pull
 python3 scripts/dev-install.py
 ```
 
 That refreshes dependencies, rebuilds the binary, and reinstalls the global `openzerocode` command from your local checkout.
+
+After updating, verify the installed version with:
+
+```bash
+openzerocode --version
+```
 
 ### npm packaging workflow
 

@@ -5,7 +5,7 @@ import { collectCodexCompletion, layer, toCodexRequestBody } from "./openai-code
 import { Provider } from "./types"
 
 describe("openai codex provider", () => {
-  it("includes all supported Codex models", async () => {
+  it("advertises the current Codex models without deprecated GPT-5.2–5.4 entries", async () => {
     const models = await Effect.runPromise(
       Effect.gen(function* () {
         const provider = yield* Provider
@@ -13,10 +13,12 @@ describe("openai codex provider", () => {
       }).pipe(Effect.provide(layer({}))),
     )
 
-    const modelIds = models.map(({ id }) => id)
-    for (const id of ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
-      assert.ok(modelIds.includes(id), `expected Codex model list to include ${id}`)
-    }
+    assert.deepEqual(models.map(({ id }) => id), [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+    ])
   })
 
   it("moves system messages into required instructions", () => {
@@ -66,6 +68,30 @@ describe("openai codex provider", () => {
     })
 
     assert.equal(Object.hasOwn(body, "max_output_tokens"), false)
+  })
+
+  it("forwards reasoning effort using the Codex Responses shape", () => {
+    const body = toCodexRequestBody({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "solve this" }],
+      stream: true,
+      reasoning_effort: "high",
+    })
+
+    assert.deepEqual(body.reasoning, { effort: "high", summary: "auto", context: "all_turns" })
+  })
+
+  it("forwards every GPT-5.6 advanced reasoning effort unchanged", () => {
+    for (const effort of ["xhigh", "max"] as const) {
+      const body = toCodexRequestBody({
+        model: "gpt-5.6-sol",
+        messages: [{ role: "user", content: "solve this" }],
+        stream: true,
+        reasoning_effort: effort,
+      })
+
+      assert.deepEqual(body.reasoning, { effort, summary: "auto", context: "all_turns" })
+    }
   })
 
   it("collects a streaming Codex response for complete callers", async () => {

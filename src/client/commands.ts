@@ -1,9 +1,9 @@
 import type { Setter } from "solid-js"
 import { HELP_CONTENT } from "./help-content"
 import type { DisplayBlock } from "./response-entry"
-import type { Message } from "../provider/types"
+import type { Message, ReasoningEffort } from "../provider/types"
 import { formatWorkspaceMemoryStatus, inspectWorkspaceMemory } from "./workspace-memory"
-import { getModelConfig } from "../provider/models"
+import { getModelConfig, normalizeReasoningEffort } from "../provider/models"
 import type { PeerEntry } from "../peer/registry"
 import type { AutopilotMode } from "./autopilot"
 import { findSkill, listSkills, resolveSkillDirs, type SkillSummary } from "./skill-loader"
@@ -25,8 +25,8 @@ export type CommandContext = {
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
   mode: "build" | "plan" | "compose"
   setMode: (mode: "build" | "plan" | "compose") => void
-  reasoningEffort: "low" | "medium" | "high" | "max" | undefined
-  setReasoningEffort: (effort: "low" | "medium" | "high" | "max" | undefined) => void
+  reasoningEffort: ReasoningEffort | undefined
+  setReasoningEffort: (effort: ReasoningEffort | undefined) => void
   messages: () => Message[]
   setMessages: Setter<Message[]>
   setDraft: (text: string) => void
@@ -39,6 +39,7 @@ export type CommandContext = {
   currentSessionId: () => string | null
   openSessionList: () => void
   openQueuedMessages: () => void
+  steer: (instruction: string) => { ok: boolean; message: string }
   openProviderList: () => void
   openModelList: () => void
   openHelp: () => void
@@ -72,7 +73,7 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
   { name: "mode", description: "Switch mode: /mode build|plan|compose (no arg toggles)", argumentOptions: ["build", "plan", "compose"] },
   { name: "learn", description: "Extract non-obvious learnings from this session" },
-  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|max or /reasoning off", argumentOptions: ["low", "medium", "high", "max", "off"] },
+  { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|xhigh|max or /reasoning off", argumentOptions: ["low", "medium", "high", "xhigh", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
   { name: "skills", description: "List skills or configure automatic routing", argumentOptions: ["auto", "clear", "status"] },
   { name: "skill", description: "Show a skill's instructions: /skill <name>" },
@@ -81,10 +82,11 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "model", description: "Switch model: /model <name> or /model list", argumentOptions: ["list"] },
   { name: "sessions", description: "Open session switcher", aliases: ["s"] },
   { name: "queue", description: "Open queued messages viewer/cancel menu", aliases: ["queued"] },
+  { name: "steer", description: "Guide the active agent now: /steer <instruction>" },
   { name: "tools", description: "Toggle completed tool details", aliases: ["tool-details"] },
   { name: "thinking", description: "Toggle thinking blocks" },
   { name: "auto", description: "Toggle auto-approve mode", aliases: ["auto-approve"] },
-  { name: "autopilot", description: "Automatic continuation: /autopilot standard|proactive|execute|off", argumentOptions: ["standard", "proactive", "execute", "off", "status"] },
+  { name: "autopilot", description: "Automatic continuation: /autopilot standard|goal|off", argumentOptions: ["standard", "goal", "off", "status"] },
   { name: "commit", description: "Generate a commit message from current changes" },
   { name: "usage", description: "Show token usage dashboard (by provider/key/model, hourly/daily)" },
   { name: "compact", description: "Summarize and compress earlier session history (/compact view shows last summary)", argumentOptions: ["view"] },
@@ -217,15 +219,18 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     if (!arg || arg === "off") {
       ctx.setReasoningEffort(undefined)
       notifyCommand(ctx, "info", "Reasoning effort", "Disabled (default)")
-    } else if (arg === "low" || arg === "medium" || arg === "high" || arg === "max") {
+    } else if (arg === "low" || arg === "medium" || arg === "high" || arg === "xhigh" || arg === "max") {
       ctx.setReasoningEffort(arg)
       const modelCfg = getModelConfig(ctx.currentModel, undefined)
+      const effectiveEffort = normalizeReasoningEffort(ctx.currentModel, arg)
       const msg = modelCfg.reasoning
-        ? `Set to ${arg}`
+        ? effectiveEffort === arg
+          ? `Set to ${effectiveEffort}`
+          : `Set to ${effectiveEffort} (requested ${arg}; normalized for ${ctx.currentModel})`
         : `Set to ${arg} (note: current model "${ctx.currentModel}" does not support reasoning_effort; it will be ignored until you switch to a reasoning model like deepseek-v4-pro)`
       notifyCommand(ctx, modelCfg.reasoning ? "success" : "warning", "Reasoning effort", msg)
     } else {
-      notifyCommand(ctx, "error", "Invalid reasoning effort", "Usage: /reasoning low|medium|high|max|off")
+      notifyCommand(ctx, "error", "Invalid reasoning effort", "Usage: /reasoning low|medium|high|xhigh|max|off")
     }
     return true
   }
@@ -260,19 +265,17 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     const mode = normalized === "on" || normalized === "start" || normalized === "enable"
       ? "standard"
       : normalized
-    if (mode !== "standard" && mode !== "proactive" && mode !== "execute") {
-      notifyCommand(ctx, "error", "Invalid autopilot option", "Usage: /autopilot standard|proactive|execute|off|status")
+    if (mode !== "standard" && mode !== "goal") {
+      notifyCommand(ctx, "error", "Invalid autopilot option", "Usage: /autopilot standard|goal|off|status")
       return true
     }
     ctx.setAutopilotMode(mode)
     notifyCommand(
       ctx,
       "success",
-      mode === "execute" ? "Execute Plan Autopilot enabled" : mode === "proactive" ? "Proactive Autopilot enabled" : "Standard Autopilot enabled",
-      mode === "execute"
-        ? "AI will execute your approved TODO list continuously, then verify and review once at the end."
-        : mode === "proactive"
-        ? "AI will continue work aligned with the existing plan, pause on uncertainty, and retry rate limits."
+      mode === "goal" ? "Goal Autopilot enabled" : "Standard Autopilot enabled",
+      mode === "goal"
+        ? "AI will drive your stated goal to completion: continue approved sub-steps, propose new ones for your approval, and stop when done."
         : "AI will answer routine continuation questions when the next step is clear and safe.",
     )
     return true
@@ -311,6 +314,16 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
 
   if (cmd === "queue" || cmd === "queued") {
     ctx.openQueuedMessages()
+    return true
+  }
+
+  if (cmd === "steer") {
+    if (!arg) {
+      notifyCommand(ctx, "error", "Usage", "/steer <instruction>")
+      return true
+    }
+    const result = ctx.steer(arg)
+    notifyCommand(ctx, result.ok ? "success" : "warning", result.ok ? "Agent steered" : "Unable to steer", result.message)
     return true
   }
 

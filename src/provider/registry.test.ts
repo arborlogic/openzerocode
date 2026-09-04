@@ -20,7 +20,7 @@ describe("provider registry", () => {
     assert.ok(def)
     assert.equal(def.id, "openai-codex")
     assert.equal(def.name, "OpenAI Codex")
-    assert.equal(def.defaultModel, "gpt-5.4")
+    assert.equal(def.defaultModel, "gpt-5.6-sol")
     assert.equal(def.authOptional, true)
   })
 

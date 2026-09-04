@@ -1,6 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { formatProviderError, isCompactionRetryableError, isRateLimitError, delay } from "./errors"
+import { formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError, delay } from "./errors"
 
 describe("formatProviderError", () => {
   it("formats rate limit errors (429)", () => {
@@ -89,11 +89,28 @@ describe("isRateLimitError", () => {
   })
 })
 
+describe("isTransientProviderError", () => {
+  it("detects connection, timeout, and temporary gateway failures", () => {
+    assert.ok(isTransientProviderError(new Error("fetch failed: ECONNRESET")))
+    assert.ok(isTransientProviderError(new Error("provider stream ended before completion")))
+    assert.ok(isTransientProviderError(new Error("504 Gateway Timeout")))
+  })
+
+  it("does not retry authentication, billing, or unrelated failures", () => {
+    assert.ok(!isTransientProviderError(new Error("401 Invalid API key")))
+    assert.ok(!isTransientProviderError(new Error("429 Rate limit exceeded")))
+    assert.ok(!isTransientProviderError(new Error("malformed tool arguments")))
+  })
+})
+
 describe("isCompactionRetryableError", () => {
-  it("retries timeouts and context-limit errors", () => {
+  it("retries transient and context-limit errors", () => {
     assert.ok(isCompactionRetryableError(new Error("Request timed out after 300000ms")))
     assert.ok(isCompactionRetryableError(new DOMException("The operation was aborted", "AbortError")))
+    assert.ok(isCompactionRetryableError(new Error("503 Service Unavailable: provider overloaded")))
+    assert.ok(isCompactionRetryableError(new Error("502 Bad Gateway")))
     assert.ok(isCompactionRetryableError(new Error("context_length_exceeded: too many tokens")))
+    assert.ok(isCompactionRetryableError(new Error('upstream returned status 400: {"error":{"code":400,"message":"request (35373 tokens) exceeds the available context size (34048 tokens)"}}')))
     assert.ok(isCompactionRetryableError(new Error("Compaction summary request exceeds its context budget")))
   })
 

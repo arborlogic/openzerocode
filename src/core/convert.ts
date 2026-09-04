@@ -5,6 +5,35 @@ import type { ToolDef, ContentPart } from "../provider/types"
 import { filterImagesForModel, formatImageBudgetNotice } from "../provider/image-budget"
 import { truncateToolOutput } from "../tool/truncate"
 
+function removeNullableOptionalProperties(schema: Record<string, unknown>): Record<string, unknown> {
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((key): key is string => typeof key === "string") : [])
+
+  const visit = (value: unknown, propertyName?: string): unknown => {
+    if (Array.isArray(value)) return value.map((entry) => visit(entry, propertyName))
+    if (!value || typeof value !== "object") return value
+
+    const object = value as Record<string, unknown>
+    const next: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(object)) {
+      if (key === "properties" && entry && typeof entry === "object" && !Array.isArray(entry)) {
+        next[key] = Object.fromEntries(Object.entries(entry as Record<string, unknown>).map(([name, property]) => [name, visit(property, name)]))
+      } else if (key === "anyOf" || key === "oneOf") {
+        const variants = Array.isArray(entry)
+          ? entry.filter((variant) => !(propertyName && !required.has(propertyName) && typeof variant === "object" && variant !== null && (variant as Record<string, unknown>).type === "null"))
+          : []
+        const visited = variants.map((variant) => visit(variant, propertyName))
+        if (visited.length === 1 && visited[0] && typeof visited[0] === "object") Object.assign(next, visited[0])
+        else next[key] = visited
+      } else {
+        next[key] = visit(entry, propertyName)
+      }
+    }
+    return next
+  }
+
+  return visit(schema) as Record<string, unknown>
+}
+
 export function convertToolToDef(def: Def): ToolDef {
   let schema: Record<string, unknown>
   if (def.jsonSchema) {
@@ -18,6 +47,11 @@ export function convertToolToDef(def: Def): ToolDef {
     if (!schema.type || schema.anyOf) {
       schema = { type: "object", properties: {} }
     }
+    // Effect Schema represents optional fields as `value | null`, although the
+    // runtime decoder rejects explicit null. Keep the wire schema aligned with
+    // execution so models omit optional arguments instead of sending null and
+    // wasting a corrective tool round-trip.
+    schema = removeNullableOptionalProperties(schema)
   }
   return {
     type: "function",

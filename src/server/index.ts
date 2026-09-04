@@ -4,11 +4,11 @@ import { Provider } from "../provider/types"
 import { ToolRegistry, layer as toolLayer } from "../tool/registry"
 import { streamSession, type RunMode } from "../client/session-runner"
 import { createSession, loadSessionState, saveSession, deleteSession, listSessions, markSessionActive, unmarkSessionActive } from "../client/sessions"
-import { buildSystemPrompt } from "../client/system-prompt"
+import { buildSystemPrompt, shouldAppendSkillInstructions } from "../client/system-prompt"
 import { loadAgentsInstruction, loadContextInstruction } from "../client/workspace-memory"
 import { buildSkillRoutingSection, normalizeSkillActivation } from "../client/skill-routing"
 import { resolveSkillDirs } from "../client/skill-loader"
-import type { Message } from "../provider/types"
+import type { Message, ReasoningEffort } from "../provider/types"
 import type { StreamChunk } from "./types"
 
 type ServeOptions = {
@@ -186,7 +186,7 @@ function handleDeleteSession(id: string): Response {
 
 async function handlePrompt(id: string, req: Request): Promise<Response> {
   const body = await req.json().catch(() => null) as
-    | { text?: string; mode?: RunMode; reasoning_effort?: "low" | "medium" | "high" | "max" }
+    | { text?: string; mode?: RunMode; reasoning_effort?: ReasoningEffort }
     | null
   if (!body || typeof body.text !== "string" || !body.text.length) {
     return errorResponse("text is required", "BAD_REQUEST", 400)
@@ -209,7 +209,9 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
   const agentsInstruction = loadAgentsInstruction(workdir)
   const contextInstruction = loadContextInstruction(workdir)
   const skillActivation = normalizeSkillActivation(state?.skillActivation)
-  const skillRoutingSection = buildSkillRoutingSection(skillActivation, resolveSkillDirs(workdir))
+  const skillRoutingSection = shouldAppendSkillInstructions()
+    ? buildSkillRoutingSection(skillActivation, resolveSkillDirs(workdir))
+    : undefined
 
   const abortController = new AbortController()
   req.signal.addEventListener("abort", () => abortController.abort(), { once: true })
@@ -230,6 +232,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
           mode,
           provider,
           keyName: "server",
+          sessionId: id,
           workdir,
           reasoning_effort: body.reasoning_effort,
         }, {

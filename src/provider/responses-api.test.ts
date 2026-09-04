@@ -3,6 +3,28 @@ import assert from "node:assert"
 import { createResponsesStream, messagesToInput, toResponsesRequestBody } from "./responses-api"
 
 describe("responses-api multimodal tool results", () => {
+  it("serializes reasoning controls in the Responses API shape", () => {
+    const body = toResponsesRequestBody({
+      model: "gpt-5.4",
+      messages: [{ role: "user", content: "solve this" }],
+      stream: true,
+      reasoning_effort: "high",
+    })
+
+    assert.deepEqual(body.reasoning, { effort: "high", summary: "auto" })
+    assert.equal(Object.hasOwn(body, "reasoning_effort"), false)
+  })
+
+  it("omits reasoning controls when no effort is requested", () => {
+    const body = toResponsesRequestBody({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: "hello" }],
+      stream: false,
+    })
+
+    assert.equal(body.reasoning, undefined)
+  })
+
   it("forwards tool image attachments as a follow-up user input_image message", () => {
     const input = messagesToInput([
       {

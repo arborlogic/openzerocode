@@ -1,6 +1,6 @@
 import { createSignal, createEffect, createMemo, For, Show } from "solid-js"
 import type { Message, ModelInfo } from "../provider/types"
-import { getModelConfig, estimateCost } from "../provider/models"
+import { getEffectiveContextLimit, getModelConfig, estimateCost } from "../provider/models"
 import { isCompactSummaryMessage, estimateContextTokens } from "./session-compact"
 import { isSessionActive, getSessionActiveInfo } from "./sessions"
 import type { TodoItem } from "../tool/todo"
@@ -211,6 +211,7 @@ export function Sidebar(props: {
   })
 
   const modelCfg = createMemo(() => getModelConfig(props.model, props.modelInfo))
+  const contextLimit = createMemo(() => getEffectiveContextLimit(props.model, props.modelInfo))
 
   const tokenUsage = createMemo(() => {
     let inputChars = 0
@@ -232,7 +233,7 @@ export function Sidebar(props: {
   // are not under-reported as 1% while the warning fires.
   const totalTokens = createMemo(() => estimateContextTokens(props.messages(), "", props.compactionSummary))
   const contextPercent = createMemo(() => {
-    const limit = modelCfg().contextLimit
+    const limit = contextLimit()
     if (!limit) return 0
     const percent = (totalTokens() / limit) * 100
     // Preserve visibility after compaction: a non-empty context can be below
@@ -337,7 +338,7 @@ export function Sidebar(props: {
         <box flexDirection="column">
           <text style={{ fg: props.theme.accent }}>Context</text>
           <text style={{ fg: props.theme.muted }}>
-            {fmtTokens(totalTokens())} / {fmtTokens(modelCfg().contextLimit)} tokens
+            {fmtTokens(totalTokens())} / {fmtTokens(contextLimit())} tokens
           </text>
           <Show when={contextPercent() > 0}>
             <text style={{ fg: percentColor() }}>{contextPercent()}% used</text>

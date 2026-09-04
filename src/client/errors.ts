@@ -17,6 +17,33 @@ export function isRateLimitError(error: unknown): boolean {
   return text.includes("429") || text.includes("Rate limit exceeded") || text.includes("FreeUsageLimitError")
 }
 
+/** Whether a provider request can safely be retried before any response data arrives. */
+export function isTransientProviderError(error: unknown): boolean {
+  const text = (error instanceof Error ? `${error.name}: ${error.message}` : String(error)).toLowerCase()
+  return [
+    "fetch failed",
+    "network",
+    "socket",
+    "connection reset",
+    "connection closed",
+    "stream ended before completion",
+    "econnreset",
+    "econnrefused",
+    "ehostunreach",
+    "enetwork",
+    "timeout",
+    "timed out",
+    "etimedout",
+    "408",
+    "502",
+    "503",
+    "504",
+    "no response body",
+    "unexpected eof",
+    "terminated",
+  ].some((marker) => text.includes(marker))
+}
+
 /**
  * Whether retrying compaction with a smaller transcript can plausibly help.
  * Authentication, billing, rate-limit, and generic provider failures should
@@ -31,8 +58,14 @@ export function isCompactionRetryableError(error: unknown): boolean {
     "aborterror",
     "408 request timeout",
     "504 gateway timeout",
+    "overloaded",
+    "503 service unavailable",
+    "bad gateway",
     "context length",
     "context_length_exceeded",
+    "exceed_context_size_error",
+    "exceeds the available context",
+    "exceeds available context",
     "maximum context",
     "context window",
     "too many tokens",
