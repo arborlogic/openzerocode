@@ -23,6 +23,13 @@ const PROVIDER_RETRY_MAX_MS = 8000
 // Keep room for the model's response and serialization/tokenizer differences.
 // This is deliberately lower than the hard context limit, not a completion cap.
 const REQUEST_CONTEXT_TARGET_RATIO = 0.72
+// Codex's request-history endpoint has a separate 200k-character limit, even
+// for models whose token context window is much larger. The limit is applied to
+// the whole serialized request (messages + tools + envelope) on the Zero-API
+// side, so the client reserves space for tool schemas and JSON overhead and
+// only spends the remainder on message history.
+const CODEX_HISTORY_CHARACTER_LIMIT = 200_000
+const CODEX_REQUEST_OVERHEAD_RESERVE = 2_048
 
 function providerRetryDelay(retryNumber: number): number {
   const exponential = Math.min(PROVIDER_RETRY_BASE_MS * (2 ** Math.max(0, retryNumber - 1)), PROVIDER_RETRY_MAX_MS)
@@ -147,6 +154,19 @@ function estimateMessagesTokens(messages: Message[]): number {
   return estimateMessageRequestTokens(messages)
 }
 
+function estimateWireMessageCharacters(messages: Message[]): number {
+  // `parts` is UI-local metadata and every provider strips it before sending.
+  // Count the serialized wire shape, rather than raw object size, so a mirrored
+  // tool result does not make request admission unnecessarily aggressive.
+  return JSON.stringify(messages.map(({ parts: _parts, ...message }) => message)).length
+}
+
+function codexHistoryCharacterBudget(provider: string, model: string, tools?: unknown[]): number | undefined {
+  if (provider !== "zero-api" && !model.startsWith("openaicodex/")) return undefined
+  const toolsCharacters = tools && tools.length > 0 ? JSON.stringify(tools).length : 0
+  return Math.max(1_024, CODEX_HISTORY_CHARACTER_LIMIT - toolsCharacters - CODEX_REQUEST_OVERHEAD_RESERVE)
+}
+
 function estimateToolDefinitionsTokens(tools: unknown[]): number {
   return tools.length === 0 ? 0 : estimateTokens(JSON.stringify(tools))
 }
@@ -171,19 +191,27 @@ function trimHistoryForInitialRequest(
   permanentPrefix: Message[],
   history: Message[],
   contextLimit: number,
+  characterBudget?: number,
 ): Message[] {
   if (history.length === 0) return history
 
   const targetTotal = Math.floor(contextLimit * REQUEST_CONTEXT_TARGET_RATIO)
   const prefixCost = estimateMessagesTokens(permanentPrefix)
   const historyBudget = Math.max(0, targetTotal - prefixCost)
+  const historyCharacterBudget = characterBudget === undefined
+    ? Infinity
+    : Math.max(0, characterBudget - estimateWireMessageCharacters(permanentPrefix))
   let used = 0
+  let usedCharacters = 0
   let start = history.length
 
   for (let i = history.length - 1; i >= 0; i--) {
-    const cost = estimateMessagesTokens([history[i]!])
-    if (used + cost > historyBudget) break
+    const message = history[i]!
+    const cost = estimateMessagesTokens([message])
+    const characters = estimateWireMessageCharacters([message])
+    if (used + cost > historyBudget || usedCharacters + characters > historyCharacterBudget) break
     used += cost
+    usedCharacters += characters
     start = i
   }
 
@@ -196,23 +224,31 @@ function compactCurrentTurnForRequest(
   permanentPrefix: Message[],
   currentTurnMessages: Message[],
   contextLimit: number,
+  characterBudget?: number,
 ): Message[] {
   if (currentTurnMessages.length === 0) return permanentPrefix
 
   const targetTotal = Math.floor(contextLimit * REQUEST_CONTEXT_TARGET_RATIO)
   const prefixCost = estimateMessagesTokens(permanentPrefix)
   const turnBudget = Math.max(0, targetTotal - prefixCost)
-  if (estimateMessagesTokens(currentTurnMessages) <= turnBudget) {
+  const turnCharacterBudget = characterBudget === undefined
+    ? Infinity
+    : Math.max(0, characterBudget - estimateWireMessageCharacters(permanentPrefix))
+  if (estimateMessagesTokens(currentTurnMessages) <= turnBudget
+    && estimateWireMessageCharacters(currentTurnMessages) <= turnCharacterBudget) {
     return [...permanentPrefix, ...currentTurnMessages]
   }
 
   let used = 0
+  let usedCharacters = 0
   let tailStart = currentTurnMessages.length
   for (let i = currentTurnMessages.length - 1; i >= 0; i--) {
     const message = currentTurnMessages[i]!
     const cost = estimateMessagesTokens([message])
-    if (used + cost > turnBudget) break
+    const characters = estimateWireMessageCharacters([message])
+    if (used + cost > turnBudget || usedCharacters + characters > turnCharacterBudget) break
     used += cost
+    usedCharacters += characters
     tailStart = i
   }
 
@@ -443,9 +479,10 @@ async function* streamSessionImpl(
   const toolSchemaCost = estimateToolDefinitionsTokens(toolDefs)
   const messageContextLimit = Math.max(1, contextLimit - toolSchemaCost)
   const basePrefix: Message[] = [systemMessage, ...compactionMessage, userMessage]
+  const historyCharacterBudget = codexHistoryCharacterBudget(options.provider, options.model, toolDefs)
   const includeRecentContextAnchor = options.recentContextAnchor ?? recentContextAnchorEnabled()
   const buildInitialRequest = (historyLimit: number): { messages: Message[]; permanentPrefix: Message[] } => {
-    const retainedHistory = trimHistoryForInitialRequest(basePrefix, usableHistory, historyLimit)
+    const retainedHistory = trimHistoryForInitialRequest(basePrefix, usableHistory, historyLimit, historyCharacterBudget)
     // An anchor is useful only when budgeting omitted part of the history. Build
     // it from this request's omission, rather than reusing the initial anchor:
     // overflow retries can omit additional messages that otherwise lose the
@@ -517,7 +554,7 @@ async function* streamSessionImpl(
     for (let attempt = 0; attempt <= PROVIDER_RETRY_LIMIT; attempt++) {
       const requestMessages = step === 0
         ? initialRequestWithReducedContext()
-        : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), messageContextLimit)
+        : compactCurrentTurnForRequest(permanentPrefix, allMessages.slice(currentTurnStart), messageContextLimit, historyCharacterBudget)
 
       stream = await runtime.runSync(Effect.gen(function* () {
         const p = yield* Provider

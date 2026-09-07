@@ -169,6 +169,40 @@ test("streamSession anchors only history omitted by context budgeting", async ()
   ), false)
 })
 
+test("streamSession keeps Zero-API Codex history below its character limit", async () => {
+  const requests: CompletionRequest[] = []
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ delta: { content: "ok" }, finish_reason: "stop" })
+      controller.close()
+    },
+  })
+  const history: Message[] = [
+    { role: "user", content: `old marker ${"x".repeat(100_000)}` },
+    { role: "assistant", content: `old answer ${"y".repeat(100_000)}` },
+    { role: "user", content: "recent request" },
+    { role: "assistant", content: "recent answer" },
+  ]
+
+  const gen = streamSession("new request", history, {
+    abort: new AbortController().signal,
+    model: "openaicodex/gpt-5.6-luna",
+    modelInfo: { id: "openaicodex/gpt-5.6-luna", contextLimit: 272_000 },
+    provider: "zero-api",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(stream, { onRequest: (req) => requests.push(req) }))
+
+  while (!(await gen.next()).done) {}
+
+  assert.equal(requests.length, 1)
+  assert.ok(JSON.stringify(requests[0]!.messages).length < 200_000)
+  assert.equal(requests[0]!.messages.some((message) =>
+    message.role !== "system" && String(message.content ?? "").includes("old marker")
+  ), false)
+  assert.equal(requests[0]!.messages.some((message) => String(message.content ?? "").includes("recent request")), true)
+})
+
 test("streamSession retries an explicit provider context overflow with less history", async () => {
   const requests: CompletionRequest[] = []
   let calls = 0
