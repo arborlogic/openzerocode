@@ -26,18 +26,23 @@ We're grateful for the OpenCode project's design — this project wouldn't exist
 
 This repo is actively implemented. Current capabilities include:
 
-- **Solid-based terminal UI** in `src/client/tui.tsx` — streaming responses, reasoning display, command palette
-- **Build / Plan / Learn modes** — implementation, planning, and confirmed experience refinement into global memory or project `DEVELOPMENT.md` guidance
-- **Provider switching** — OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, plus configurable OpenAI-compatible endpoints
-- **Model switching** — switch models on the fly
+- **Solid-based terminal UI** in `src/client/tui.tsx` — streaming responses, reasoning display, command palette, queued input, steering, and long-session rendering controls
+- **Build / Plan / Compose modes** — direct implementation, read-only inspection/planning, and a skills-driven spec/TDD/verify/review workflow
+- **Productive / Lite harness profiles** — the default full agent harness plus a smaller prompt/tool surface for constrained local models
+- **Provider switching** — OpenCode Zen, OpenAI, OpenAI Codex, xAI OAuth, OpenRouter, Zero-API, DeepSeek, and native Ollama
+- **Model + reasoning switching** — change model at runtime and set supported reasoning effort levels with `/reasoning`
 - **Multi-session persistence** under `~/.openzerocode/sessions`
-- **Session management** — rename, delete, compact, timeline actions (revert/copy/fork)
+- **Session management** — rename, delete, compact, export, timeline actions (revert/copy/fork), and automatic context compression
+- **Autopilot** — `standard` for routine continuation and `goal` for advancing an approved goal across turns
+- **Skills** — bundled, project, and user-global `SKILL.md` discovery with optional automatic per-request routing; Compose mode has its own structured skill workflow
 - **Headless and server modes** — `--run` for one-shot CLI runs and `serve` for the streaming HTTP API
-- **Sidebar context** — token usage, cost tracking, git diff summary
-- **Prompt memory** — user-global `~/.openzerocode/AGENTS.md` / `CONTEXT.md` injected into the system prompt; Learn mode creates missing empty global memory files on first entry, can propose/apply confirmed global updates, and can extract project-specific guidance into `DEVELOPMENT.md`
-- **Session handoff** — `SESSION_SUMMARY.md` for concise local continuation notes
-- **GEASS browser tools** — optional browser navigation, reading, interaction, screenshots, and visual observation
-- **18 built-in tools**:
+- **Peer collaboration** — named local OpenZeroCode processes can discover and call one another with bounded hop/round-trip guards
+- **MCP tools** — configured MCP servers can be loaded as selectable dynamic tool groups
+- **Prompt memory** — only user-global `~/.openzerocode/AGENTS.md` and `~/.openzerocode/CONTEXT.md` are automatically injected when non-empty
+- **Learnings** — `/learn` uses `compose:learn` to extract non-obvious project learnings to `docs/compose/learnings/PROJECT.md` or cross-project learnings to `~/.openzerocode/LEARNINGS.md`
+- **Session handoff** — project `SESSION_SUMMARY.md` is a manual continuation artifact and is not auto-injected
+- **GEASS browser + vision tools** — optional browser navigation/interaction, screenshots, native-model vision, and local-VLM fallback
+- **19 built-in tools**:
   | Tool | Description |
   |------|-------------|
   | `read` | Read file contents |
@@ -46,18 +51,21 @@ This repo is actively implemented. Current capabilities include:
   | `glob` | Find files by glob pattern |
   | `bash` | Execute shell commands |
   | `edit` | Targeted string replacement edits |
-  | `web-fetch` | Fetch content from URLs |
-  | `todo-write` | Maintain structured task lists during multi-step work |
-  | `learn-memory-apply` | Apply confirmed Learn-mode updates to global `~/.openzerocode` memory |
-  | `learn-project-memory-apply` | Apply confirmed Learn-mode updates to project `DEVELOPMENT.md` guidance |
-  | `browser-navigate` | Navigate the connected GEASS browser to a URL |
-  | `browser-read` | Read structured content from the current GEASS browser page |
-  | `browser-click` | Click page elements in the GEASS browser |
-  | `browser-type` | Type into inputs in the GEASS browser |
-  | `browser-select` | Select dropdown options in the GEASS browser |
-  | `browser-scroll` | Scroll the current GEASS browser page |
-  | `browser-screenshot` | Capture a browser screenshot |
-  | `browser-observe-visual` | Inspect the current browser view visually |
+  | `apply_patch` | Apply add/update/delete patches across files |
+  | `web_fetch` | Fetch content from URLs |
+  | `todowrite` | Maintain a structured task list during multi-step work |
+  | `browser_navigate` | Navigate the connected GEASS browser to a URL |
+  | `browser_read` | Read structured content from the current GEASS browser page |
+  | `browser_click` | Click page elements in the GEASS browser |
+  | `browser_type` | Type into inputs in the GEASS browser |
+  | `browser_select` | Select dropdown options in the GEASS browser |
+  | `browser_scroll` | Scroll the current GEASS browser page |
+  | `browser_screenshot` | Capture a browser screenshot |
+  | `browser_observe_visual` | Inspect the current browser view visually, optionally through the local VLM |
+  | `analyze_image` | Analyze an image through native model vision or local-VLM fallback |
+  | `call_peer` | Delegate or send a message to another named local OpenZeroCode peer |
+
+MCP tools are registered dynamically and are not included in the built-in tool count.
 
 ![OpenZeroCode TUI session](./docs/assets/openzerocode-demo.gif)
 
@@ -257,6 +265,7 @@ openzerocode --version               # Print version
 openzerocode --help                  # Print CLI help
 openzerocode --run "fix the tests"    # Run one prompt headlessly with auto-approved tools
 openzerocode serve --port 4096       # Start the streaming HTTP API server
+openzerocode --name backend          # Launch the TUI as a named local peer
 ```
 
 Environment overrides:
@@ -265,6 +274,23 @@ Environment overrides:
 |----------|--------|
 | `OPENZERO_MODEL` | Override the default model used by headless `--run` mode |
 | `OPENZEROCODE_PROVIDER_CONFIG` | Override the provider config path (default `~/.openzerocode/providers.json`) |
+| `OPENZEROCODE_HARNESS_PROFILE` | `productive` (default) or `lite`; Lite uses a smaller prompt and tool surface for local models |
+| `OPENZEROCODE_MAX_STEPS` | Override the maximum model/tool round-trips per run (default 50) |
+
+Useful TUI commands:
+
+| Command | Purpose |
+|---------|---------|
+| `/mode build\|plan\|compose` | Switch execution mode |
+| `/reasoning low\|medium\|high\|xhigh\|max\|off` | Set reasoning effort when supported by the selected model |
+| `/autopilot standard\|goal\|off` | Configure automatic continuation |
+| `/steer <instruction>` | Guide the currently active run at its next safe model boundary |
+| `/skills auto` / `/skills clear` | Enable or disable automatic skill routing |
+| `/skill <name>` | Inspect one skill's instructions |
+| `/learn` | Extract durable non-obvious learnings through `compose:learn` |
+| `/compact` / `/export` | Compress history or export the compact transcript |
+| `/peers` / `/call <name> <prompt>` | Inspect/call named local peers |
+| `/usage` | Open the token-usage dashboard |
 
 ### Alternative entrypoint
 
@@ -310,6 +336,7 @@ Shape:
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `ollama` | Native Ollama API | No key required; defaults to `http://localhost:11434` |
 
 **Notes:**
 
@@ -344,30 +371,34 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
 ## Architecture
 
 ```text
-┌─ TUI client ──────────────────────────────────┐
-│  src/client/tui.tsx                            │
-│  - transcript / response rendering             │
-│  - command palette & autocomplete              │
-│  - session management (create, rename, delete) │
-│  - build / plan mode toggle                    │
-│  - sidebar: token usage, cost, git summary     │
-│  - workspace memory + skill injection          │
-└────────┬───────────────────────────────────────┘
+┌─ TUI client ─────────────────────────────────────┐
+│  src/client/tui.tsx                              │
+│  - transcript / streaming / queue / steering     │
+│  - sessions / compaction / timeline / usage      │
+│  - build / plan / compose modes                   │
+│  - Autopilot / skills / peers / tool groups       │
+└────────┬─────────────────────────────────────────┘
          │
-         ├── provider layer ─────────────────────┐
-         │  src/provider/registry.ts             │
-         │  - OpenCode Zen (opencode-zen)         │
-         │  - OpenAI / OpenAI Codex              │
-         │  - OpenRouter / Zero-API / DeepSeek   │
-         │  - Extensible via registry            │
-         └───────────────────────────────────────┘
+         ├── session runner ────────────────────────┐
+         │  src/client/session-runner.ts            │
+         │  - context budgeting + provider retries  │
+         │  - tool loop + permission callbacks      │
+         │  - Build/Plan tool filtering             │
+         └──────────────────────────────────────────┘
          │
-         └── tool layer ─────────────────────────┐
-            src/tool/registry.ts                 │
-            - file/search/shell/edit/web tools    │
-            - todo + GEASS browser tools         │
-            - Permission / auto-approve system   │
-            └────────────────────────────────────┘
+         ├── provider layer ────────────────────────┐
+         │  src/provider/registry.ts                │
+         │  - Zen / OpenAI / Codex / xAI            │
+         │  - OpenRouter / Zero-API / DeepSeek      │
+         │  - native Ollama                          │
+         └──────────────────────────────────────────┘
+         │
+         └── tool layer ────────────────────────────┐
+            src/tool/registry.ts                    │
+            - 19 built-in tools                     │
+            - optional GEASS browser + peer groups  │
+            - dynamically loaded MCP tools          │
+            └───────────────────────────────────────┘
 ```
 
 ## Prompt Memory Model
@@ -376,17 +407,15 @@ OpenZeroCode keeps durable prompt memory user-global and intentionally small:
 
 - `~/.openzerocode/AGENTS.md`: user personal cross-project preferences, language/response style, and general safety rules. Always loaded when non-empty.
 - `~/.openzerocode/CONTEXT.md`: user background, common tools, and long-term preferences. Always loaded when non-empty.
-- `DEVELOPMENT.md`: project-local development guidance extracted on demand in Learn mode. This is regular repository documentation and is not auto-injected into every prompt.
-- `SESSION_SUMMARY.md`: concise handoff notes for humans/continuation; not auto-injected into the system prompt.
+- `~/.openzerocode/LEARNINGS.md`: optional cross-project learnings created by the `compose:learn` workflow; it is a knowledge artifact, not part of the normal automatic memory injection path.
+- `docs/compose/learnings/*.md`: project learnings used by Compose mode when present. These are separate from the global `AGENTS.md` / `CONTEXT.md` prompt memory.
+- `SESSION_SUMMARY.md`: concise project handoff notes for humans/continuation; not auto-injected into the system prompt.
 
 Project `AGENTS.md` / `CONTEXT.md` files are treated as regular repository documentation, not automatic prompt memory. Conditional `memory.d` auto-injection is intentionally not used; project-specific experience is made explicit by extracting it into project docs.
 
-`/mode learn` switches the agent into a two-stage experience-refinement workflow:
+The former `/mode learn` workflow was removed in 0.7.0. Learning is now handled by the bundled `compose:learn` skill. `/learn` sends a learning-extraction request that targets project-specific discoveries at `docs/compose/learnings/PROJECT.md` and cross-project discoveries at `~/.openzerocode/LEARNINGS.md`.
 
-1. **Accumulate experience globally** — the user can ask the AI to distill lessons from the current project state and discussion context. After the AI presents the exact target and text, and only after explicit confirmation, it may call `learn_memory_apply` to update global `~/.openzerocode/AGENTS.md` or `~/.openzerocode/CONTEXT.md`.
-2. **Extract experience into a project** — later, the user can ask Learn mode to read/search the project plus global memory, select relevant reusable guidance, and write confirmed project-local guidance to `<workspace>/DEVELOPMENT.md` via `learn_project_memory_apply`.
-
-Learn mode does not expose general edit/write/bash tools.
+Compose mode also auto-loads project Markdown files from `docs/compose/learnings/` when that directory exists. This Compose-specific learning context is distinct from the normal global prompt-memory files above.
 
 
 ### Key source files
@@ -394,11 +423,16 @@ Learn mode does not expose general edit/write/bash tools.
 | File | Purpose |
 |------|---------|
 | `src/client/tui.tsx` | Main TUI entrypoint & UI orchestration |
+| `src/client/session-runner.ts` | Streaming agent loop, context budgeting, retries, tool execution, mode-specific tool filtering |
 | `src/client/sessions.ts` | Session persistence helpers |
 | `src/client/workspace-memory.ts` | Loads user-global `AGENTS.md` / `CONTEXT.md` into the system prompt and reports memory status |
+| `src/client/skill-loader.ts` / `skill-routing.ts` | Skill discovery and automatic per-request routing |
+| `src/client/autopilot.ts` | Standard/Goal Autopilot continuation decisions and retry policy |
 | `SESSION_SUMMARY.md` | Manual session handoff / continuation notes |
 | `src/provider/registry.ts` | Provider registration & resolution |
 | `src/tool/registry.ts` | Built-in tool registration |
+| `src/mcp/` | MCP configuration, process transport, adaptation, and dynamic tool store |
+| `src/peer/` | Named local peer registration, bounded collaboration, and local peer server |
 | `src/server/index.ts` | Streaming HTTP API server for `openzerocode serve` |
 
 ---
@@ -409,11 +443,11 @@ Learn mode does not expose general edit/write/bash tools.
 |--------|----------|--------------|
 | **Runtime** | Requires `zero` cloud service | Self-contained, local-first |
 | **TUI framework** | `@opentui` (SolidJS) | `@opentui` (SolidJS) — same |
-| **Provider layer** | OpenRouter, others | OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, extensible |
-| **Tool system** | Built-in tools | File/search/shell/edit/web tools + todo + GEASS browser tools + permission system |
+| **Provider layer** | OpenRouter, others | OpenCode Zen, OpenAI, OpenAI Codex, xAI OAuth, OpenRouter, Zero-API, DeepSeek, Ollama |
+| **Tool system** | Built-in tools | 19 built-ins + selectable GEASS/peer groups + dynamic MCP tools + permission system |
 | **Session storage** | Local files | Local files under `~/.openzerocode/` |
 | **Prompt memory** | Varies | User-global `AGENTS.md` + `CONTEXT.md` are injected into the local system prompt |
-| **Cloud dependency** | Requires `zero` for operation | None — works entirely offline |
+| **Cloud dependency** | Requires `zero` for operation | No `zero` dependency; can use cloud providers or run locally with providers such as Ollama |
 | **Binary distribution** | Platform-specific npm packages | Platform-specific npm packages (`darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`) plus source-first local install via `python3 scripts/dev-install.py` |
 
 ---
