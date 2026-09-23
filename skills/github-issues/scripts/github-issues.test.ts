@@ -60,7 +60,19 @@ if [ "$1 $2" = "pr view" ]; then
   echo '{"number":42,"url":"https://github.com/acme/widget/pull/42","title":"Feature","body":"Details","author":{"login":"octocat"},"baseRefName":"main","headRefName":"feature","isDraft":false,"state":"OPEN","mergeable":"MERGEABLE","reviewDecision":"","additions":5,"deletions":1,"changedFiles":1,"files":[{"path":"src/index.ts","additions":5,"deletions":1}],"statusCheckRollup":[]}'
   exit
 fi
-if [ "$1 $2" = "pr diff" ]; then echo 'diff --git a/src/index.ts b/src/index.ts'; exit; fi
+if [ "$1 $2" = "pr diff" ]; then
+  if [ "$GH_SCENARIO" = "large-diff" ]; then
+    printf 'diff --git a/src/index.ts b/src/index.ts\n'
+    dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\\0' x
+    exit
+  fi
+  if [ "$GH_SCENARIO" = "large-diff-fail" ]; then
+    dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\\0' x >&2
+    exit 1
+  fi
+  echo 'diff --git a/src/index.ts b/src/index.ts'
+  exit
+fi
 exit 1
 `)
   command("git", `#!/bin/sh
@@ -130,6 +142,34 @@ describe("GitHub pull request workflow", () => {
     assert.match(calls, /pr view 42.*statusCheckRollup/)
     assert.match(calls, /pr diff 42 --repo acme\/widget/)
     assert.doesNotMatch(calls, /pr review|pr comment/)
+  })
+
+  it("returns a pull request diff larger than spawnSync's 1 MiB default buffer", () => {
+    const fixture = runPullRequest("large-diff")
+    writeFileSync(fixture.log, "")
+    const result = spawnSync(process.execPath, [script, "pr-review", "--repo", "acme/widget", "--pr", "42"], {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, PATH: `${fixture.workspace}:${process.env.PATH}`, GH_SCENARIO: "large-diff", GH_TEST_LOG: fixture.log },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const output = JSON.parse(result.stdout)
+    assert.ok(output.diff.length > 1024 * 1024)
+    assert.match(output.diff, /^diff --git/)
+  })
+
+  it("bounds command output included in failure details", () => {
+    const fixture = runPullRequest("large-diff-fail")
+    writeFileSync(fixture.log, "")
+    const result = spawnSync(process.execPath, [script, "pr-review", "--repo", "acme/widget", "--pr", "42"], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fixture.workspace}:${process.env.PATH}`, GH_SCENARIO: "large-diff-fail", GH_TEST_LOG: fixture.log },
+    })
+    assert.equal(result.status, 1)
+    const output = JSON.parse(result.stderr)
+    assert.equal(output.error, "Cannot fetch the pull request diff.")
+    assert.match(output.details, /\[error details truncated\]$/)
+    assert.ok(result.stderr.length < 16 * 1024)
   })
 
   it("reports a PR lookup failure without fetching a diff", () => {

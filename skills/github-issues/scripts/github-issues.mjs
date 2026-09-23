@@ -4,9 +4,17 @@ import { spawnSync } from "node:child_process"
 
 const args = process.argv.slice(2)
 const command = args.shift()
+const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024 * 1024
+const MAX_ERROR_DETAILS_CHARS = 8 * 1024
+
+function boundedDetails(details) {
+  if (typeof details !== "string" || details.length <= MAX_ERROR_DETAILS_CHARS) return details
+  return `${details.slice(0, MAX_ERROR_DETAILS_CHARS)}\n...[error details truncated]`
+}
 
 function fail(message, details, exitCode = 1) {
-  console.error(JSON.stringify({ ok: false, error: message, ...(details ? { details } : {}) }))
+  const safeDetails = boundedDetails(details)
+  console.error(JSON.stringify({ ok: false, error: message, ...(safeDetails ? { details: safeDetails } : {}) }))
   process.exit(exitCode)
 }
 
@@ -31,7 +39,7 @@ function options(name) {
 }
 
 function execute(program, commandArgs) {
-  return spawnSync(program, commandArgs, { encoding: "utf8" })
+  return spawnSync(program, commandArgs, { encoding: "utf8", maxBuffer: MAX_COMMAND_OUTPUT_BYTES })
 }
 
 function run(program, commandArgs, remediation) {
