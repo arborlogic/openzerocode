@@ -65,6 +65,12 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     reasoning: true,
     vision: true,
   },
+  "gpt-6-astra": {
+    contextLimit: 272_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
   "gpt-5.4-codex": {
     contextLimit: 400_000,
     pricing: { input: 0, output: 0 },
@@ -188,19 +194,16 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "grok-4.5": {
     contextLimit: 500_000,
     pricing: { input: 2, output: 6, cache_read: 0.5 },
-    reasoning: true,
     vision: true,
   },
   "grok-4.3": {
     contextLimit: 1_000_000,
     pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
-    reasoning: true,
     vision: true,
   },
   "grok-4.20-0309-reasoning": {
     contextLimit: 1_000_000,
     pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
-    reasoning: true,
     vision: true,
   },
   "grok-4.20-0309-non-reasoning": {
@@ -211,7 +214,6 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
   "grok-4.20-multi-agent-0309": {
     contextLimit: 1_000_000,
     pricing: { input: 1.25, output: 2.5, cache_read: 0.2 },
-    reasoning: true,
     vision: true,
   },
 }
@@ -259,14 +261,15 @@ export function getEffectiveContextLimit(model: string, metadata?: ModelInfo): n
 /**
  * Return a reasoning effort accepted by the selected model.
  *
- * Advanced levels are model-specific: GPT-5.6 accepts both `xhigh` and `max`,
- * while older Codex models accept only low/medium/high. DeepSeek V4 Pro keeps
- * its existing `max` level; other advanced values fall back safely to `high`.
+ * Advanced levels are model-specific: GPT-5.6 and GPT-6 accept both `xhigh`
+ * and `max`, while older Codex models accept only low/medium/high. DeepSeek V4
+ * Pro keeps its existing `max` level; other advanced values fall back safely
+ * to `high`.
  */
 export function normalizeReasoningEffort(model: string, effort?: ReasoningEffort): ReasoningEffort | undefined {
   if (!effort || !getModelConfig(model).reasoning) return undefined
   const normalizedModel = normalizeModelConfigKey(model).toLowerCase()
-  if ((effort === "xhigh" || effort === "max") && /^gpt-5\.6(?:-|$)/.test(normalizedModel)) return effort
+  if ((effort === "xhigh" || effort === "max") && /^gpt-(?:5\.6|6)(?:-|$)/.test(normalizedModel)) return effort
   if (effort === "max" && normalizedModel === "deepseek-v4-pro") return effort
   if (effort === "xhigh" || effort === "max") return "high"
   return effort

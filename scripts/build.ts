@@ -16,6 +16,7 @@ import * as path from "path"
 import * as os from "os"
 import { replaceBundledSkills } from "./bundled-skills"
 import { resolveBuildVersion } from "./version"
+import { signBinary } from "./sign-binary"
 
 const PLATFORM_MAP: Record<string, string> = { darwin: "darwin", linux: "linux", win32: "windows" }
 const ARCH_MAP: Record<string, string> = { x64: "x64", arm64: "arm64", arm: "arm" }
@@ -87,6 +88,8 @@ if (chmodResult.exitCode !== 0) {
   if (stderr) console.error(`   ${stderr}`)
   process.exit(chmodResult.exitCode)
 }
+
+signBinary(outfile)
 
 const bundledSkillsSource = path.join(dir, "skills")
 const bundledSkillsDestination = path.join(path.dirname(outfile), "bundled-skills")

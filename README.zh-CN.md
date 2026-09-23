@@ -26,18 +26,23 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 
 这个仓库仍在积极实现中。目前已具备：
 
-- **基于 Solid 的终端 UI**：入口位于 `src/client/tui.tsx`，支持流式响应、推理展示和命令面板
-- **Build / Plan 模式切换**：在结构化执行和自由探索之间切换
-- **Provider 切换**：OpenCode Zen、OpenAI、OpenAI Codex、OpenRouter、Zero-API、DeepSeek，以及可配置的 OpenAI-compatible 端点
-- **模型切换**：运行中切换模型
+- **基于 Solid 的终端 UI**：入口位于 `src/client/tui.tsx`，支持流式响应、推理展示、命令面板、输入队列、steering，以及长会话渲染控制
+- **Build / Plan / Compose 三种模式**：直接实现、只读检查/规划，以及由 skills 驱动的 spec / TDD / verify / review 工作流
+- **Productive / Lite harness**：默认完整 agent harness，以及为较小型本地模型缩减 prompt 与工具面的 Lite profile
+- **Provider 切换**：OpenCode Zen、OpenAI、OpenAI Codex、xAI OAuth、OpenRouter、Zero-API、DeepSeek，以及原生 Ollama
+- **模型与 reasoning 切换**：运行中切换模型，并可通过 `/reasoning` 设置模型支持的 reasoning effort
 - **多会话持久化**：会话保存于 `~/.openzerocode/sessions`
-- **会话管理**：重命名、删除、压缩会话，以及 timeline 操作（revert/copy/fork）
+- **会话管理**：重命名、删除、压缩、导出、timeline 操作（revert/copy/fork）与自动 context compression
+- **Autopilot**：`standard` 处理例行续接；`goal` 可在已批准目标范围内跨回合推进工作
+- **Skills**：支持 bundled、project 与 user-global `SKILL.md`，并可启用每次请求的自动 skill routing；Compose 另有结构化 skill workflow
 - **Headless 与 server 模式**：用 `--run` 做一次性 CLI 运行，用 `serve` 启动 streaming HTTP API
-- **侧边栏上下文**：Token 用量、费用跟踪、Git diff 摘要
-- **工作区提示记忆**：将 `AGENTS.md` 指令和 `CONTEXT.md` 项目上下文注入系统提示词
-- **会话交接**：使用 `SESSION_SUMMARY.md` 保存简洁的本地续接笔记
-- **GEASS browser 工具**：可选的浏览器导航、读取、交互、截图与视觉观察
-- **16 个内置工具**：
+- **Peer collaboration**：具名的本地 OpenZeroCode process 可互相发现与调用，并带有 hop / round-trip 限制
+- **MCP tools**：可加载配置过的 MCP server，并作为可选的动态 tool group
+- **Prompt memory**：只有 user-global `~/.openzerocode/AGENTS.md` 与 `~/.openzerocode/CONTEXT.md` 会在非空时自动注入 prompt
+- **Learnings**：`/learn` 通过 `compose:learn`，将项目学习写入 `docs/compose/learnings/PROJECT.md`，跨项目学习写入 `~/.openzerocode/LEARNINGS.md`
+- **会话交接**：项目内的 `SESSION_SUMMARY.md` 是手动交接文档，不会自动注入 prompt
+- **GEASS browser + vision 工具**：可选的浏览器导航/交互、截图、原生模型 vision 与 local-VLM fallback
+- **19 个内置工具**：
 
 | 工具 | 说明 |
 |------|------|
@@ -47,16 +52,21 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 | `glob` | 按 glob 模式查找文件 |
 | `bash` | 执行 shell 命令 |
 | `edit` | 定向字符串替换编辑 |
-| `web-fetch` | 从 URL 获取内容 |
-| `todo-write` | 在多步骤工作中维护结构化任务清单 |
-| `browser-navigate` | 将连接中的 GEASS browser 导航到 URL |
-| `browser-read` | 读取当前 GEASS browser 页面的结构化内容 |
-| `browser-click` | 点击 GEASS browser 页面元素 |
-| `browser-type` | 在 GEASS browser 输入字段中输入文字 |
-| `browser-select` | 选择 GEASS browser 下拉菜单选项 |
-| `browser-scroll` | 滚动当前 GEASS browser 页面 |
-| `browser-screenshot` | 捕获浏览器截图 |
-| `browser-observe-visual` | 以视觉方式检查当前浏览器画面 |
+| `apply_patch` | 以 patch 格式新增、更新或删除文件 |
+| `web_fetch` | 从 URL 获取内容 |
+| `todowrite` | 在多步骤工作中维护结构化任务清单 |
+| `browser_navigate` | 将连接中的 GEASS browser 导航到 URL |
+| `browser_read` | 读取当前 GEASS browser 页面的结构化内容 |
+| `browser_click` | 点击 GEASS browser 页面元素 |
+| `browser_type` | 在 GEASS browser 输入字段中输入文字 |
+| `browser_select` | 选择 GEASS browser 下拉菜单选项 |
+| `browser_scroll` | 滚动当前 GEASS browser 页面 |
+| `browser_screenshot` | 捕获浏览器截图 |
+| `browser_observe_visual` | 视觉检查当前 browser 画面，必要时可使用 local VLM |
+| `analyze_image` | 通过原生模型 vision 或 local-VLM fallback 分析图片 |
+| `call_peer` | 将任务或消息发给另一个具名的本地 OpenZeroCode peer |
+
+MCP tools 会在运行时动态注册，因此不包含在上述 19 个内置工具计数中。
 
 ![OpenZeroCode TUI 会话](./docs/assets/openzerocode-demo.gif)
 
@@ -256,6 +266,7 @@ openzerocode --version               # 显示版本
 openzerocode --help                  # 显示 CLI help
 openzerocode --run "fix the tests"    # Headless 运行一次 prompt，工具自动批准
 openzerocode serve --port 4096       # 启动 streaming HTTP API server
+openzerocode --name backend          # 以具名 local peer 启动 TUI
 ```
 
 环境变量覆盖：
@@ -264,6 +275,23 @@ openzerocode serve --port 4096       # 启动 streaming HTTP API server
 |------|------|
 | `OPENZERO_MODEL` | 覆盖 headless `--run` 模式使用的默认模型 |
 | `OPENZEROCODE_PROVIDER_CONFIG` | 覆盖 provider 配置文件路径（默认 `~/.openzerocode/providers.json`） |
+| `OPENZEROCODE_HARNESS_PROFILE` | `productive`（默认）或 `lite`；Lite 会缩小 prompt 与 tool surface，适合较小型本地模型 |
+| `OPENZEROCODE_MAX_STEPS` | 覆盖每次 run 最大 model/tool round-trip 数（默认 50） |
+
+常用 TUI 命令：
+
+| 命令 | 用途 |
+|------|------|
+| `/mode build\|plan\|compose` | 切换执行模式 |
+| `/reasoning low\|medium\|high\|xhigh\|max\|off` | 设置当前模型支持的 reasoning effort |
+| `/autopilot standard\|goal\|off` | 配置自动续接模式 |
+| `/steer <instruction>` | 在下一个安全 model boundary 为当前 active run 添加指示 |
+| `/skills auto` / `/skills clear` | 启用或停用自动 skill routing |
+| `/skill <name>` | 查看某个 skill 的 instructions |
+| `/learn` | 通过 `compose:learn` 提取可复用的非显而易见学习 |
+| `/compact` / `/export` | 压缩历史或导出 compact transcript |
+| `/peers` / `/call <name> <prompt>` | 查看或调用具名 local peers |
+| `/usage` | 打开 token usage dashboard |
 
 ### 备用入口
 
@@ -309,6 +337,7 @@ Provider 凭证可以通过环境变量或本地配置文件提供：
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `ollama` | 原生 Ollama API | 不需要 key；默认 `http://localhost:11434` |
 
 **说明：**
 
@@ -344,52 +373,67 @@ npx tsx --test src/client/workspace-memory.test.ts
 ## 架构
 
 ```text
-┌─ TUI client ──────────────────────────────────┐
-│  src/client/tui.tsx                            │
-│  - transcript / response rendering             │
-│  - command palette & autocomplete              │
-│  - session management (create, rename, delete) │
-│  - build / plan mode toggle                    │
-│  - sidebar: token usage, cost, git summary     │
-│  - workspace memory + skill injection          │
-└────────┬───────────────────────────────────────┘
+┌─ TUI client ─────────────────────────────────────┐
+│  src/client/tui.tsx                              │
+│  - transcript / streaming / queue / steering     │
+│  - sessions / compaction / timeline / usage      │
+│  - build / plan / compose modes                   │
+│  - Autopilot / skills / peers / tool groups       │
+└────────┬─────────────────────────────────────────┘
          │
-         ├── provider layer ─────────────────────┐
-         │  src/provider/registry.ts             │
-         │  - OpenCode Zen (opencode-zen)         │
-         │  - OpenAI / OpenAI Codex              │
-         │  - OpenRouter / Zero-API / DeepSeek   │
-         │  - Extensible via registry            │
-         └───────────────────────────────────────┘
+         ├── session runner ────────────────────────┐
+         │  src/client/session-runner.ts            │
+         │  - context budgeting + provider retries  │
+         │  - tool loop + permission callbacks      │
+         │  - Build/Plan tool filtering             │
+         └──────────────────────────────────────────┘
          │
-         └── tool layer ─────────────────────────┐
-            src/tool/registry.ts                 │
-            - file/search/shell/edit/web tools    │
-            - todo + GEASS browser tools         │
-            - Permission / auto-approve system   │
-            └────────────────────────────────────┘
+         ├── provider layer ────────────────────────┐
+         │  src/provider/registry.ts                │
+         │  - Zen / OpenAI / Codex / xAI            │
+         │  - OpenRouter / Zero-API / DeepSeek      │
+         │  - native Ollama                          │
+         └──────────────────────────────────────────┘
+         │
+         └── tool layer ────────────────────────────┐
+            src/tool/registry.ts                    │
+            - 19 built-in tools                     │
+            - optional GEASS browser + peer groups  │
+            - dynamically loaded MCP tools          │
+            └───────────────────────────────────────┘
 ```
 
-## 工作区记忆模型
+## Prompt 记忆模型
 
-OpenZeroCode 将仓库记忆拆分为三个轻量文件：
+OpenZeroCode 将长期 prompt memory 保持在 user-global，并刻意维持精简：
 
-- `AGENTS.md`：稳定的仓库专属指令、工作流和约束。
-- `CONTEXT.md`：背景上下文、共享词汇，以及值得在提示词中暴露的已知不一致。
-- `SESSION_SUMMARY.md`：给人类或后续续接用的简短交接笔记；不会自动注入系统提示词。
+- `~/.openzerocode/AGENTS.md`：跨项目的个人偏好、语言/回复风格与一般规则；非空时自动加载。
+- `~/.openzerocode/CONTEXT.md`：用户背景、常用工具与长期上下文；非空时自动加载。
+- `~/.openzerocode/LEARNINGS.md`：`compose:learn` 可创建的跨项目 learning artifact；不属于一般自动 prompt-memory 注入路径。
+- `docs/compose/learnings/*.md`：Compose mode 在存在时会加载的 project learnings；和全局 `AGENTS.md` / `CONTEXT.md` 是不同机制。
+- `SESSION_SUMMARY.md`：给人类或后续续接用的 project handoff；不会自动注入系统提示词。
 
-当前自动提示词组装路径会通过 `src/client/workspace-memory.ts` 从最近的工作区加载 `AGENTS.md` 和 `CONTEXT.md`。
+Project 内自己的 `AGENTS.md` / `CONTEXT.md` 只视为普通 repo 文档，不会自动注入；`memory.d` 也不会条件式自动加载。
+
+旧的 `/mode learn` 已在 0.7.0 移除。现在 learning 由 bundled `compose:learn` skill 负责；`/learn` 会发送 learning extraction request，将 project-specific discovery 写到 `docs/compose/learnings/PROJECT.md`，跨 project discovery 写到 `~/.openzerocode/LEARNINGS.md`。
+
+Compose mode 也会自动加载 `docs/compose/learnings/` 下的 Markdown 文件。这是 Compose 专用 learning context，和一般 global prompt memory 分开。
 
 ### 关键源码文件
 
 | 文件 | 用途 |
 |------|------|
 | `src/client/tui.tsx` | 主 TUI 入口和 UI 编排 |
+| `src/client/session-runner.ts` | Streaming agent loop、context budgeting、重试、tool execution 与 mode-specific tool filtering |
 | `src/client/sessions.ts` | 会话持久化辅助逻辑 |
-| `src/client/workspace-memory.ts` | 将 `AGENTS.md` 和 `CONTEXT.md` 加载进系统提示词 |
+| `src/client/workspace-memory.ts` | 将 user-global `AGENTS.md` / `CONTEXT.md` 加载进系统提示词并报告 memory 状态 |
+| `src/client/skill-loader.ts` / `skill-routing.ts` | Skill discovery 与每次请求的自动 routing |
+| `src/client/autopilot.ts` | Standard/Goal Autopilot 的 continuation 决策与 retry policy |
 | `SESSION_SUMMARY.md` | 手动会话交接和续接笔记 |
 | `src/provider/registry.ts` | Provider 注册和解析 |
 | `src/tool/registry.ts` | 内置工具注册 |
+| `src/mcp/` | MCP 配置、process transport、adapter 与 dynamic tool store |
+| `src/peer/` | 具名 local peer 注册、bounded collaboration 与 peer server |
 | `src/server/index.ts` | `openzerocode serve` 使用的 streaming HTTP API server |
 
 ---
@@ -400,11 +444,11 @@ OpenZeroCode 将仓库记忆拆分为三个轻量文件：
 |------|----------|--------------|
 | **运行时** | 需要 `zero` 云服务 | 自包含，本地优先 |
 | **TUI 框架** | `@opentui`（SolidJS） | `@opentui`（SolidJS），相同 |
-| **Provider 层** | OpenRouter 等 | OpenCode Zen、OpenAI、OpenAI Codex、OpenRouter、Zero-API、DeepSeek，可扩展 |
-| **工具系统** | 内置工具 | 文件/搜索/shell/编辑/web 工具 + todo + GEASS browser 工具 + 权限系统 |
+| **Provider 层** | OpenRouter 等 | OpenCode Zen、OpenAI、OpenAI Codex、xAI OAuth、OpenRouter、Zero-API、DeepSeek、Ollama |
+| **工具系统** | 内置工具 | 19 个 built-in + 可选 GEASS/peer groups + dynamic MCP tools + permission system |
 | **会话存储** | 本地文件 | `~/.openzerocode/` 下的本地文件 |
-| **提示词记忆** | 形态不定 | `AGENTS.md` + `CONTEXT.md` 注入本地系统提示词 |
-| **云依赖** | 运行需要 `zero` | 无，完全离线可用 |
+| **提示词记忆** | 形态不定 | user-global `AGENTS.md` + `CONTEXT.md` 注入本地系统提示词 |
+| **云依赖** | 运行需要 `zero` | 不依赖 `zero`；可用云端 provider，也可通过 Ollama 等方式本地运行 |
 | **二进制分发** | 平台专属 npm 包 | 平台专属 npm 包（`darwin-arm64`、`linux-x64`、`linux-arm64`、`win32-x64`）+ 通过 `python3 scripts/dev-install.py` 从源码优先本地安装 |
 
 ---
