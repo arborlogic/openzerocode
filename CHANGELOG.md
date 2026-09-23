@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.8.7 - 2026-09-23
+
+### Added
+
+- Added bundled GitHub issue and pull-request workflows, including safe issue retrieval, diff inspection, and support for large pull-request diffs.
+- Added GPT-6 Astra model metadata and reasoning-effort forwarding.
+
+### Changed
+
+- Updated the English, Simplified Chinese, and Traditional Chinese READMEs to reflect current commands, providers, and features.
+
+### Fixed
+
+- Enforced the Zero-API Codex history character budget before provider requests.
+- Added ad-hoc signing and verification for macOS binaries during builds.
+- Made npm release publishing tolerate packages already published by concurrent release runs.
+
 ## 0.8.6 - 2026-09-04
 
 ### Fixed
