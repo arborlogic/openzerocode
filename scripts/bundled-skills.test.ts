@@ -54,5 +54,7 @@ describe("replaceBundledSkills", () => {
     assert.equal(listed.status, 0, listed.stderr)
     assert.match(listed.stdout, /package\/bin\/bundled-skills\/openzerocode\/SKILL\.md/)
     assert.match(listed.stdout, /package\/bin\/bundled-skills\/review-helper\/SKILL\.md/)
+    assert.match(listed.stdout, /package\/bin\/bundled-skills\/github-issues\/SKILL\.md/)
+    assert.match(listed.stdout, /package\/bin\/bundled-skills\/github-issues\/scripts\/github-issues\.mjs/)
   })
 })

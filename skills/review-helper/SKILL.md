@@ -18,6 +18,16 @@ Review changes for defects and regressions. The goal is to report actionable fin
    - Applicable project instructions such as `AGENTS.md` or `CONTRIBUTING.md`
 4. Do not modify source files while conducting a review unless the user explicitly asks for fixes.
 
+### GitHub pull requests
+
+When the target is a GitHub pull request, prefer the bundled read-only workflow over ad hoc `gh` commands:
+
+```sh
+node skills/github-issues/scripts/github-issues.mjs pr-review --pr <number-or-url-or-branch>
+```
+
+Use its metadata, checks, changed-file list, and unified diff to establish scope. Inspect relevant local callers and tests when available. Reviewing is read-only by default: never submit an approval, comment, or change request unless the user explicitly asks for that external side effect.
+
 ## Review process
 
 ### 1. Understand intent
