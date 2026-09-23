@@ -115,6 +115,15 @@ describe("skill discovery", () => {
     })
   })
 
+  it("discovers the bundled GitHub issues skill", () => {
+    const skills = listSkills([join(process.cwd(), "skills")])
+    const githubIssues = skills.find((skill) => skill.name === "github-issues")
+
+    assert.equal(githubIssues?.isBuiltin, true)
+    assert.match(githubIssues?.description ?? "", /create GitHub issues/)
+    assert.equal(githubIssues?.skillPath, join(process.cwd(), "skills", "github-issues", "SKILL.md"))
+  })
+
   it("lists nested skills and lets an earlier directory override by name", () => {
     const root = makeTempWorkspace()
     const global = makeTempWorkspace()
