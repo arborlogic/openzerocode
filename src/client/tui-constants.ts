@@ -1,7 +1,12 @@
 import type { KeyBinding } from "@opentui/core"
 
 export const EMPTY_STATE_MESSAGE = "Response scroll is locked inside the panel. Mouse wheel scrolls response only."
-export const SCROLL_HINT = "Enter submit  •  Shift/Ctrl/Alt+Enter newline  •  / commands  •  Ctrl+P / F2 palette"
+
+export function idleFooterStatus(status: string, queued: number): string {
+  const defaultStatus = status === "waiting for input" || status === "autopilot enabled"
+  if (defaultStatus) return queued > 0 ? `${queued} queued` : ""
+  return queued > 0 && !status.includes(`${queued} queued`) ? `${status}  •  ${queued} queued` : status
+}
 
 export const SIDEBAR_WIDTH = 34
 

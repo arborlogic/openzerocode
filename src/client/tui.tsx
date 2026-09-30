@@ -80,7 +80,7 @@ import { startPeerServer } from "../peer/server"
 import { configurePeerBudget, setPeerContext } from "../peer/context"
 import { handleCli } from "./cli"
 import { encodePeerInput, decodePeerInput } from "./peer-input"
-import { EMPTY_STATE_MESSAGE, SCROLL_HINT, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
+import { EMPTY_STATE_MESSAGE, idleFooterStatus, PROMPT_KEY_BINDINGS, sidebarWidthForTerminal } from "./tui-constants"
 import { createStableRepaintScheduler } from "./tui-render-stability"
 import { createTuiRendererConfig, limitMountedTurnBlocks, mountedTranscriptWindow, resolveTranscriptCwd } from "./tui-runtime"
 import { getGitFileChanges, copyToClipboard, readClipboard, openExternalUrl, revealFileInFolder } from "./process-utils"
@@ -4069,7 +4069,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
                 <text style={{ fg: "#8b949e" }}>{"VERT"}</text>
               </Show>
               <Show when={running() || compacting()} fallback={
-                <text style={{ fg: THEME.muted }}>{`  •  ${status()}  •  ${queuedInputs() > 0 ? `${queuedInputs()} queued  •  ` : ""}${SCROLL_HINT}`}</text>
+                <Show when={idleFooterStatus(status(), queuedInputs())}>
+                  <text style={{ fg: THEME.muted }}>{`  •  ${idleFooterStatus(status(), queuedInputs())}`}</text>
+                </Show>
               }>
                 <box flexDirection="row">
                   <text style={{ fg: THEME.accent }}>{`  ${SPINNER_FRAMES[spinnerFrame()]}  `}</text>
