@@ -11,3 +11,4 @@ workspace/
 openzerocode-exports/
 .mimocode/
 deploy-remote.sh
+SESSION_SUMMARY.md
