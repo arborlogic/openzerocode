@@ -10,6 +10,9 @@ import {
 
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 const MODELS = [
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-6-astra",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -28,9 +31,12 @@ export function toCodexRequestBody(req: CompletionRequest) {
   // Current Codex models use Responses Lite. Match the official Codex client:
   // retain reasoning context across turns while forwarding all advertised
   // effort values, including xhigh and max, unchanged on the wire.
-  return body.reasoning
-    ? { ...body, reasoning: { ...body.reasoning, context: "all_turns" as const } }
-    : body
+  // If reasoning was not explicitly set, default to medium effort with all_turns
+  // context so reasoning context across tool turns is always preserved.
+  const reasoning = body.reasoning
+    ? { ...body.reasoning, context: "all_turns" as const }
+    : { effort: "medium", summary: "auto" as const, context: "all_turns" as const }
+  return { ...body, reasoning }
 }
 
 export async function collectCodexCompletion(

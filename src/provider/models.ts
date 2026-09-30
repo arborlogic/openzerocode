@@ -47,6 +47,24 @@ const MODEL_CONFIGS: Record<string, ModelConfig> = {
     reasoning: true,
     vision: true,
   },
+  "gpt-6-sol": {
+    contextLimit: 272_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
+  "gpt-6-luna": {
+    contextLimit: 272_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
+  "gpt-6-astra": {
+    contextLimit: 272_000,
+    pricing: { input: 0, output: 0 },
+    reasoning: true,
+    vision: true,
+  },
   "gpt-5.6-sol": {
     contextLimit: 272_000,
     pricing: { input: 0, output: 0 },
@@ -266,7 +284,7 @@ export function getEffectiveContextLimit(model: string, metadata?: ModelInfo): n
 export function normalizeReasoningEffort(model: string, effort?: ReasoningEffort): ReasoningEffort | undefined {
   if (!effort || !getModelConfig(model).reasoning) return undefined
   const normalizedModel = normalizeModelConfigKey(model).toLowerCase()
-  if ((effort === "xhigh" || effort === "max") && /^gpt-5\.6(?:-|$)/.test(normalizedModel)) return effort
+  if ((effort === "xhigh" || effort === "max") && /^gpt-(?:5\.6|6)(?:-|$)/.test(normalizedModel)) return effort
   if (effort === "max" && normalizedModel === "deepseek-v4-pro") return effort
   if (effort === "xhigh" || effort === "max") return "high"
   return effort

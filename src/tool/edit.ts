@@ -54,6 +54,16 @@ function notFoundResult(filePath: string, content: string, oldString: string): R
   return new Result({ title: "Error", output: `oldString not found in file: ${filePath}\n\n${hint}` })
 }
 
+function stripLinePrefixes(text: string): string {
+  const lines = text.split("\n")
+  return lines.map((l) => l.replace(/^\s*\d+│\s?/, "")).join("\n")
+}
+
+function readLineNumber(text: string): number | undefined {
+  const match = /^\s*(\d+)│\s?/.exec(text)
+  return match ? Number(match[1]) : undefined
+}
+
 export const EditTool = Effect.gen(function* () {
   const decode = Schema.decodeUnknownEffect(Parameters)
   return new Def({
@@ -81,23 +91,47 @@ export const EditTool = Effect.gen(function* () {
         const target = resolve(ctx.cwd, args.filePath)
         const content = yield* Effect.promise(() => readFile(target, "utf-8"))
 
-        if (args.replaceAll) {
-          if (!content.includes(args.oldString)) {
-            return notFoundResult(args.filePath, content, args.oldString)
+        let oldString = args.oldString
+        let newString = args.newString
+        let targetIndex: number | undefined
+
+        if (!content.includes(oldString)) {
+          const strippedOld = stripLinePrefixes(oldString)
+          const numberedLines = oldString.split("\n")
+          const firstLine = readLineNumber(numberedLines[0])
+          const validNumbers = firstLine !== undefined && firstLine > 0 && numberedLines.every(
+            (line, index) => readLineNumber(line) === firstLine + index,
+          )
+          if (validNumbers && firstLine !== undefined && strippedOld !== oldString) {
+            const lines = content.split("\n")
+            if (firstLine <= lines.length) {
+              const start = firstLine === 1 ? 0 : lines.slice(0, firstLine - 1).join("\n").length + 1
+              if (content.startsWith(strippedOld, start)) targetIndex = start
+            }
           }
-          const updated = content.replaceAll(args.oldString, args.newString)
-          const count = content.split(args.oldString).length - 1
+          if (targetIndex !== undefined) {
+            oldString = strippedOld
+            newString = stripLinePrefixes(newString)
+          }
+        }
+
+        if (args.replaceAll) {
+          if (!content.includes(oldString)) {
+            return notFoundResult(args.filePath, content, oldString)
+          }
+          const updated = content.replaceAll(oldString, newString)
+          const count = content.split(oldString).length - 1
           yield* Effect.promise(() => writeFile(target, updated, "utf-8"))
           return new Result({ title: "Edited", output: `Replaced ${count} occurrence(s) in ${args.filePath}` })
         }
 
-        const idx = content.indexOf(args.oldString)
+        const idx = targetIndex ?? content.indexOf(oldString)
         if (idx === -1) {
-          return notFoundResult(args.filePath, content, args.oldString)
+          return notFoundResult(args.filePath, content, oldString)
         }
-        const updated = content.slice(0, idx) + args.newString + content.slice(idx + args.oldString.length)
+        const updated = content.slice(0, idx) + newString + content.slice(idx + oldString.length)
         yield* Effect.promise(() => writeFile(target, updated, "utf-8"))
-        const total = content.split(args.oldString).length - 1
+        const total = content.split(oldString).length - 1
         const note = total > 1 ? ` (1 of ${total} matches; set replaceAll=true to replace all)` : ""
         return new Result({ title: "Edited", output: `Replaced 1 occurrence in ${args.filePath}${note}` })
       }).pipe(Effect.orDie),

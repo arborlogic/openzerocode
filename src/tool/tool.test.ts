@@ -253,6 +253,48 @@ describe("edit tool", () => {
     assert.equal(result.title, "Error")
     assert.ok(result.output.includes("not found"))
   })
+
+  it("recovers gracefully when oldString contains read line-number prefixes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    writeFileSync(filePath, "line one\nline two\nline three")
+    const edit = await Effect.runPromise(EditTool)
+    const result = await Effect.runPromise(
+      edit.execute({
+        filePath,
+        oldString: "  2│ line two",
+        newString: "line TWO",
+        replaceAll: false,
+      }, testCtx()),
+    )
+    assert.equal(result.title, "Edited")
+    assert.equal(readFileSync(filePath, "utf-8"), "line one\nline TWO\nline three")
+  })
+
+  it("uses the numbered location rather than the first identical match", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    writeFileSync(filePath, "same\nother\nsame\nend")
+    const edit = await Effect.runPromise(EditTool)
+    const result = await Effect.runPromise(edit.execute({
+      filePath, oldString: "  3│ same", newString: "changed", replaceAll: false,
+    }, testCtx()))
+    assert.equal(result.title, "Edited")
+    assert.equal(readFileSync(filePath, "utf-8"), "same\nother\nchanged\nend")
+  })
+
+  it("rejects stale numbered text without changing another match", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ozc-test-"))
+    const filePath = join(dir, "test.txt")
+    const content = "same\nother\ndifferent"
+    writeFileSync(filePath, content)
+    const edit = await Effect.runPromise(EditTool)
+    const result = await Effect.runPromise(edit.execute({
+      filePath, oldString: "  3│ same", newString: "changed", replaceAll: false,
+    }, testCtx()))
+    assert.equal(result.title, "Error")
+    assert.equal(readFileSync(filePath, "utf-8"), content)
+  })
 })
 
 describe("apply_patch tool", () => {

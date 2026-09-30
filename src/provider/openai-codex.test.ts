@@ -14,6 +14,9 @@ describe("openai codex provider", () => {
     )
 
     assert.deepEqual(models.map(({ id }) => id), [
+      "gpt-6-sol",
+      "gpt-6-luna",
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -79,6 +82,16 @@ describe("openai codex provider", () => {
     })
 
     assert.deepEqual(body.reasoning, { effort: "high", summary: "auto", context: "all_turns" })
+  })
+
+  it("defaults to medium reasoning with all-turn context when effort is omitted", () => {
+    const body = toCodexRequestBody({
+      model: "gpt-5.6-sol",
+      messages: [{ role: "user", content: "solve this" }],
+      stream: true,
+    })
+
+    assert.deepEqual(body.reasoning, { effort: "medium", summary: "auto", context: "all_turns" })
   })
 
   it("forwards every GPT-5.6 advanced reasoning effort unchanged", () => {
