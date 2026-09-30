@@ -70,6 +70,10 @@ describe("filterCommands", () => {
     assert.equal(items.length, 0)
   })
 
+  it("does not suggest the removed /learn command", () => {
+    assert.deepEqual(filterCommands(BUILTIN_COMMANDS, "learn", noop), [])
+  })
+
   it("includes description in items", () => {
     const items = filterCommands(BUILTIN_COMMANDS, "help", noop)
     assert.equal(items.length, 1)

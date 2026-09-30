@@ -73,7 +73,6 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus", argumentOptions: ["browser", "headless", "code"] },
   { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
   { name: "mode", description: "Switch mode: /mode build|plan (no arg toggles)", argumentOptions: ["build", "plan"] },
-  { name: "learn", description: "Extract non-obvious learnings from this session" },
   { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|xhigh|max or /reasoning off", argumentOptions: ["low", "medium", "high", "xhigh", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
   { name: "skills", description: "List skills or configure automatic routing", argumentOptions: ["auto", "clear", "status"] },

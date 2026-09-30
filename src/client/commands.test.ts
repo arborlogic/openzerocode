@@ -126,6 +126,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(!names.includes("info"))
     assert.ok(!names.includes("provider-key"))
     assert.ok(!names.includes("session"))
+    assert.ok(!names.includes("learn"))
   })
 
   it("mode appears before model in list", () => {

@@ -34,10 +34,10 @@ This repo is actively implemented. Current capabilities include:
 - **Session management** — rename, delete, compact, timeline actions (revert/copy/fork)
 - **Headless and server modes** — `--run` for one-shot CLI runs and `serve` for the streaming HTTP API
 - **Sidebar context** — token usage, cost tracking, git diff summary
-- **Prompt memory** — user-global `~/.openzerocode/AGENTS.md` / `CONTEXT.md` injected into the system prompt; use `/learn` to extract session learnings into project or global learning files
+- **Prompt memory** — user-global `~/.openzerocode/AGENTS.md` / `CONTEXT.md` injected into the system prompt
 - **Session handoff** — `SESSION_SUMMARY.md` for concise local continuation notes
 - **GEASS browser tools** — optional browser navigation, reading, interaction, screenshots, and visual observation
-- **18 built-in tools**:
+- **Built-in tools**:
   | Tool | Description |
   |------|-------------|
   | `read` | Read file contents |
@@ -46,10 +46,9 @@ This repo is actively implemented. Current capabilities include:
   | `glob` | Find files by glob pattern |
   | `bash` | Execute shell commands |
   | `edit` | Targeted string replacement edits |
+  | `apply-patch` | Apply multi-file patches |
   | `web-fetch` | Fetch content from URLs |
   | `todo-write` | Maintain structured task lists during multi-step work |
-  | `learn-memory-apply` | Apply confirmed Learn-mode updates to global `~/.openzerocode` memory |
-  | `learn-project-memory-apply` | Apply confirmed Learn-mode updates to project `DEVELOPMENT.md` guidance |
   | `browser-navigate` | Navigate the connected GEASS browser to a URL |
   | `browser-read` | Read structured content from the current GEASS browser page |
   | `browser-click` | Click page elements in the GEASS browser |
@@ -58,6 +57,8 @@ This repo is actively implemented. Current capabilities include:
   | `browser-scroll` | Scroll the current GEASS browser page |
   | `browser-screenshot` | Capture a browser screenshot |
   | `browser-observe-visual` | Inspect the current browser view visually |
+  | `analyze-image` | Analyze an image file |
+  | `call-peer` | Message another named OpenZeroCode peer |
 
 ![OpenZeroCode TUI session](./docs/assets/openzerocode-demo.gif)
 
@@ -379,7 +380,7 @@ OpenZeroCode keeps durable prompt memory user-global and intentionally small:
 - `DEVELOPMENT.md`: regular project-local development guidance; not auto-injected into every prompt.
 - `SESSION_SUMMARY.md`: concise handoff notes for humans/continuation; not auto-injected into the system prompt.
 
-Project `AGENTS.md` / `CONTEXT.md` files are treated as regular repository documentation, not automatic prompt memory. Conditional `memory.d` auto-injection is intentionally not used. Use `/learn` to prepare a session-learning prompt in the TUI, or run the built-in `compose` workflow for a structured spec→ship pipeline.
+Project `AGENTS.md` / `CONTEXT.md` files are treated as regular repository documentation, not automatic prompt memory. Conditional `memory.d` auto-injection is intentionally not used. Run the built-in `compose` workflow for a structured spec→ship pipeline.
 
 
 ### Key source files

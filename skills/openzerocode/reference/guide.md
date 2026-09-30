@@ -111,10 +111,6 @@ The built-in `compose` workflow runs a deterministic spec→ship pipeline. It is
 
 The `notebook-edit` tool edits `.ipynb` cells directly (replace / insert / delete a single cell) while preserving the surrounding JSON, outputs, and metadata — prefer it over raw text edits on notebooks.
 
-## Session learning
-
-Use `/learn` in the TUI to fill the composer with a prompt to extract non-obvious lessons from the current session. The prompt asks the agent to classify each lesson as project-specific (`docs/compose/learnings/PROJECT.md`) or global (`~/.openzerocode/LEARNINGS.md`) and follow the `compose:learn` format. Review or edit the prompt before submitting it. For the full spec→ship pipeline, run the built-in `compose` workflow.
-
 ## Extending OpenZeroCode
 
 To add project-local tools, hooks, or skills, follow the project's extension conventions and add the relevant files under `.openzerocode/tools/`, `.openzerocode/hooks/`, or `.openzerocode/skills/<name>/SKILL.md`. These extensions are hot-reloaded on the next turn.

@@ -4176,12 +4176,8 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         ref={(api) => { autocompleteApi = api }}
         onCommand={(name) => {
           // Commands that execute immediately with no arguments
-          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage", "learn"])
-          if (name === "learn") {
-            // Send a learn prompt to the agent
-            setComposerText("Analyze this session and extract non-obvious learnings. For each learning, determine if it's project-specific (save to docs/compose/learnings/PROJECT.md) or global (save to ~/.openzerocode/LEARNINGS.md). Follow the compose:learn skill format with Observation, Evidence, and Implication sections.")
-            queueMicrotask(() => { void submit() })
-          } else if (noArgs.has(name)) {
+          const noArgs = new Set(["help", "clear", "exit", "quit", "commit", "thinking", "tools", "auto", "usage"])
+          if (noArgs.has(name)) {
             setComposerText("/" + name)
             queueMicrotask(() => { void submit() })
           } else {

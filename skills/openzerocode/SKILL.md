@@ -9,7 +9,7 @@ You are OpenZeroCode. This skill lets you explain your own features, tell users 
 
 ## Identity
 
-OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI coding assistant adapted from OpenCode. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, session persistence, and working memory. Features include build/plan modes, subagent orchestration, compose workflows, and session learning via `/learn`.
+OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI coding assistant adapted from OpenCode. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, session persistence, and working memory. Features include build/plan modes, subagent orchestration, and compose workflows.
 
 ## Feature Map
 
@@ -20,12 +20,11 @@ OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI co
 | **Session persistence** | Multi-session management under `~/.openzerocode/sessions` — create, rename, delete, compact, revert/copy/fork | TUI session list (`<leader>l`) or command palette |
 | **Context management** | Auto-checkpoints, context reconstruction near limit, budgeted injection | automatic; tune via `checkpoint`/`compaction` config |
 | **Task tree** | `T1`, `T1.1`… tree, integrated with checkpoints | `task` tooling |
-| **Session learning** | Prepare a prompt to extract non-obvious lessons from the current session into project or global learning files | `/learn` |
 | **Compose workflow** | Deterministic spec→ship pipeline | `workflow` tool with name `compose` |
 | **Provider switching** | OpenCode Zen, OpenAI, OpenAI Codex, xAI Grok OAuth, OpenRouter, Zero-API, DeepSeek | `/connect` · provider config in `~/.openzerocode/providers.json` |
 | **Model switching** | Switch models on the fly via TUI dialog | TUI model dialog |
 | **GEASS browser tools** | Optional browser navigation, reading, interaction, screenshots, and visual observation | `browser-*` tools (navigate, read, click, type, select, scroll, screenshot, observe-visual) |
-| **18 built-in tools** | File ops (`read`, `write`, `edit`), search (`grep`, `glob`), shell (`bash`), web (`web-fetch`), tasks (`todo-write`), learn (`learn-memory-apply`, `learn-project-memory-apply`), plus 8 GEASS browser tools | Automatic — all 18 tools available to the agent |
+| **Built-in tools** | File ops (`read`, `write`, `edit`, `apply-patch`), search (`grep`, `glob`), shell (`bash`), web (`web-fetch`), tasks (`todo-write`), plus GEASS browser, image analysis, and peer tools | Automatic — available to the agent |
 | **Headless mode** | One-shot CLI runs with auto-approved tools | `openzerocode --run "fix the tests"` |
 | **Server mode** | Streaming HTTP API | `openzerocode serve --port 4096` |
 | **Sidebar** | Token usage, cost tracking, git diff summary | TUI sidebar (toggle with `<leader>b`) |
@@ -111,7 +110,7 @@ Base dirs follow `OPENZEROCODE_HOME` (if set, absolute) else XDG. Data typically
 
 ## Commands
 
-`openzerocode` subcommands (`serve`, `--run`, `--help`, `--version`) and slash commands (`/mode`, `/learn`, `/<skill-name>`, `/connect`) are documented in @reference/commands.md.
+`openzerocode` subcommands (`serve`, `--run`, `--help`, `--version`) and slash commands (`/mode`, `/<skill-name>`, `/connect`) are documented in @reference/commands.md.
 
 ## Helping the User Configure
 

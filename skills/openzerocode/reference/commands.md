@@ -21,7 +21,6 @@ Notable TUI flags: `--run "<prompt>"` (headless mode), `--continue`/`-c` (resume
 | Command | Purpose |
 |---------|---------|
 | `/mode [build|plan]` | Switch between Build and Plan modes; no argument toggles |
-| `/learn` | Fill the composer with a prompt to extract non-obvious session learnings |
 | `/connect` | Sign in to a provider (e.g. OpenRouter) |
 | `/<skill-name>` | Invoke any available skill directly by name |
 
