@@ -9,19 +9,19 @@ You are OpenZeroCode. This skill lets you explain your own features, tell users 
 
 ## Identity
 
-OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI coding assistant adapted from OpenCode. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, session persistence, and working memory. Features include build/plan/learn modes, subagent orchestration, compose workflows, and self-improvement via learn mode.
+OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI coding assistant adapted from OpenCode. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, session persistence, and working memory. Features include build/plan modes, subagent orchestration, compose workflows, and session learning via `/learn`.
 
 ## Feature Map
 
 | Feature | What it is | How to reach it |
 |---------|-----------|-----------------|
-| **Agents / modes** | `build` (default, full tools), `plan` (read-only analysis), `learn` (experience refinement into memory or project docs) | `Tab` cycles primary agents |
+| **Agents / modes** | `build` (default, full tools), `plan` (read-only analysis) | `Tab` toggles modes |
 | **Subagents** | Primary agent spawns `general`/`explore` helpers, parallel + background, with lifecycle/cancel | automatic; `actor` tooling |
 | **Session persistence** | Multi-session management under `~/.openzerocode/sessions` — create, rename, delete, compact, revert/copy/fork | TUI session list (`<leader>l`) or command palette |
 | **Context management** | Auto-checkpoints, context reconstruction near limit, budgeted injection | automatic; tune via `checkpoint`/`compaction` config |
 | **Task tree** | `T1`, `T1.1`… tree, integrated with checkpoints | `task` tooling |
-| **Learn mode** | Two-stage experience refinement: (1) accumulate lessons into global `~/.openzerocode/AGENTS.md` / `CONTEXT.md`, (2) extract project-specific guidance into `DEVELOPMENT.md` | `/mode learn` |
-| **Compose mode** | Structured spec→ship lifecycle with 15 built-in skills (brainstorm, plan, tdd, debug, review, verify, merge, ask, parallel, feedback, report, subagent, worktree, learn, execute) | `compose` agent |
+| **Session learning** | Prepare a prompt to extract non-obvious lessons from the current session into project or global learning files | `/learn` |
+| **Compose workflow** | Deterministic spec→ship pipeline | `workflow` tool with name `compose` |
 | **Provider switching** | OpenCode Zen, OpenAI, OpenAI Codex, xAI Grok OAuth, OpenRouter, Zero-API, DeepSeek | `/connect` · provider config in `~/.openzerocode/providers.json` |
 | **Model switching** | Switch models on the fly via TUI dialog | TUI model dialog |
 | **GEASS browser tools** | Optional browser navigation, reading, interaction, screenshots, and visual observation | `browser-*` tools (navigate, read, click, type, select, scroll, screenshot, observe-visual) |
@@ -54,7 +54,7 @@ For the full key reference (model, provider, mcp, permission, agent, checkpoint,
 
 ## How-To Guide
 
-For task-oriented walkthroughs — signing in & choosing a model, making memory remember project rules, writing custom slash commands, remapping keybinds, adding MCP servers, and using compose mode — see @reference/guide.md. For authoring and running **dynamic workflows** (the in-script API, where to save `.js` workflow files, and the `workflow` tool) see @reference/workflows.md.
+For task-oriented walkthroughs — signing in & choosing a model, making memory remember project rules, writing custom slash commands, remapping keybinds, and adding MCP servers — see @reference/guide.md. For authoring and running **dynamic workflows** (the in-script API, where to save `.js` workflow files, and the `workflow` tool) see @reference/workflows.md.
 
 **Built-in workflows** (runnable by name via the `workflow` tool, no file needed):
 - **`compose`** — deterministic spec→ship pipeline (brainstorm → design → implement/TDD → verify → review → merge), auto-parallelized across per-task worktrees. Pass `args.task`.
@@ -93,7 +93,7 @@ Instructions for the agent...
 
 ### How skills are discovered
 
-- **Compose mode**: skills in `skills/compose/` and `~/.openzerocode/skills/compose/` are loaded into the system prompt
+- **Skill discovery**: skills in `skills/` and `~/.openzerocode/skills/` (including `compose/` subdirectories) can be listed or opened with `/skills` and `/skill`
 - **CLI/GEASS mode**: skills in `skills/` and `~/.openzerocode/skills/` are matched by URL patterns or domains in frontmatter
 - **Manual reference**: mention the skill name in conversation, the agent reads the SKILL.md
 
@@ -111,7 +111,7 @@ Base dirs follow `OPENZEROCODE_HOME` (if set, absolute) else XDG. Data typically
 
 ## Commands
 
-`openzerocode` subcommands (`serve`, `--run`, `--help`, `--version`) and slash commands (`/mode learn`, `/<skill-name>`, `/connect`) are documented in @reference/commands.md.
+`openzerocode` subcommands (`serve`, `--run`, `--help`, `--version`) and slash commands (`/mode`, `/learn`, `/<skill-name>`, `/connect`) are documented in @reference/commands.md.
 
 ## Helping the User Configure
 

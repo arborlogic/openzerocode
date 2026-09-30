@@ -6,7 +6,7 @@
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
   /xai-login             Authorize xAI Grok (SuperGrok / X Premium+)
-  /mode                  Cycle build / plan / compose mode
+  /mode [build|plan]     Switch mode; no arg toggles build / plan
   /model [name|list]     Show or switch model
   /sessions  [/s]        Open session switcher
   /queue                 View or cancel queued messages
@@ -51,7 +51,7 @@
     Timeline             Browse messages → Revert / Copy / Fork
 
   MODEL
-    Switch mode          Cycle build → plan → compose
+    Switch mode          Toggle build ↔ plan
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
 

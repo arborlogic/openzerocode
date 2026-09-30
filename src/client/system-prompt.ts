@@ -1,9 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from "fs"
-import { resolve, join } from "path"
-import { homedir } from "os"
+import { existsSync } from "fs"
+import { resolve } from "path"
 import type { RunMode } from "./session-runner"
 import { isConnected } from "../browser/geass-client"
-import { parse as parseYaml } from "yaml"
 
 export type HarnessProfile = "productive" | "lite"
 
@@ -128,54 +126,6 @@ const VISION_SECTION = [
   "Configure the local VLM via OPENZEROCODE_VLM_URL and OPENZEROCODE_VLM_MODEL env vars.",
 ].join("\n")
 
-const COMPOSE_MODE_REMINDER = [
-  "You are currently in Compose mode.",
-  "Compose mode provides a structured workflow for specs-driven development.",
-  "When the human supplies an ordered, sufficiently detailed TODO list or implementation plan, treat it as implementation authorization: execute the tasks in order without asking for routine confirmation, progress updates, per-task reviews, or a new recommendation between tasks.",
-  "Keep the approved task list as the scope boundary. Complete each task end-to-end with focused tests and verification, update its status, then immediately proceed to the next incomplete task. Only stop for a genuine blocker, ambiguity that cannot be safely inferred, or a required high-impact decision.",
-  "Batch completion activities: do not perform broad code review, repository review, formatting-only work, commits, reports, or retrospective analysis after every small task. Once all approved implementation tasks are complete, run integrated verification and one focused final review.",
-  "You have access to the following compose skills. Invoke the appropriate skill based on the current stage of development:",
-  "",
-  "## Available Compose Skills",
-  "",
-  "- **compose:brainstorm** — Explore user intent, requirements, and design before implementation. Use BEFORE any creative work.",
-  "- **compose:plan** — Write detailed implementation plans from specs. Use when you have requirements for a multi-step task.",
-  "- **compose:tdd** — Test-driven development discipline. Use when implementing any feature or bugfix.",
-  "- **compose:execute** — Execute a written implementation plan step-by-step.",
-  "- **compose:verify** — Evidence-based verification before claiming work is complete.",
-  "- **compose:review** — Code review via subagent dispatch.",
-  "- **compose:merge** — Complete development work (merge/PR/discard).",
-  "- **compose:debug** — Debugging guidance for bugs, test failures, or unexpected behavior.",
-  "- **compose:learn** — Extract non-obvious learnings from sessions into structured knowledge artifacts.",
-  "- **compose:ask** — Route decisions through the question tool. Use whenever you need user input.",
-  "- **compose:parallel** — Dispatch parallel agents for independent tasks.",
-  "- **compose:feedback** — Handle code review feedback with technical rigor.",
-  "- **compose:report** — Write final reports after implementation is verified.",
-  "- **compose:subagent** — Execute plans with fresh subagent per task and two-stage review.",
-  "- **compose:worktree** — Set up isolated workspaces via git worktrees.",
-  "",
-  "## Workflow",
-  "",
-  "The typical compose lifecycle is:",
-  "1. **Brainstorm** — Understand the idea, explore approaches, present design",
-  "2. **Plan** — Write detailed implementation plan with TDD steps",
-  "3. **Implement** — Execute plan using TDD (compose:tdd + compose:execute)",
-  "4. **Verify** — Run verification commands, confirm output",
-  "5. **Review** — Code review",
-  "6. **Merge** — Complete development",
-  "",
-  "## How to Use Skills",
-  "",
-  "When the user describes a task, determine which skill applies and follow its guidance.",
-  "Skills are loaded from the project's skills/compose/ directory.",
-  "Each skill has its own workflow — follow it step by step.",
-  "",
-  "## Learnings",
-  "",
-  "Before brainstorming, load project learnings from docs/compose/learnings/*.md as context.",
-  "After verify/debug failures, trigger compose:learn to extract the discovery.",
-].join("\n")
-
 function buildEnvironmentSection(cwd: string): string {
   const isGit = existsSync(resolve(cwd, ".git"))
   return [
@@ -205,111 +155,6 @@ function buildGeassSection(): string | null {
   ].join("\n")
 }
 
-interface ComposeSkill {
-  name: string
-  description?: string
-  source: string
-}
-
-function loadComposeSkills(cwd: string): ComposeSkill[] {
-  const dirs = [
-    resolve(cwd, "skills", "compose"),
-    join(homedir(), ".openzerocode", "skills", "compose"),
-  ]
-
-  const seen = new Set<string>()
-  const skills: ComposeSkill[] = []
-
-  for (const skillsDir of dirs) {
-    if (!existsSync(skillsDir)) continue
-    let entries: string[]
-    try {
-      entries = readdirSync(skillsDir)
-    } catch {
-      continue
-    }
-
-    for (const entry of entries) {
-      if (seen.has(entry)) continue
-      const skillPath = join(skillsDir, entry, "SKILL.md")
-      if (!existsSync(skillPath)) continue
-      try {
-        const raw = readFileSync(skillPath, "utf8")
-        const { frontmatter } = splitFrontmatter(raw)
-        const frontmatterName = typeof frontmatter.name === "string" ? frontmatter.name : undefined
-        const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined
-        const name = frontmatterName ?? `compose:${entry}`
-        seen.add(entry)
-        skills.push({ name, description, source: skillPath })
-      } catch {
-        continue
-      }
-    }
-  }
-  return skills
-}
-
-function splitFrontmatter(raw: string): { frontmatter: Record<string, unknown>; body: string } {
-  if (!raw.startsWith("---")) return { frontmatter: {}, body: raw }
-  const end = raw.indexOf("\n---", 3)
-  if (end < 0) return { frontmatter: {}, body: raw }
-  const yamlText = raw.slice(3, end).replace(/^\n/, "")
-  const body = raw.slice(end + 4).replace(/^\n/, "")
-  let frontmatter: Record<string, unknown> = {}
-  try {
-    frontmatter = (parseYaml(yamlText) as Record<string, unknown>) ?? {}
-  } catch {
-    frontmatter = {}
-  }
-  return { frontmatter, body }
-}
-
-function buildComposeSkillsSection(cwd: string): string {
-  const skills = loadComposeSkills(cwd)
-  if (skills.length === 0) return ""
-
-  const parts = [
-    "# Compose Skills (available from project + ~/.openzerocode/skills)",
-    "",
-    "The following compose skills are available. Do not inline all skill bodies into context. When a skill is relevant, read its SKILL.md file first, then follow it.",
-    "",
-  ]
-  for (const skill of skills) {
-    const line = skill.description
-      ? `- **${skill.name}** — ${skill.description} (${skill.source})`
-      : `- **${skill.name}** (${skill.source})`
-    parts.push(line)
-  }
-  return parts.join("\n")
-}
-
-function buildLearningsSection(cwd: string): string {
-  const learningsDir = resolve(cwd, "docs", "compose", "learnings")
-  if (!existsSync(learningsDir)) return ""
-
-  let entries: string[]
-  try {
-    entries = readdirSync(learningsDir)
-  } catch {
-    return ""
-  }
-
-  const mdFiles = entries.filter((e) => e.endsWith(".md"))
-  if (mdFiles.length === 0) return ""
-
-  const parts = ["# Project Learnings (auto-loaded)", ""]
-  for (const file of mdFiles) {
-    try {
-      const content = readFileSync(join(learningsDir, file), "utf8")
-      parts.push(content.trim())
-      parts.push("")
-    } catch {
-      continue
-    }
-  }
-  return parts.join("\n")
-}
-
 export function buildSystemPrompt(
   mode: RunMode,
   agentsInstruction?: string,
@@ -321,13 +166,13 @@ export function buildSystemPrompt(
     return buildLiteSystemPrompt(mode, agentsInstruction, contextInstruction, cwd)
   }
 
-  const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : mode === "compose" ? COMPOSE_MODE_REMINDER : BUILD_MODE_REMINDER
+  const modeReminder = mode === "plan" ? PLAN_MODE_REMINDER : BUILD_MODE_REMINDER
   const parts = [BASE_SYSTEM_PROMPT, modeReminder]
 
   parts.push(buildEnvironmentSection(cwd))
 
-  // Plan mode exposes only narrow read-only inspection tools, and Compose mode
-  // loads compose skills. General tool-specific guidance belongs in Build mode.
+  // Plan mode exposes only narrow read-only inspection tools.
+  // General tool-specific guidance belongs in Build mode.
   if (mode === "build") {
     parts.push(TODO_INSTRUCTIONS)
 
@@ -337,18 +182,6 @@ export function buildSystemPrompt(
     }
 
     parts.push(VISION_SECTION)
-  }
-
-  if (mode === "compose") {
-    const composeSkillsSection = buildComposeSkillsSection(cwd)
-    if (composeSkillsSection) {
-      parts.push(composeSkillsSection)
-    }
-
-    const learningsSection = buildLearningsSection(cwd)
-    if (learningsSection) {
-      parts.push(learningsSection)
-    }
   }
 
   if (agentsInstruction) {
@@ -368,10 +201,6 @@ export function buildLiteSystemPrompt(
   contextInstruction: string | undefined,
   cwd: string,
 ): string {
-  if (mode === "compose") {
-    throw new Error("Lite harness does not support Compose mode. Switch to the productive harness.")
-  }
-
   const parts = [LITE_SYSTEM_PROMPT, mode === "plan" ? LITE_PLAN_MODE_REMINDER : "You are currently in Build mode.", buildEnvironmentSection(cwd)]
 
   // AGENTS remains useful operational context, but bounded so local models do

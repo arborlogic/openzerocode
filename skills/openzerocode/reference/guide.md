@@ -103,26 +103,17 @@ Add servers under the `mcp` key. Two kinds:
 
 Inspect/manage with `openzerocode mcp`. Request timeout defaults to 5000ms (`timeout` per server, or `experimental.mcp_timeout` globally).
 
-## Compose mode
+## Compose workflow
 
-Compose is a specs-driven orchestration agent: it coordinates 15 built-in skills (brainstorm, plan, tdd, debug, review, verify, merge, ask, parallel, feedback, report, subagent, worktree, learn, execute) across the full spec→ship lifecycle. Switch to it with `Tab`.
-
-Artifacts land under `docs/compose/` by default (`specs/`, `plans/`, `reports/`). Change the location with `compose.docs`; set `compose.docs_absolute: true` to anchor a relative path to the worktree root.
-
-For well-defined tasks that split into independent subtasks, prefer the deterministic **`compose` workflow** (fire-and-forget, auto-parallelized) over the agent — see @workflows.md.
+The built-in `compose` workflow runs a deterministic spec→ship pipeline. It is separate from the Build/Plan mode switch; see @workflows.md for usage.
 
 ## Jupyter notebooks
 
 The `notebook-edit` tool edits `.ipynb` cells directly (replace / insert / delete a single cell) while preserving the surrounding JSON, outputs, and metadata — prefer it over raw text edits on notebooks.
 
-## Learn mode
+## Session learning
 
-`/mode learn` switches the agent into a two-stage experience-refinement workflow:
-
-1. **Accumulate experience globally** — the user can ask the AI to distill lessons from the current project state and discussion context. After the AI presents the exact target and text, and only after explicit confirmation, it may call `learn_memory_apply` to update global `~/.openzerocode/AGENTS.md` or `~/.openzerocode/CONTEXT.md`.
-2. **Extract experience into a project** — later, the user can ask Learn mode to read/search the project plus global memory, select relevant reusable guidance, and write confirmed project-local guidance to `<workspace>/DEVELOPMENT.md` via `learn_project_memory_apply`.
-
-Learn mode does not expose general edit/write/bash tools.
+Use `/learn` in the TUI to fill the composer with a prompt to extract non-obvious lessons from the current session. The prompt asks the agent to classify each lesson as project-specific (`docs/compose/learnings/PROJECT.md`) or global (`~/.openzerocode/LEARNINGS.md`) and follow the `compose:learn` format. Review or edit the prompt before submitting it. For the full spec→ship pipeline, run the built-in `compose` workflow.
 
 ## Extending OpenZeroCode
 

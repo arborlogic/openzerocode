@@ -27,14 +27,14 @@ We're grateful for the OpenCode project's design — this project wouldn't exist
 This repo is actively implemented. Current capabilities include:
 
 - **Solid-based terminal UI** in `src/client/tui.tsx` — streaming responses, reasoning display, command palette
-- **Build / Plan / Learn modes** — implementation, planning, and confirmed experience refinement into global memory or project `DEVELOPMENT.md` guidance
+- **Build / Plan modes** — implementation and read-only planning; toggle with `Tab` or `/mode`
 - **Provider switching** — OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, plus configurable OpenAI-compatible endpoints
 - **Model switching** — switch models on the fly
 - **Multi-session persistence** under `~/.openzerocode/sessions`
 - **Session management** — rename, delete, compact, timeline actions (revert/copy/fork)
 - **Headless and server modes** — `--run` for one-shot CLI runs and `serve` for the streaming HTTP API
 - **Sidebar context** — token usage, cost tracking, git diff summary
-- **Prompt memory** — user-global `~/.openzerocode/AGENTS.md` / `CONTEXT.md` injected into the system prompt; Learn mode creates missing empty global memory files on first entry, can propose/apply confirmed global updates, and can extract project-specific guidance into `DEVELOPMENT.md`
+- **Prompt memory** — user-global `~/.openzerocode/AGENTS.md` / `CONTEXT.md` injected into the system prompt; use `/learn` to extract session learnings into project or global learning files
 - **Session handoff** — `SESSION_SUMMARY.md` for concise local continuation notes
 - **GEASS browser tools** — optional browser navigation, reading, interaction, screenshots, and visual observation
 - **18 built-in tools**:
@@ -376,17 +376,10 @@ OpenZeroCode keeps durable prompt memory user-global and intentionally small:
 
 - `~/.openzerocode/AGENTS.md`: user personal cross-project preferences, language/response style, and general safety rules. Always loaded when non-empty.
 - `~/.openzerocode/CONTEXT.md`: user background, common tools, and long-term preferences. Always loaded when non-empty.
-- `DEVELOPMENT.md`: project-local development guidance extracted on demand in Learn mode. This is regular repository documentation and is not auto-injected into every prompt.
+- `DEVELOPMENT.md`: regular project-local development guidance; not auto-injected into every prompt.
 - `SESSION_SUMMARY.md`: concise handoff notes for humans/continuation; not auto-injected into the system prompt.
 
-Project `AGENTS.md` / `CONTEXT.md` files are treated as regular repository documentation, not automatic prompt memory. Conditional `memory.d` auto-injection is intentionally not used; project-specific experience is made explicit by extracting it into project docs.
-
-`/mode learn` switches the agent into a two-stage experience-refinement workflow:
-
-1. **Accumulate experience globally** — the user can ask the AI to distill lessons from the current project state and discussion context. After the AI presents the exact target and text, and only after explicit confirmation, it may call `learn_memory_apply` to update global `~/.openzerocode/AGENTS.md` or `~/.openzerocode/CONTEXT.md`.
-2. **Extract experience into a project** — later, the user can ask Learn mode to read/search the project plus global memory, select relevant reusable guidance, and write confirmed project-local guidance to `<workspace>/DEVELOPMENT.md` via `learn_project_memory_apply`.
-
-Learn mode does not expose general edit/write/bash tools.
+Project `AGENTS.md` / `CONTEXT.md` files are treated as regular repository documentation, not automatic prompt memory. Conditional `memory.d` auto-injection is intentionally not used. Use `/learn` to prepare a session-learning prompt in the TUI, or run the built-in `compose` workflow for a structured spec→ship pipeline.
 
 
 ### Key source files

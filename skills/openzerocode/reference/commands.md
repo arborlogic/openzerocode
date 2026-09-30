@@ -20,13 +20,14 @@ Notable TUI flags: `--run "<prompt>"` (headless mode), `--continue`/`-c` (resume
 
 | Command | Purpose |
 |---------|---------|
-| `/mode learn` | Switch to Learn mode for experience refinement into global memory or project `DEVELOPMENT.md` |
+| `/mode [build|plan]` | Switch between Build and Plan modes; no argument toggles |
+| `/learn` | Fill the composer with a prompt to extract non-obvious session learnings |
 | `/connect` | Sign in to a provider (e.g. OpenRouter) |
 | `/<skill-name>` | Invoke any available skill directly by name |
 
 ## Keybindings
 
-- `Tab` — cycle primary agents (build → plan → learn).
+- `Tab` — toggle between Build and Plan modes.
 - Other keybinds are configurable; the keybinds config module governs them.
 
 Common defaults: `<leader>n` new session · `<leader>l` list sessions · `<leader>e` open external editor · `<leader>t` themes · `<leader>b` toggle sidebar · `ctrl+r` rename session. Set a binding to `"none"` to disable it.

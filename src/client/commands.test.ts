@@ -206,11 +206,12 @@ describe("executeCommand", () => {
       assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
     })
 
-    it("switches to compose mode", async () => {
+    it("rejects the removed compose mode", async () => {
       const ctx = stubCtx()
       const result = await executeCommand("/mode compose", ctx)
       assert.ok(result)
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "compose")
+      assert.equal((ctx.setMode as any).mock.calls.length, 0)
+      assert.equal((ctx.showToast as any).mock.calls[0][0], "error")
     })
 
     it("toggles mode when no argument given", async () => {
@@ -219,6 +220,12 @@ describe("executeCommand", () => {
       assert.ok(result)
       assert.ok((ctx.setMode as any).mock.calls.length > 0)
       assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
+    })
+
+    it("toggles from plan back to build", async () => {
+      const ctx = stubCtx({ mode: "plan" })
+      assert.ok(await executeCommand("/mode", ctx))
+      assert.equal((ctx.setMode as any).mock.calls[0][0], "build")
     })
 
     it("rejects invalid mode", async () => {

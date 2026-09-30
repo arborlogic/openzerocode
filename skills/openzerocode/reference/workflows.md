@@ -96,12 +96,7 @@ Runnable by `name` without writing a file:
 - **`deep-research`** — comprehensive research report generator (brief → plan → parallel sub-agent research → reflect gap-check → single-writer cited Markdown report → cold review). Pass `args: { dir, question, today, depth?, context? }`. Convergent: file checkpoints enable resume after interruption.
 - **`fact-check`** — adversarial fact verification (plan → parallel web search → source extraction → group duplicates → 3-juror crosscheck → structured JSON findings). Pass the question as `args`. Best for verifying specific claims.
 
-### `compose` workflow vs `compose` agent
-
-Both drive the same spec→ship lifecycle, but choose by task shape:
-
-- **`compose` workflow** (this, deterministic code) — best when requirements are **well-defined** and the task **decomposes into independent subtasks**. It fans out to parallel worktrees and runs **non-interactively to completion** — fire-and-forget.
-- **`compose` agent** (conversational, switch with `Tab`) — best for **exploratory or ambiguous** work where you want to redirect mid-flow, answer questions, or inject judgment between steps.
+The `compose` workflow is best when requirements are **well-defined** and the task **decomposes into independent subtasks**. It fans out to parallel worktrees and runs **non-interactively to completion**. For exploratory work, use Build or Plan mode instead.
 
 ## Semantics worth knowing
 

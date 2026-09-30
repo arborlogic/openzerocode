@@ -232,7 +232,7 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
-      if (loaded.mode === "plan" || loaded.mode === "compose") initialMode = loaded.mode
+      if (loaded.mode === "plan") initialMode = loaded.mode
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
@@ -1296,9 +1296,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       },
       {
         label: "Switch mode",
-        hint: mode() === "build" ? "build → plan" : mode() === "plan" ? "plan → compose" : "compose → build",
+        hint: mode() === "build" ? "build → plan" : "plan → build",
         onSelect: () => {
-          setMode(m => m === "build" ? "plan" : m === "plan" ? "compose" : "build")
+          setMode(m => m === "build" ? "plan" : "build")
           setShowPalette(false)
         },
       },
@@ -2424,7 +2424,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setSelectionRevision((v) => v + 1)
     }
     setMessages(loaded?.messages ?? [])
-    setMode(loaded?.mode === "plan" || loaded?.mode === "compose" ? loaded.mode : "build")
+    setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
@@ -4063,9 +4063,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
               <text
                 style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#bc8cff" }}
-                onMouseDown={() => { const next = mode() === "build" ? "plan" : mode() === "plan" ? "compose" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
+                onMouseDown={() => { const next = mode() === "build" ? "plan" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
               >
-                {mode() === "build" ? "Build" : mode() === "plan" ? "Plan" : "Compose"}
+                {mode() === "build" ? "Build" : "Plan"}
               </text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelStatusLabel(), 32)}</text>

@@ -122,7 +122,7 @@ describe("cycleCommandArgument", () => {
   })
 
   it("cycles backward with Shift+Tab", () => {
-    assert.equal(cycleCommandArgument("/mode build", BUILTIN_COMMANDS, -1), "/mode compose")
+    assert.equal(cycleCommandArgument("/mode build", BUILTIN_COMMANDS, -1), "/mode plan")
     assert.equal(cycleCommandArgument("/mode plan", BUILTIN_COMMANDS, -1), "/mode build")
   })
 

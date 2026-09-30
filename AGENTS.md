@@ -40,8 +40,8 @@
 - `CONTEXT.md` is for concise workspace context, not policy that should override executable repo truth.
 - `SESSION_SUMMARY.md` should stay concise, continuation-oriented, and repo-specific.
 
-## Compose Integration: Learnings
-- When running in Compose mode, load project learnings from `docs/compose/learnings/*.md` during the brainstorm "Explore project context" step.
+## Compose Workflow: Learnings
+- When running the `compose` workflow, load project learnings from `docs/compose/learnings/*.md` during the brainstorm "Explore project context" step.
 - After `compose:verify` fails or `compose:debug` finds a root cause, trigger `compose:learn` to extract the discovery.
 - Learnings follow the format in `.mimocode/skills/learn/SKILL.md`.
 - The old `learn_memory_apply` and `learn_project_memory_apply` tools are deprecated; use `compose:learn` skill instead.

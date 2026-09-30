@@ -1,35 +1,6 @@
 import { describe, it } from "node:test"
 import assert from "node:assert"
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
-import { tmpdir } from "node:os"
 import { buildSystemPrompt, shouldAppendSkillInstructions } from "./system-prompt"
-
-function makeTempWorkspace() {
-  return mkdtempSync(join(tmpdir(), "ozc-system-prompt-"))
-}
-
-function withHome<T>(home: string, fn: () => T): T {
-  const previous = process.env.HOME
-  process.env.HOME = home
-  try {
-    return fn()
-  } finally {
-    if (previous === undefined) delete process.env.HOME
-    else process.env.HOME = previous
-  }
-}
-
-function writeComposeSkill(root: string, name: string, body: string) {
-  const dir = join(root, "skills", "compose", name)
-  const skillPath = join(dir, "SKILL.md")
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(
-    skillPath,
-    ["---", `name: compose:${name}`, `description: ${name} description`, "---", "", body, ""].join("\n"),
-  )
-  return skillPath
-}
 
 describe("buildSystemPrompt", () => {
   it("disables appended skill instructions in Lite mode", () => {
@@ -65,13 +36,6 @@ describe("buildSystemPrompt", () => {
     assert.doesNotMatch(prompt, new RegExp(`x{${4_001}}`))
   })
 
-  it("rejects Compose mode in the Lite harness", () => {
-    assert.throws(
-      () => buildSystemPrompt("compose", undefined, undefined, process.cwd(), "lite"),
-      /Lite harness does not support Compose mode/,
-    )
-  })
-
   it("includes build-mode execution guidance", () => {
     const prompt = buildSystemPrompt("build")
 
@@ -101,21 +65,6 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /You are currently in Plan mode\./)
     assert.match(prompt, /You may inspect the project with read-only tools/)
     assert.match(prompt, /Do not write code, edit files, apply patches, run shell commands, commit changes/)
-  })
-
-  it("includes compose-mode structured workflow guidance", () => {
-    const prompt = buildSystemPrompt("compose")
-
-    assert.match(prompt, /You are currently in Compose mode\./)
-    assert.match(prompt, /specs-driven development/)
-    assert.match(prompt, /compose:brainstorm/)
-    assert.match(prompt, /compose:plan/)
-    assert.match(prompt, /compose:tdd/)
-    assert.match(prompt, /compose:verify/)
-    assert.match(prompt, /ordered, sufficiently detailed TODO list or implementation plan/)
-    assert.match(prompt, /without asking for routine confirmation, progress updates, per-task reviews/)
-    assert.match(prompt, /Once all approved implementation tasks are complete, run integrated verification and one focused final review/)
-    assert.doesNotMatch(prompt, /# Task List \(todowrite tool\)/)
   })
 
   it("appends AGENTS instructions when present", () => {
@@ -157,34 +106,5 @@ describe("buildSystemPrompt", () => {
     assert.match(buildPrompt, /# Vision/)
     assert.match(buildPrompt, /attaches the image for direct provider vision analysis/)
     assert.doesNotMatch(planPrompt, /# Vision/)
-  })
-
-  it("loads compose skills from the project before user-global skills", () => {
-    const root = makeTempWorkspace()
-    const home = makeTempWorkspace()
-    const projectDir = writeComposeSkill(root, "review", "PROJECT REVIEW BODY")
-    writeComposeSkill(join(home, ".openzerocode"), "review", "GLOBAL REVIEW BODY")
-
-    const prompt = withHome(home, () => buildSystemPrompt("compose", undefined, undefined, root))
-
-    assert.match(prompt, /compose:review/)
-    assert.match(prompt, /review description/)
-    assert.match(prompt, new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
-    assert.doesNotMatch(prompt, /PROJECT REVIEW BODY/)
-    assert.doesNotMatch(prompt, /GLOBAL REVIEW BODY/)
-  })
-
-  it("falls back to user-global compose skills when a project entry is incomplete", () => {
-    const root = makeTempWorkspace()
-    const home = makeTempWorkspace()
-    mkdirSync(join(root, "skills", "compose", "report"), { recursive: true })
-    const globalDir = writeComposeSkill(join(home, ".openzerocode"), "report", "GLOBAL REPORT BODY")
-
-    const prompt = withHome(home, () => buildSystemPrompt("compose", undefined, undefined, root))
-
-    assert.match(prompt, /compose:report/)
-    assert.match(prompt, /report description/)
-    assert.match(prompt, new RegExp(globalDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
-    assert.doesNotMatch(prompt, /GLOBAL REPORT BODY/)
   })
 })

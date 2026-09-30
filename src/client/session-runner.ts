@@ -15,7 +15,7 @@ import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVl
 import type { RunOutcome, StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
-export type RunMode = "build" | "plan" | "compose"
+export type RunMode = "build" | "plan"
 
 const PROVIDER_RETRY_LIMIT = 3
 const PROVIDER_RETRY_BASE_MS = 1000

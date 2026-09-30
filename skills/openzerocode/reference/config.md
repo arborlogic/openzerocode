@@ -120,7 +120,7 @@ Prefer a markdown file (`.openzerocode/agent/<name>.md`, body = system prompt) f
 ### Compose & workflows
 | Key | Purpose |
 |-----|---------|
-| `compose` | Compose mode config (`docs` dir default `docs/compose`, `docs_absolute`) |
+| `compose` | Compose workflow config (`docs` dir default `docs/compose`, `docs_absolute`) |
 | `workflow.maxConcurrentAgents` | Process-wide subagent concurrency ceiling (default min(16, 2×cores)) |
 | `workflow.maxDepth` | Max workflow nesting depth (default 8) |
 
