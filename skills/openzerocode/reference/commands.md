@@ -20,13 +20,11 @@ Notable TUI flags: `--run "<prompt>"` (headless mode), `--continue`/`-c` (resume
 
 | Command | Purpose |
 |---------|---------|
-| `/mode [build|plan]` | Switch between Build and Plan modes; no argument toggles |
 | `/connect` | Sign in to a provider (e.g. OpenRouter) |
 | `/<skill-name>` | Invoke any available skill directly by name |
 
 ## Keybindings
 
-- `Tab` — toggle between Build and Plan modes.
 - Other keybinds are configurable; the keybinds config module governs them.
 
 Common defaults: `<leader>n` new session · `<leader>l` list sessions · `<leader>e` open external editor · `<leader>t` themes · `<leader>b` toggle sidebar · `ctrl+r` rename session. Set a binding to `"none"` to disable it.

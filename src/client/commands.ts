@@ -8,7 +8,6 @@ import type { PeerEntry } from "../peer/registry"
 import type { AutopilotMode } from "./autopilot"
 import { findSkill, listSkills, resolveSkillDirs, type SkillSummary } from "./skill-loader"
 import { formatSkillActivation, type SkillActivation } from "./skill-routing"
-import type { RunMode } from "./session-runner"
 
 export type SlashCommandDef = {
   name: string
@@ -24,8 +23,6 @@ export type CommandContext = {
   setCurrentProvider: (id: string) => Promise<{ ok: boolean; message: string }>
   currentModel: string
   setCurrentModel: (name: string) => Promise<{ ok: boolean; message: string }>
-  mode: RunMode
-  setMode: (mode: RunMode) => void
   reasoningEffort: ReasoningEffort | undefined
   setReasoningEffort: (effort: ReasoningEffort | undefined) => void
   messages: () => Message[]
@@ -72,7 +69,6 @@ export const BUILTIN_COMMANDS: SlashCommandDef[] = [
   { name: "provider", description: "Switch provider: /provider <id> or /provider list", argumentOptions: ["list"] },
   { name: "codex-login", description: "Authorize OpenAI Codex with ChatGPT Pro/Plus", argumentOptions: ["browser", "headless", "code"] },
   { name: "xai-login", description: "Authorize xAI Grok with SuperGrok / X Premium+ OAuth" },
-  { name: "mode", description: "Switch mode: /mode build|plan (no arg toggles)", argumentOptions: ["build", "plan"] },
   { name: "reasoning", description: "Set reasoning effort: /reasoning low|medium|high|xhigh|max or /reasoning off", argumentOptions: ["low", "medium", "high", "xhigh", "max", "off"] },
   { name: "memory", description: "Show loaded global memory files and prompt-memory status" },
   { name: "skills", description: "List skills or configure automatic routing", argumentOptions: ["auto", "clear", "status"] },
@@ -198,20 +194,6 @@ export async function executeCommand(input: string, ctx: CommandContext): Promis
     }
     const result = await ctx.setCurrentModel(arg)
     notifyCommand(ctx, result.ok ? "success" : "error", result.ok ? "Model updated" : "Model update failed", result.message)
-    return true
-  }
-
-  if (cmd === "mode") {
-    if (!arg) {
-      const nextMode = ctx.mode === "build" ? "plan" : "build"
-      ctx.setMode(nextMode)
-      notifyCommand(ctx, "success", "Mode updated", `Mode set to ${nextMode}`)
-    } else if (arg === "build" || arg === "plan") {
-      ctx.setMode(arg)
-      notifyCommand(ctx, "success", "Mode updated", `Mode set to ${arg}`)
-    } else {
-      notifyCommand(ctx, "error", "Invalid mode", "Usage: /mode build|plan")
-    }
     return true
   }
 

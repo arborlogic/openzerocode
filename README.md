@@ -27,7 +27,7 @@ We're grateful for the OpenCode project's design — this project wouldn't exist
 This repo is actively implemented. Current capabilities include:
 
 - **Solid-based terminal UI** in `src/client/tui.tsx` — streaming responses, reasoning display, command palette
-- **Build / Plan modes** — implementation and read-only planning; toggle with `Tab` or `/mode`
+- **Build mode** — implement coding tasks directly; ask for analysis or a plan when needed
 - **Provider switching** — OpenCode Zen, OpenAI, OpenAI Codex, OpenRouter, Zero-API, DeepSeek, plus configurable OpenAI-compatible endpoints
 - **Model switching** — switch models on the fly
 - **Multi-session persistence** under `~/.openzerocode/sessions`
@@ -350,7 +350,7 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
 │  - transcript / response rendering             │
 │  - command palette & autocomplete              │
 │  - session management (create, rename, delete) │
-│  - build / plan mode toggle                    │
+│  - build workflow                              │
 │  - sidebar: token usage, cost, git summary     │
 │  - workspace memory + skill injection          │
 └────────┬───────────────────────────────────────┘

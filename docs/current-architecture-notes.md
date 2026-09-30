@@ -76,7 +76,7 @@ Part-based messages supported:
 - Plain `user` / `assistant` / `system` text no longer shows redundant headers
 - Assistant response footer: provider/model + copy hint
 - Selection copy implemented (onMouseUp → renderer selection → clipboard)
-- Build / Plan mode implemented (Plan mode sends empty `toolDefs`)
+- Build workflow implemented
 - Command palette / provider / model switching implemented
 - Session list / rename / delete / compaction implemented
 - Sidebar shows context, token/cost estimate, git diff summary

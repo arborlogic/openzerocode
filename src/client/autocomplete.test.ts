@@ -55,9 +55,8 @@ describe("filterCommands", () => {
 
   it("filters commands by prefix", () => {
     const items = filterCommands(BUILTIN_COMMANDS, "mo", noop)
-    assert.equal(items.length, 2)
+    assert.equal(items.length, 1)
     assert.ok(items.some((i) => i.display === "/model"))
-    assert.ok(items.some((i) => i.display === "/mode"))
   })
 
   it("matches against aliases", () => {
@@ -123,11 +122,6 @@ describe("cycleCommandArgument", () => {
   it("cycles through options and wraps around", () => {
     assert.equal(cycleCommandArgument("/reasoning low", BUILTIN_COMMANDS), "/reasoning medium")
     assert.equal(cycleCommandArgument("/reasoning off", BUILTIN_COMMANDS), "/reasoning low")
-  })
-
-  it("cycles backward with Shift+Tab", () => {
-    assert.equal(cycleCommandArgument("/mode build", BUILTIN_COMMANDS, -1), "/mode plan")
-    assert.equal(cycleCommandArgument("/mode plan", BUILTIN_COMMANDS, -1), "/mode build")
   })
 
   it("starts from the closest end when the current value is custom", () => {

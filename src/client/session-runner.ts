@@ -7,7 +7,7 @@ import { createAssistantMessage, createToolMessage } from "../provider/message-p
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
-import { selectEnabledTools, selectLiteTools, selectPlanModeTools } from "../tool/selection"
+import { selectEnabledTools, selectLiteTools } from "../tool/selection"
 import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, normalizeReasoningEffort, modelSupportsVision } from "../provider/models"
@@ -15,7 +15,7 @@ import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVl
 import type { RunOutcome, StreamChunk } from "../server/types"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
-export type RunMode = "build" | "plan"
+export type RunMode = "build"
 
 const PROVIDER_RETRY_LIMIT = 3
 const PROVIDER_RETRY_BASE_MS = 1000
@@ -436,7 +436,7 @@ async function* streamSessionImpl(
     ? selectLiteTools(allTools)
     : allTools
   const enabledTools = selectEnabledTools(profileTools, options.disabledToolGroups ?? [])
-  const tools = options.mode === "plan" ? selectPlanModeTools(enabledTools) : enabledTools
+  const tools = enabledTools
   const toolDefs = convertToolsToDefs(tools)
 
   const contextLimit = getEffectiveContextLimit(options.model, options.modelInfo)

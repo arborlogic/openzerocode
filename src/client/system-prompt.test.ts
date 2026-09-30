@@ -52,28 +52,12 @@ describe("buildSystemPrompt", () => {
     assert.doesNotMatch(prompt, /Apply the completion and reporting rules above to every request/)
   })
 
-  it("keeps build-only editing instructions out of plan mode", () => {
-    const prompt = buildSystemPrompt("plan")
-
-    assert.doesNotMatch(prompt, /# Build workflow/)
-    assert.doesNotMatch(prompt, /Use tools \(`edit`, `write`, or `apply_patch`\) to modify files/)
-    assert.doesNotMatch(prompt, /execute in the same turn instead of stopping at a proposal/)
-  })
-
   it("includes an environment section with the working directory", () => {
     const prompt = buildSystemPrompt("build", undefined, undefined, "/tmp/example-project")
 
     assert.match(prompt, /# Environment/)
     assert.match(prompt, /Working directory: \/tmp\/example-project/)
     assert.match(prompt, /Platform: /)
-  })
-
-  it("includes plan-mode restrictions", () => {
-    const prompt = buildSystemPrompt("plan")
-
-    assert.match(prompt, /You are currently in Plan mode\./)
-    assert.match(prompt, /You may inspect the project with read-only tools/)
-    assert.match(prompt, /Do not write code, edit files, apply patches, run shell commands, commit changes/)
   })
 
   it("appends AGENTS instructions when present", () => {
@@ -100,20 +84,13 @@ describe("buildSystemPrompt", () => {
     assert.ok(agentsIndex < contextIndex)
   })
 
-  it("includes task list instructions in build mode only", () => {
-    const buildPrompt = buildSystemPrompt("build")
-    const planPrompt = buildSystemPrompt("plan")
-
-    assert.match(buildPrompt, /# Task List \(todowrite tool\)/)
-    assert.doesNotMatch(planPrompt, /# Task List \(todowrite tool\)/)
+  it("includes task list instructions", () => {
+    assert.match(buildSystemPrompt("build"), /# Task List \(todowrite tool\)/)
   })
 
-  it("documents native vision priority for analyze_image in build mode", () => {
-    const buildPrompt = buildSystemPrompt("build")
-    const planPrompt = buildSystemPrompt("plan")
-
-    assert.match(buildPrompt, /# Vision/)
-    assert.match(buildPrompt, /attaches the image for direct provider vision analysis/)
-    assert.doesNotMatch(planPrompt, /# Vision/)
+  it("documents native vision priority for analyze_image", () => {
+    const prompt = buildSystemPrompt("build")
+    assert.match(prompt, /# Vision/)
+    assert.match(prompt, /attaches the image for direct provider vision analysis/)
   })
 })

@@ -129,13 +129,13 @@ export function createSession(
 
 **`POST /session`**
 ```
-Body:  { workdir: string, model?: string, provider?: string, mode?: "build" | "plan" }
+Body:  { workdir: string, model?: string, provider?: string }
 Resp:  { id: string, workdir: string, model: string, provider: string, createdAt: number }
 ```
 
 **`POST /session/:id/prompt`**
 ```
-Body:  { text: string, mode?: "build" | "plan" }
+Body:  { text: string, mode?: "build" }
 Resp:  Content-Type: application/x-ndjson  (streaming)
 
 每行一個 JSON chunk:

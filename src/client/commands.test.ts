@@ -19,8 +19,6 @@ function stubCtx(overrides?: Partial<CommandContext>): CommandContext {
     setCurrentProvider: mock(() => Promise.resolve({ ok: true, message: "switched" })),
     currentModel: "openrouter/auto",
     setCurrentModel: mock(() => Promise.resolve({ ok: true, message: "model set" })),
-    mode: "build" as const,
-    setMode: mock(() => {}),
     reasoningEffort: "medium" as const,
     setReasoningEffort: mock(() => {}),
     messages: () => messages,
@@ -71,7 +69,7 @@ describe("BUILTIN_COMMANDS", () => {
     assert.ok(names.includes("provider"))
     assert.ok(names.includes("codex-login"))
     assert.ok(names.includes("xai-login"))
-    assert.ok(names.includes("mode"))
+    assert.ok(!names.includes("mode"))
     assert.ok(names.includes("memory"))
     assert.ok(names.includes("skills"))
     assert.ok(names.includes("skill"))
@@ -191,50 +189,8 @@ describe("executeCommand", () => {
     assert.ok((ctx.createNewSession as any).mock.calls.length > 0)
   })
 
-  describe("/mode", () => {
-    it("switches to build mode", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/mode build", ctx)
-      assert.ok(result)
-      assert.ok((ctx.setMode as any).mock.calls.length > 0)
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "build")
-    })
-
-    it("switches to plan mode", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/mode plan", ctx)
-      assert.ok(result)
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
-    })
-
-    it("rejects the removed compose mode", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/mode compose", ctx)
-      assert.ok(result)
-      assert.equal((ctx.setMode as any).mock.calls.length, 0)
-      assert.equal((ctx.showToast as any).mock.calls[0][0], "error")
-    })
-
-    it("toggles mode when no argument given", async () => {
-      const ctx = stubCtx() // mode is "build"
-      const result = await executeCommand("/mode", ctx)
-      assert.ok(result)
-      assert.ok((ctx.setMode as any).mock.calls.length > 0)
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "plan")
-    })
-
-    it("toggles from plan back to build", async () => {
-      const ctx = stubCtx({ mode: "plan" })
-      assert.ok(await executeCommand("/mode", ctx))
-      assert.equal((ctx.setMode as any).mock.calls[0][0], "build")
-    })
-
-    it("rejects invalid mode", async () => {
-      const ctx = stubCtx()
-      const result = await executeCommand("/mode invalid", ctx)
-      assert.ok(result)
-      assert.ok((ctx.setMode as any).mock.calls.length === 0)
-    })
+  it("does not handle the removed /mode command", async () => {
+    assert.equal(await executeCommand("/mode plan", stubCtx()), false)
   })
 
   describe("/reasoning", () => {

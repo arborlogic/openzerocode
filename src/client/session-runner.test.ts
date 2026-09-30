@@ -1252,43 +1252,6 @@ test("streamSession sends only the Lite allowlist to local models", async () => 
   assert.deepEqual(requests[0]?.tools?.map((tool) => tool.function.name), ["read", "bash"])
 })
 
-test("streamSession exposes only read-only inspection tools in plan mode", async () => {
-  const requests: CompletionRequest[] = []
-  const stream = new ReadableStream({
-    start(controller) {
-      controller.enqueue({ delta: { content: "plan" }, finish_reason: "stop" })
-      controller.close()
-    },
-  })
-
-  const gen = streamSession("capture tools", [], {
-    abort: new AbortController().signal,
-    model: "test-model",
-    provider: "test-provider",
-    keyName: "test-key",
-    mode: "plan",
-  }, runtime(stream, {
-    tools: [
-      testTool("read"),
-      testTool("grep"),
-      testTool("glob"),
-      testTool("web_fetch"),
-      testTool("analyze_image"),
-      testTool("write"),
-      testTool("bash"),
-      testTool("todowrite"),
-    ],
-    onRequest: (req) => requests.push(req),
-  }))
-
-  while (!(await gen.next()).done) {}
-
-  assert.deepEqual(
-    requests[0]?.tools?.map((tool) => tool.function.name),
-    ["read", "grep", "glob", "web_fetch", "analyze_image"],
-  )
-})
-
 test("streamSession emits a step_limit_reached outcome before the matching notice", async () => {
   const previousMaxSteps = process.env.OPENZEROCODE_MAX_STEPS
   process.env.OPENZEROCODE_MAX_STEPS = "1"

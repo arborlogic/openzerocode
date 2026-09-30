@@ -27,7 +27,7 @@ OpenZeroCode 是一个本地优先、由 TUI 驱动的 AI 编程助手，沿着 
 这个仓库仍在积极实现中。目前已具备：
 
 - **基于 Solid 的终端 UI**：入口位于 `src/client/tui.tsx`，支持流式响应、推理展示和命令面板
-- **Build / Plan 模式切换**：在结构化执行和自由探索之间切换
+- **Build 模式**：直接执行开发任务，也可要求分析或规划
 - **Provider 切换**：OpenCode Zen、OpenAI、OpenAI Codex、OpenRouter、Zero-API、DeepSeek，以及可配置的 OpenAI-compatible 端点
 - **模型切换**：运行中切换模型
 - **多会话持久化**：会话保存于 `~/.openzerocode/sessions`
@@ -349,7 +349,7 @@ npx tsx --test src/client/workspace-memory.test.ts
 │  - transcript / response rendering             │
 │  - command palette & autocomplete              │
 │  - session management (create, rename, delete) │
-│  - build / plan mode toggle                    │
+│  - build workflow                              │
 │  - sidebar: token usage, cost, git summary     │
 │  - workspace memory + skill injection          │
 └────────┬───────────────────────────────────────┘

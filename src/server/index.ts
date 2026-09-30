@@ -191,8 +191,8 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
   if (!body || typeof body.text !== "string" || !body.text.length) {
     return errorResponse("text is required", "BAD_REQUEST", 400)
   }
-  if (body.mode !== undefined && body.mode !== "build" && body.mode !== "plan") {
-    return errorResponse("mode must be build or plan", "BAD_REQUEST", 400)
+  if (body.mode !== undefined && body.mode !== "build") {
+    return errorResponse("mode must be build", "BAD_REQUEST", 400)
   }
 
   const state = loadSessionState(id)
@@ -202,7 +202,7 @@ async function handlePrompt(id: string, req: Request): Promise<Response> {
   const workdir = meta.directory ?? process.cwd()
   const model = state?.model ?? meta.model
   const provider = state?.provider ?? meta.provider
-  const mode: RunMode = body.mode ?? (state?.mode === "plan" ? "plan" : "build")
+  const mode: RunMode = "build"
   const history: Message[] = state?.messages ?? []
 
   // Per-request runtime layer (provider + tools)

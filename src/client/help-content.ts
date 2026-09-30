@@ -11,7 +11,6 @@ Commands
   /provider [id|list]    Show or switch provider
   /codex-login           Authorize OpenAI Codex
   /xai-login             Authorize xAI Grok (SuperGrok / X Premium+)
-  /mode [build|plan]      Switch mode; no arg toggles build / plan
   /memory                Show loaded global memory files
   /skills                List available skills
   /skills auto           Let the model select relevant skills per request
@@ -68,7 +67,6 @@ Command Palette  (Ctrl+P / F2)
     Usage dashboard      Token usage by session / provider / model
 
   MODEL
-    Switch mode          Toggle build ↔ plan
     Switch provider      Pick AI provider
     Switch model         Pick model for current provider
 

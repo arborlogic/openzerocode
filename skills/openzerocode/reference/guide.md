@@ -105,7 +105,7 @@ Inspect/manage with `openzerocode mcp`. Request timeout defaults to 5000ms (`tim
 
 ## Compose workflow
 
-The built-in `compose` workflow runs a deterministic spec→ship pipeline. It is separate from the Build/Plan mode switch; see @workflows.md for usage.
+The built-in `compose` workflow runs a deterministic spec→ship pipeline; see @workflows.md for usage.
 
 ## Jupyter notebooks
 

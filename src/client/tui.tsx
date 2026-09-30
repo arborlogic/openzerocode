@@ -219,7 +219,6 @@ function App() {
   onCleanup(stableRepaint.dispose)
 
   let initialMessages: Message[] = []
-  let initialMode: RunMode = "build"
   let initialCompaction: CompactionInfo | undefined
   let initialPermissionRules: PermissionRule[] = []
   let initialAutoApprove = false
@@ -232,7 +231,6 @@ function App() {
       initialMessages = loaded.messages
       if (loaded.provider) currentProvider = loaded.provider
       if (loaded.model) currentModel = loaded.provider === "opencode-zen" ? normalizeBigPickleModel(loaded.model) : loaded.model
-      if (loaded.mode === "plan") initialMode = loaded.mode
       initialCompaction = loaded.compaction
       initialPermissionRules = loaded.permissionRules ?? []
       initialAutoApprove = loaded.autoApprove ?? false
@@ -279,13 +277,7 @@ function App() {
       }
     })
     .catch(() => {})
-  const [mode, setModeRaw] = createSignal<RunMode>(initialMode)
-  const setMode = (next: RunMode | ((prev: RunMode) => RunMode)) => {
-    setModeRaw((prev) => {
-      const resolved = typeof next === "function" ? (next as (prev: RunMode) => RunMode)(prev) : next
-      return resolved
-    })
-  }
+  const mode: () => RunMode = () => "build"
   // OpenAI's recommended GPT-5.6 Power setting is Sol with medium reasoning.
   const [reasoningEffort, setReasoningEffort] = createSignal<ReasoningEffort | undefined>("medium")
   const [compaction, setCompaction] = createSignal<CompactionInfo | undefined>(initialCompaction)
@@ -1293,14 +1285,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         label: "MODEL",
         kind: "section",
         onSelect: () => {},
-      },
-      {
-        label: "Switch mode",
-        hint: mode() === "build" ? "build → plan" : "plan → build",
-        onSelect: () => {
-          setMode(m => m === "build" ? "plan" : "build")
-          setShowPalette(false)
-        },
       },
       {
         label: "Switch provider",
@@ -2424,7 +2408,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
       setSelectionRevision((v) => v + 1)
     }
     setMessages(loaded?.messages ?? [])
-    setMode(loaded?.mode === "plan" ? "plan" : "build")
     setCompaction(loaded?.compaction)
     setPermissionRules(loaded?.permissionRules ?? [])
     setAutoApprove(loaded?.autoApprove ?? false)
@@ -2976,8 +2959,6 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
           if (!applyProviderModel(providerId, modelId, true, nextModelInfo)) return { ok: false, message: `Failed to switch model: ${providerId}/${modelId}` }
           return { ok: true, message: `Model switched to ${providerId}/${modelId}` }
         },
-        mode: mode(),
-        setMode,
         reasoningEffort: reasoningEffort(),
         setReasoningEffort,
         messages,
@@ -4061,12 +4042,7 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
               />
             </box>
             <box paddingTop={1} paddingBottom={1} flexDirection="row">
-              <text
-                style={{ fg: mode() === "build" ? "#58a6ff" : mode() === "plan" ? "#3fb950" : "#bc8cff" }}
-                onMouseDown={() => { const next = mode() === "build" ? "plan" : "build"; setMode(next); setStatus(`Mode: ${next}`) }}
-              >
-                {mode() === "build" ? "Build" : "Plan"}
-              </text>
+              <text style={{ fg: "#58a6ff" }}>Build</text>
               <text style={{ fg: THEME.muted }}>{"  •  "}</text>
               <text style={{ fg: THEME.text }}>{truncateText(modelStatusLabel(), 32)}</text>
               <Show when={autoApprove()}>

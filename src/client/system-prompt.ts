@@ -82,20 +82,7 @@ const LITE_SYSTEM_PROMPT = [
   "- After non-trivial changes, run the most relevant focused verification available.",
 ].join("\n")
 
-const LITE_PLAN_MODE_REMINDER = [
-  "You are currently in Plan mode.",
-  "Inspect with the provided read-only tools and return a concise plan.",
-  "Do not modify files or run commands that change the workspace.",
-].join("\n")
-
 const BUILD_MODE_REMINDER = "You are currently in Build mode. You may read files, edit files, and run commands when the task requires it."
-
-const PLAN_MODE_REMINDER = [
-  "You are currently in Plan mode.",
-  "You may inspect the project with read-only tools such as reading files, searching files, listing matching files, fetching referenced documentation, and analyzing images.",
-  "Do not write code, edit files, apply patches, run shell commands, commit changes, or perform browser/app actions.",
-  "Use inspection results to explain the current state, approach, risks, and step-by-step plan.",
-].join("\n")
 
 const VISION_SECTION = [
   "# Vision",
@@ -149,24 +136,16 @@ export function buildSystemPrompt(
     return buildLiteSystemPrompt(mode, agentsInstruction, contextInstruction, cwd)
   }
 
-  const parts = mode === "plan"
-    ? [BASE_SYSTEM_PROMPT, PLAN_MODE_REMINDER]
-    : [BASE_SYSTEM_PROMPT, BUILD_MODE_REMINDER, BUILD_WORKFLOW_INSTRUCTIONS]
+  const parts = [BASE_SYSTEM_PROMPT, BUILD_MODE_REMINDER, BUILD_WORKFLOW_INSTRUCTIONS]
 
   parts.push(buildEnvironmentSection(cwd))
 
-  // Plan mode exposes only narrow read-only inspection tools.
-  // General tool-specific guidance belongs in Build mode.
-  if (mode === "build") {
-    parts.push(TODO_INSTRUCTIONS)
-
-    const geassSection = buildGeassSection()
-    if (geassSection) {
-      parts.push(geassSection)
-    }
-
-    parts.push(VISION_SECTION)
+  parts.push(TODO_INSTRUCTIONS)
+  const geassSection = buildGeassSection()
+  if (geassSection) {
+    parts.push(geassSection)
   }
+  parts.push(VISION_SECTION)
 
   if (agentsInstruction) {
     parts.push("# Workspace Instructions from AGENTS.md\n\n" + agentsInstruction)
@@ -185,7 +164,7 @@ export function buildLiteSystemPrompt(
   contextInstruction: string | undefined,
   cwd: string,
 ): string {
-  const parts = [LITE_SYSTEM_PROMPT, mode === "plan" ? LITE_PLAN_MODE_REMINDER : "You are currently in Build mode.", buildEnvironmentSection(cwd)]
+  const parts = [LITE_SYSTEM_PROMPT, "You are currently in Build mode.", buildEnvironmentSection(cwd)]
 
   // AGENTS remains useful operational context, but bounded so local models do
   // not lose the prompt-size benefit of the Lite profile. CONTEXT is omitted:

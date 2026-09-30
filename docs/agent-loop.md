@@ -58,8 +58,8 @@ The list sent to the model is built as:
 ```
 
 - **System prompt** comes from `runtime.systemPrompt(mode)` (see
-  `system-prompt.ts`). In **plan** mode the tool defs are emptied entirely, so
-  Plan mode is a hard runtime restriction, not just a prompt instruction.
+  `system-prompt.ts`). The assistant runs in Build mode; requests for analysis
+  or a plan can be made in plain language.
 - **Compaction summary**, if present, is injected as a `[Compaction Summary]`
   system message (see `memory-architecture.md`).
 - **History is trimmed by a sliding window**: only the most recent messages that
@@ -234,7 +234,7 @@ up the change automatically.
 ## Related code & docs
 
 - [`src/client/session-runner.ts`](../src/client/session-runner.ts) — the loop.
-- [`src/client/system-prompt.ts`](../src/client/system-prompt.ts) — prompt assembly, Build/Plan modes.
+- [`src/client/system-prompt.ts`](../src/client/system-prompt.ts) — prompt assembly for Build mode.
 - [`src/client/session-compact.ts`](../src/client/session-compact.ts) — compaction; see [memory-architecture.md](memory-architecture.md).
 - [`src/tool/registry.ts`](../src/tool/registry.ts) — built-in tool set.
 - [`src/permission/`](../src/permission/) — see [auto-approve-design.md](auto-approve-design.md).

@@ -14,14 +14,6 @@ export const LITE_TOOL_IDS = new Set([
   "bash",
 ])
 
-const PLAN_MODE_READONLY_TOOL_IDS = new Set([
-  "read",
-  "grep",
-  "glob",
-  "web_fetch",
-  "analyze_image",
-])
-
 /**
  * Human-facing labels and descriptions for selectable tool groups. A group id
  * that appears on a tool's `Def.group` but is missing here still works — it
@@ -76,14 +68,6 @@ export function selectEnabledTools(
 /** Restrict Lite runs to their fixed capability set before other filters. */
 export function selectLiteTools(tools: readonly Def[]): Def[] {
   return tools.filter((tool) => LITE_TOOL_IDS.has(tool.id))
-}
-
-/**
- * Plan mode may inspect project state, but must not mutate the workspace or
- * drive external UI. Keep this allowlist intentionally narrow.
- */
-export function selectPlanModeTools(tools: readonly Def[]): Def[] {
-  return tools.filter((tool) => PLAN_MODE_READONLY_TOOL_IDS.has(tool.id))
 }
 
 /**

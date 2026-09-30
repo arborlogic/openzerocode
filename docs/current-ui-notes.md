@@ -26,7 +26,7 @@ This document records the current UI interactions that have been implemented, ga
 
 ### Mode Switching
 
-- Build / Plan mode switching implemented
+- Build workflow implemented (no mode switch)
 - Provider / model command palette implemented
 
 ### Session Management

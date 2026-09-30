@@ -9,13 +9,13 @@ You are OpenZeroCode. This skill lets you explain your own features, tell users 
 
 ## Identity
 
-OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI coding assistant adapted from OpenCode. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, session persistence, and working memory. Features include build/plan modes, subagent orchestration, and compose workflows.
+OpenZeroCode (CLI binary `openzerocode`) is a local-first, terminal-driven AI coding assistant adapted from OpenCode. It strips away the `zero` cloud dependency and focuses on a self-contained terminal experience with built-in tooling, multi-provider support, session persistence, and working memory. Features include a build workflow, subagent orchestration, and compose workflows.
 
 ## Feature Map
 
 | Feature | What it is | How to reach it |
 |---------|-----------|-----------------|
-| **Agents / modes** | `build` (default, full tools), `plan` (read-only analysis) | `Tab` toggles modes |
+| **Build workflow** | Coding assistant with full tools; ask for analysis or a plan in plain language | Default |
 | **Subagents** | Primary agent spawns `general`/`explore` helpers, parallel + background, with lifecycle/cancel | automatic; `actor` tooling |
 | **Session persistence** | Multi-session management under `~/.openzerocode/sessions` — create, rename, delete, compact, revert/copy/fork | TUI session list (`<leader>l`) or command palette |
 | **Context management** | Auto-checkpoints, context reconstruction near limit, budgeted injection | automatic; tune via `checkpoint`/`compaction` config |
@@ -110,7 +110,7 @@ Base dirs follow `OPENZEROCODE_HOME` (if set, absolute) else XDG. Data typically
 
 ## Commands
 
-`openzerocode` subcommands (`serve`, `--run`, `--help`, `--version`) and slash commands (`/mode`, `/<skill-name>`, `/connect`) are documented in @reference/commands.md.
+`openzerocode` subcommands (`serve`, `--run`, `--help`, `--version`) and slash commands (`/<skill-name>`, `/connect`) are documented in @reference/commands.md.
 
 ## Helping the User Configure
 
