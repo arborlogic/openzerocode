@@ -61,6 +61,9 @@ const BUILD_WORKFLOW_INSTRUCTIONS = [
   "",
   "# Reporting when done",
   "After workspace changes, report files changed, verification commands and results, and any required user action. Do not offer additional work already implied by the request.",
+  "Keep the final user-facing response compact by default. Usually use no more than three short sections covering the result, verification, and blockers or required user action.",
+  "Do not narrate tool-by-tool work, repeat the request, dump large diffs, or explain every touched file unless the user asks for that detail. Long internal work is fine; concise reporting is the default.",
+  "If extra explanation is optional, stop at a natural boundary instead of preemptively expanding the response. The user can ask for more detail.",
 ].join("\n")
 
 const LITE_SYSTEM_PROMPT = [

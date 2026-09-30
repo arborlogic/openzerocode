@@ -17,11 +17,14 @@ export type ActiveAutopilotMode = Exclude<AutopilotMode, "off">
  * limit, provider error, tool error, or replan-needed) means the run terminated
  * in a way the supervisor can potentially recover from. Explicit user aborts
  * and internal application errors pause instead of starting another model turn.
+ * Output-limit stops are also intentionally manual: automatically continuing
+ * them recreates the token-spend runaway the limit is meant to contain.
  */
 export function shouldAutopilotConsultOnOutcome(outcome: RunOutcome | undefined): boolean {
   if (!outcome) return false
   switch (outcome.kind) {
     case "completed":
+    case "output_limit_reached":
     case "aborted":
     case "internal_error":
       return false

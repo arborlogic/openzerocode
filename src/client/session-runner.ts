@@ -378,10 +378,6 @@ async function* streamSessionImpl(
     const raw = Number.parseInt(process.env.OPENZEROCODE_MAX_STEPS ?? "", 10)
     return Number.isFinite(raw) && raw > 0 ? raw : 50
   })()
-  const CONTINUE_AFTER_LENGTH: Message = {
-    role: "system",
-    content: "Continue the previous assistant response from exactly where it stopped. Do not restart, do not summarize, and do not answer a different request.",
-  }
   const CONTINUE_AFTER_INTERRUPTION: Message = {
     role: "user",
     content: "The provider stream was interrupted. Continue from exactly where the previous assistant message stopped. Do not repeat completed text or tool calls, do not restart, and finish the original task.",
@@ -716,6 +712,19 @@ async function* streamSessionImpl(
         // Surface a machine-readable provider_error outcome before throwing,
         // so consumers (autopilot, scheduler) can react even though the
         // generator then unwinds via the runSession() catch block.
+        // Preserve visible partial output first. Otherwise the TUI only has it
+        // in transient stream state; once the run ends that state disappears,
+        // making a real provider interruption look like the answer simply
+        // vanished mid-sentence. Committing it also gives completed Markdown a
+        // chance to render instead of leaving the transcript in streaming mode.
+        if (content) {
+          const partialMessage = createAssistantMessage({
+            content,
+            reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
+          })
+          resultHistory.push(partialMessage)
+          yield { type: "message", message: partialMessage }
+        }
         const providerMessage = streamError instanceof Error ? streamError.message : String(streamError)
         const signature = providerErrorSignature(providerMessage)
         yield makeOutcome({ kind: "provider_error", message: providerMessage, signature })
@@ -760,6 +769,38 @@ async function* streamSessionImpl(
         }))
       : undefined
 
+    // A provider output limit is a terminal pause, not an instruction to spend
+    // another whole completion automatically. Older behaviour silently added a
+    // synthetic "continue" turn, which could repeat for many agent steps and
+    // multiply output-token cost. Persist any visible text, but never persist or
+    // execute a tool call that may have been truncated at the token boundary.
+    if (finishReason === "length") {
+      if (content) {
+        const partialMessage = createAssistantMessage({
+          content,
+          reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
+        })
+        resultHistory.push(partialMessage)
+        yield { type: "message", message: partialMessage }
+      }
+      const interruptedToolCall = Boolean(toolCalls?.length)
+      yield makeOutcome({
+        kind: "output_limit_reached",
+        outputTokens: lastUsageOutput || undefined,
+        interruptedToolCall: interruptedToolCall || undefined,
+      })
+      yield {
+        type: "notice",
+        kind: "warning",
+        code: "output_limit_reached",
+        text: interruptedToolCall
+          ? "Response reached the provider output limit while preparing a tool call. The incomplete tool call was not executed. Send ‘continue’ to resume if needed."
+          : "Response reached the provider output limit and stopped instead of auto-continuing. Send ‘continue’ if you want the rest.",
+      }
+      yield { type: "done" }
+      return resultHistory
+    }
+
     // Reasoning is intermediate work, not a complete answer. A provider can
     // terminate after emitting it without any visible content or tool call;
     // surface that invalid completion rather than silently ending the turn.
@@ -797,13 +838,6 @@ async function* streamSessionImpl(
     yield { type: "message", message: assistantMessage }
 
     if (!toolCalls) {
-      if (finishReason === "length") {
-        allMessages.push(createAssistantMessage({ content: "" }))
-        allMessages.push(CONTINUE_AFTER_LENGTH)
-        yield { type: "notice", kind: "system", text: "response hit token limit, continuing..." }
-        yield { type: "status", text: "continuing response..." }
-        continue
-      }
       allMessages.push(assistantMessage)
       const steering = step + 1 < maxSteps
         ? (options.consumeSteeringMessages?.() ?? [])

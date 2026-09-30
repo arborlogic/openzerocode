@@ -2767,9 +2767,11 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
         },
         notify: (text, kind, code) => {
           setNotices((prev) => [...prev, { kind: kind as DisplayBlock["kind"], text }])
-          // Surface step-limit notices as toasts so they can't be missed.
+          // Surface run-budget notices as toasts so they can't be missed.
           if (code === "step_limit_reached") {
             showToast("warning", "Step limit reached", text, 8000)
+          } else if (code === "output_limit_reached") {
+            showToast("warning", "Output limit reached", text, 8000)
           }
         },
         setStatus: (text) => setStatus(formatQueueStatus(text, queuedInputs())),
@@ -2885,7 +2887,9 @@ const actionPaletteItems = createMemo<PaletteItem[]>(() => {
     // re-triggers the supervisor loop. This runs for both successful runs
     // (step_limit_reached, replan_needed) and synthesised error outcomes
     // produced in the catch above. Aborts and internal errors intentionally
-    // pause instead of starting another model turn.
+    // pause instead of starting another model turn. Output-limit stops also
+    // pause so Autopilot cannot silently turn a bounded response into another
+    // token-spending continuation.
     if (!abortSignal.aborted && shouldAutopilotConsultOnOutcome(lastOutcome)) {
       scheduleAutopilotCheck()
     }

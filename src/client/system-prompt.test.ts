@@ -46,6 +46,8 @@ describe("buildSystemPrompt", () => {
     assert.match(prompt, /For requests requiring workspace changes, execute in the same turn instead of stopping at a proposal/)
     assert.match(prompt, /Drive the task to completion/)
     assert.match(prompt, /Reporting when done/)
+    assert.match(prompt, /Keep the final user-facing response compact by default/)
+    assert.match(prompt, /Long internal work is fine; concise reporting is the default/)
     assert.match(prompt, /smallest complete change that fixes the root cause/)
     assert.match(prompt, /Never claim success without fresh results/)
     assert.match(prompt, /do not overwrite unrelated user changes/)

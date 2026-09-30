@@ -170,6 +170,7 @@ async function handleHeadlessRun(args: string[]): Promise<void> {
           runOutcome = "fail"
           if ("message" in chunk.outcome) runError = chunk.outcome.message
           else if (chunk.outcome.kind === "replan_needed") runError = chunk.outcome.reason
+          else if (chunk.outcome.kind === "output_limit_reached") runError = "provider output limit reached"
           else if (chunk.outcome.kind === "step_limit_reached") runError = `step limit reached (${chunk.outcome.steps}/${chunk.outcome.maxSteps})`
           else if (chunk.outcome.kind === "aborted") runError = "aborted"
         }

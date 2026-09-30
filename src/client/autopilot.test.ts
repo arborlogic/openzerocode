@@ -159,9 +159,10 @@ describe("autopilot helpers", () => {
   it("does not consult autopilot on a clean or absent outcome", () => {
     assert.equal(shouldAutopilotConsultOnOutcome(undefined), false)
     assert.equal(shouldAutopilotConsultOnOutcome({ kind: "completed" }), false)
+    assert.equal(shouldAutopilotConsultOnOutcome({ kind: "output_limit_reached" }), false)
   })
 
-  it("consults autopilot on every non-completed run outcome", () => {
+  it("consults autopilot on recoverable run outcomes", () => {
     assert.equal(shouldAutopilotConsultOnOutcome({ kind: "step_limit_reached", steps: 50, maxSteps: 50 }), true)
     assert.equal(shouldAutopilotConsultOnOutcome({ kind: "provider_error", message: "offline", signature: "offline" }), true)
     assert.equal(shouldAutopilotConsultOnOutcome({ kind: "tool_error", tool: "bash", message: "failed", signature: "bash::failed" }), true)

@@ -17,6 +17,7 @@ import type { Message } from "../provider/types"
  */
 export type RunOutcome =
   | { kind: "completed" }
+  | { kind: "output_limit_reached"; outputTokens?: number; interruptedToolCall?: boolean }
   | { kind: "step_limit_reached"; steps: number; maxSteps: number }
   | { kind: "provider_error"; message: string; signature: string }
   | { kind: "tool_error"; tool: string; message: string; signature: string }

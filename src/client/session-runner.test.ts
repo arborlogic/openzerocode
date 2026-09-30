@@ -685,11 +685,13 @@ test("streamSession does not replay after a completed tool side-effect boundary"
   assert.deepEqual(errors, ["Network error while contacting provider. Please retry."])
 })
 
-test("runSession reports a provider stream reading failure without persisting it as assistant context", async () => {
+test("runSession preserves visible partial output when a provider stream fails", async () => {
+  let pulls = 0
   const stream = new ReadableStream({
     pull(controller) {
-      controller.enqueue({ delta: { content: "partial" } })
-      controller.error(new Error("upstream connection reset"))
+      pulls++
+      if (pulls === 1) controller.enqueue({ delta: { content: "partial" } })
+      else controller.error(new Error("upstream connection reset"))
     },
   })
   const messages: Message[] = []
@@ -702,10 +704,107 @@ test("runSession reports a provider stream reading failure without persisting it
     setStatus: (text) => statuses.push(text),
   }), runtime(stream))
 
-  assert.deepEqual(messages, [{ role: "user", content: "hello" }])
-  assert.deepEqual(result, [{ role: "user", content: "hello" }])
+  assert.equal(messages.length, 2)
+  assert.deepEqual(messages[0], { role: "user", content: "hello" })
+  assert.equal(messages[1]?.role, "assistant")
+  assert.equal(messages[1]?.content, "partial")
+  assert.deepEqual(messages[1]?.parts, [{ type: "text", text: "partial" }])
+  assert.deepEqual(result, messages)
   assert.deepEqual(notices, ["error:Provider error: upstream connection reset"])
   assert.ok(statuses.includes("error"))
+})
+
+test("streamSession stops at provider output limit instead of auto-continuing", async () => {
+  let requestCount = 0
+  const outcomes: any[] = []
+  const makeStream = () => {
+    requestCount++
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue({
+          delta: { content: "A useful partial answer." },
+          finish_reason: "length",
+          usage: { prompt_tokens: 20, completion_tokens: 120, total_tokens: 140 },
+        })
+        controller.close()
+      },
+    })
+  }
+
+  const gen = streamSession("explain this", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    maxSteps: 10,
+    onOutcome: (outcome) => outcomes.push(outcome),
+  }, runtime(makeStream))
+
+  const chunks: any[] = []
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+    chunks.push(next.value)
+  }
+
+  assert.equal(requestCount, 1)
+  assert.equal(result.at(-1)?.content, "A useful partial answer.")
+  assert.deepEqual(outcomes, [{ kind: "output_limit_reached", outputTokens: 120, interruptedToolCall: undefined }])
+  assert.ok(chunks.some((chunk) => chunk.type === "notice" && chunk.code === "output_limit_reached"))
+  assert.equal(chunks.some((chunk) => chunk.type === "notice" && /auto-continuing/.test(chunk.text)), true)
+})
+
+test("streamSession never executes a tool call truncated by the provider output limit", async () => {
+  let executions = 0
+  const truncatedTool = new Def({
+    id: "write",
+    description: "write test tool",
+    parameters: Schema.Struct({}),
+    execute: () => {
+      executions++
+      return Effect.succeed(new Result({ title: "write", output: "ok" }))
+    },
+  })
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue({
+        delta: { content: "I will update it now." },
+        tool_calls: [{ index: 0, id: "call_1", function: { name: "write", arguments: "{\"path\":" } }],
+        finish_reason: "length",
+      })
+      controller.close()
+    },
+  })
+  const outcomes: any[] = []
+
+  const gen = streamSession("update it", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+    onOutcome: (outcome) => outcomes.push(outcome),
+  }, runtime(stream, { tools: [truncatedTool] }))
+
+  let result: Message[] = []
+  while (true) {
+    const next = await gen.next()
+    if (next.done) {
+      result = next.value
+      break
+    }
+  }
+
+  assert.equal(executions, 0)
+  assert.equal(result.at(-1)?.content, "I will update it now.")
+  assert.equal(result.at(-1)?.tool_calls, undefined)
+  assert.equal(outcomes[0]?.kind, "output_limit_reached")
+  assert.equal(outcomes[0]?.interruptedToolCall, true)
 })
 
 test("runSession reports an empty provider response without persisting it as assistant context", async () => {
