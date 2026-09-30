@@ -36,19 +36,28 @@ describe("buildSystemPrompt", () => {
     assert.doesNotMatch(prompt, new RegExp(`x{${4_001}}`))
   })
 
-  it("includes build-mode execution guidance", () => {
+  it("scopes editing and verification guidance to workspace changes in build mode", () => {
     const prompt = buildSystemPrompt("build")
 
     assert.match(prompt, /In Build mode, default to doing the work instead of only describing it\./)
     assert.match(prompt, /You are currently in Build mode\./)
     assert.match(prompt, /Unless the user explicitly asks for analysis, explanation, brainstorming, or a plan/)
-    assert.match(prompt, /execute in the same turn instead of stopping at a proposal/)
+    assert.match(prompt, /For simple conversation or questions that do not require workspace changes, respond directly without tools/)
+    assert.match(prompt, /For requests requiring workspace changes, execute in the same turn instead of stopping at a proposal/)
     assert.match(prompt, /Drive the task to completion/)
-    assert.match(prompt, /Do not ask the user whether to continue/)
     assert.match(prompt, /Reporting when done/)
     assert.match(prompt, /smallest complete change that fixes the root cause/)
-    assert.match(prompt, /Never claim success without fresh command results/)
-    assert.match(prompt, /Do not overwrite or revert unrelated user changes/)
+    assert.match(prompt, /Never claim success without fresh results/)
+    assert.match(prompt, /do not overwrite unrelated user changes/)
+    assert.doesNotMatch(prompt, /Apply the completion and reporting rules above to every request/)
+  })
+
+  it("keeps build-only editing instructions out of plan mode", () => {
+    const prompt = buildSystemPrompt("plan")
+
+    assert.doesNotMatch(prompt, /# Build workflow/)
+    assert.doesNotMatch(prompt, /Use tools \(`edit`, `write`, or `apply_patch`\) to modify files/)
+    assert.doesNotMatch(prompt, /execute in the same turn instead of stopping at a proposal/)
   })
 
   it("includes an environment section with the working directory", () => {
