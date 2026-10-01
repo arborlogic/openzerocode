@@ -1,7 +1,7 @@
 import { Effect, Schema } from "effect"
 import { Def, Result } from "./types"
 import { spawn } from "child_process"
-import { readdir, readFile } from "fs/promises"
+import { readdir, readFile, stat } from "fs/promises"
 import path from "path"
 
 const Parameters = Schema.Struct({
@@ -60,6 +60,12 @@ async function walkFiles(root: string, include?: string | string[]): Promise<str
   const includes = Array.isArray(include) ? include : include ? [include] : []
   const includeRes = includes.map(globToRegExp)
 
+  const rootStat = await stat(root)
+  if (rootStat.isFile()) {
+    const name = path.basename(root)
+    return includeRes.length === 0 || includeRes.some((includeRe) => includeRe.test(name)) ? [root] : []
+  }
+
   async function walk(current: string) {
     const entries = await readdir(current, { withFileTypes: true })
     for (const entry of entries) {
@@ -87,7 +93,18 @@ function spawnRg(args: string[], cwd: string, abort: AbortSignal): Promise<{ std
       return
     }
 
-    const proc = spawn("rg", args, { cwd })
+    let proc
+    try {
+      proc = spawn("rg", args, { cwd })
+    } catch (error) {
+      resolve({
+        stdout: "",
+        stderr: "",
+        status: null,
+        error: error instanceof Error ? error : new Error(String(error)),
+      })
+      return
+    }
     const stdout: OutputBuffer = { text: "", bytes: 0, truncated: false }
     const stderr: OutputBuffer = { text: "", bytes: 0, truncated: false }
     let settled = false
@@ -173,13 +190,29 @@ export const GrepTool = Effect.gen(function* () {
         const searchPath = path.resolve(ctx.cwd, args.path ?? ".")
 
         const stdout = yield* Effect.promise(async () => {
+          let targetStat
+          try {
+            targetStat = await stat(searchPath)
+          } catch (error) {
+            return `Search path unavailable: ${error instanceof Error ? error.message : String(error)}`
+          }
+          const rgCwd = targetStat.isDirectory() ? searchPath : path.dirname(searchPath)
+          const rgTarget = targetStat.isDirectory() ? "." : path.basename(searchPath)
+
           const outputs = await Promise.all(patterns.map(async (pat) => {
-            const rgArgs = ["-n", pat]
+            const rgArgs = ["-n", "--with-filename", pat]
             for (const inc of includes) rgArgs.push("--glob", inc)
-            rgArgs.push(".")
-            const result = await spawnRg(rgArgs, searchPath, ctx.abort)
-            if (result.error && "code" in result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") {
-              return searchWithFallback(pat, searchPath, includes)
+            rgArgs.push(rgTarget)
+            const result = await spawnRg(rgArgs, rgCwd, ctx.abort)
+            const errorCode = result.error && "code" in result.error
+              ? (result.error as NodeJS.ErrnoException).code
+              : undefined
+            if (errorCode === "ENOENT" || errorCode === "ENOTDIR") {
+              try {
+                return await searchWithFallback(pat, searchPath, includes)
+              } catch (error) {
+                return `grep failed: ${error instanceof Error ? error.message : String(error)}`
+              }
             } else if (result.error) {
               return `rg failed: ${result.error.message}`
             } else if (result.status === 0) {

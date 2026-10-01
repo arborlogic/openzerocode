@@ -83,6 +83,19 @@ describe("tool", () => {
     assert.ok(result.output.includes("sample.ts:2:const needle = 2"))
   })
 
+  it("grep: accepts a file path without failing rg startup with ENOTDIR", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-grep-file-"))
+    const filePath = join(sessionDir, "sample.ts")
+    writeFileSync(filePath, "const alpha = 1\nconst needle = 2\n", { encoding: "utf-8", flag: "w" })
+    const grep = await Effect.runPromise(GrepTool)
+    const result = await Effect.runPromise(
+      grep.execute({ pattern: "needle", path: "sample.ts", include: "*.ts" }, testCtx(sessionDir)),
+    )
+
+    assert.ok(result.output.includes("sample.ts:2:const needle = 2"), result.output)
+    assert.ok(!result.output.includes("ENOTDIR"), result.output)
+  })
+
   it("grep: supports multiple patterns with include filtering", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "ozc-grep-multi-"))
     const srcDir = join(sessionDir, "src")
