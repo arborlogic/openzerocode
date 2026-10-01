@@ -49,6 +49,22 @@ function capOutput(text: string): string {
   return cappedText(buffer)
 }
 
+function outputPathPrefix(cwd: string, searchPath: string, isDirectory: boolean): string {
+  if (!isDirectory) return ""
+  const relative = path.relative(cwd, searchPath).split(path.sep).join("/")
+  return relative && relative !== "." && !relative.startsWith("../") && relative !== ".."
+    ? `${relative}/`
+    : ""
+}
+
+function prefixRgOutput(output: string, prefix: string): string {
+  if (!prefix) return output
+  return output.split("\n").map((line) => {
+    if (!line) return line
+    return `${prefix}${line.startsWith("./") ? line.slice(2) : line}`
+  }).join("\n")
+}
+
 function globToRegExp(pattern: string) {
   const normalized = pattern.split(path.sep).join("/")
   const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -196,8 +212,10 @@ export const GrepTool = Effect.gen(function* () {
           } catch (error) {
             return `Search path unavailable: ${error instanceof Error ? error.message : String(error)}`
           }
-          const rgCwd = targetStat.isDirectory() ? searchPath : path.dirname(searchPath)
-          const rgTarget = targetStat.isDirectory() ? "." : path.basename(searchPath)
+          const isDirectory = targetStat.isDirectory()
+          const rgCwd = isDirectory ? searchPath : path.dirname(searchPath)
+          const rgTarget = isDirectory ? "." : path.basename(searchPath)
+          const resultPrefix = outputPathPrefix(ctx.cwd, searchPath, isDirectory)
 
           const outputs = await Promise.all(patterns.map(async (pat) => {
             const rgArgs = ["-n", "--with-filename", pat]
@@ -216,7 +234,8 @@ export const GrepTool = Effect.gen(function* () {
             } else if (result.error) {
               return `rg failed: ${result.error.message}`
             } else if (result.status === 0) {
-              return result.stdout.trim() || "(no matches)"
+              const output = result.stdout.trim()
+              return output ? prefixRgOutput(output, resultPrefix) : "(no matches)"
             } else if (result.status === 1) {
               return "(no matches)"
             } else {

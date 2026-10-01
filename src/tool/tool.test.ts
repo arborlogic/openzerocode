@@ -83,6 +83,19 @@ describe("tool", () => {
     assert.ok(result.output.includes("sample.ts:2:const needle = 2"))
   })
 
+  it("grep: preserves the searched directory in result paths", async () => {
+    const sessionDir = mkdtempSync(join(tmpdir(), "ozc-grep-result-path-"))
+    const storeDir = join(sessionDir, "internal", "store")
+    mkdirSync(storeDir, { recursive: true })
+    writeFileSync(join(storeDir, "store.go"), "type Contribution struct{}\n", { encoding: "utf-8", flag: "w" })
+    const grep = await Effect.runPromise(GrepTool)
+    const result = await Effect.runPromise(
+      grep.execute({ pattern: "Contribution", path: "internal/store", include: "*.go" }, testCtx(sessionDir)),
+    )
+
+    assert.ok(result.output.includes("internal/store/store.go:1:type Contribution struct{}"), result.output)
+  })
+
   it("grep: accepts a file path without failing rg startup with ENOTDIR", async () => {
     const sessionDir = mkdtempSync(join(tmpdir(), "ozc-grep-file-"))
     const filePath = join(sessionDir, "sample.ts")
