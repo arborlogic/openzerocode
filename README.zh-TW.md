@@ -332,6 +332,7 @@ Provider 憑證可以透過環境變數或本機設定檔提供：
 | `openai-codex` | OpenAI Codex | 透過 `/codex-login` 使用 ChatGPT OAuth |
 | `xai-oauth` | xAI Grok OAuth | 透過 `/xai-login` 使用 SuperGrok / X Premium+ OAuth |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `nebius` | Nebius Token Factory | `NEBIUS_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
 | `ollama` | 原生 Ollama API | 不需要 key；預設 `http://localhost:11434` |

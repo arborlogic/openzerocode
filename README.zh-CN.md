@@ -332,6 +332,7 @@ Provider 凭证可以通过环境变量或本地配置文件提供：
 | `openai-codex` | OpenAI Codex | 通过 `/codex-login` 使用 ChatGPT OAuth |
 | `xai-oauth` | xAI Grok OAuth | 通过 `/xai-login` 使用 SuperGrok / X Premium+ OAuth |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `nebius` | Nebius Token Factory | `NEBIUS_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
 | `ollama` | 原生 Ollama API | 不需要 key；默认 `http://localhost:11434` |

@@ -4,6 +4,7 @@ import { def as bigPickle } from "./big-pickle"
 import { def as openai } from "./openai"
 import { def as openaiCodex } from "./openai-codex"
 import { def as openrouter } from "./openrouter"
+import { def as nebius } from "./nebius"
 import { def as zeroApi } from "./zero-api"
 import { def as deepseek } from "./deepseek"
 import { def as ollama } from "./ollama"
@@ -25,6 +26,7 @@ export const PROVIDERS: Record<string, ProviderDef> = {
   openai,
   "openai-codex": openaiCodex,
   openrouter,
+  nebius,
   "zero-api": zeroApi,
   deepseek,
   ollama,

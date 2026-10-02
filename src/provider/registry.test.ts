@@ -42,6 +42,15 @@ describe("provider registry", () => {
     assert.equal(def.authOptional, undefined)
   })
 
+  it("includes Nebius Token Factory", () => {
+    const def = PROVIDERS.nebius
+    assert.ok(def)
+    assert.equal(def.id, "nebius")
+    assert.equal(def.name, "Nebius Token Factory")
+    assert.equal(def.defaultModel, "nvidia/Nemotron-3_5-Lightning")
+    assert.deepEqual(def.envKeys, ["NEBIUS_API_KEY"])
+  })
+
   it("resolves provider keys from env and auto-detects them", () => {
     const previous = {
       openai: process.env.OPENAI_API_KEY,

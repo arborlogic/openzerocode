@@ -14,10 +14,12 @@ From the OpenZeroCode repository root:
 
 ```bash
 export TAVILY_API_KEY=your_own_key_here
+export NEBIUS_API_KEY=your_own_key_here
 npm run dev
 ```
 
 Open `TASK.md`, paste its task into OpenZeroCode, and keep the Web research (Tavily) tool group enabled.
+For the hackathon path, switch the provider to `nebius`; the default model is NVIDIA Nemotron 3.5 Lightning.
 
 ## Baseline
 

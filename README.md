@@ -332,6 +332,7 @@ Shape:
 | `openai-codex` | OpenAI Codex | ChatGPT OAuth via `/codex-login` |
 | `xai-oauth` | xAI Grok OAuth | SuperGrok / X Premium+ OAuth via `/xai-login` |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `nebius` | Nebius Token Factory | `NEBIUS_API_KEY` |
 | `zero-api` | Zero-API-compatible local endpoint | `ZERO_API_KEY` |
 | `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
 | `ollama` | Native Ollama API | No key required; defaults to `http://localhost:11434` |
