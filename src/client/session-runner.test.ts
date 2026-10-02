@@ -1699,3 +1699,109 @@ test("toolErrorFingerprint normalises hex addresses and digits so minor wording 
   assert.equal(c, d, "expected hex addresses and decimal counts to be normalised in the fingerprint")
   assert.match(c, /^bash::/)
 })
+
+test("streamSession requires fresh verification after a workspace mutation before clean completion", async () => {
+  let requestIndex = 0
+  const requests: CompletionRequest[] = []
+  const makeStream = () => new ReadableStream({
+    start(controller) {
+      requestIndex++
+      if (requestIndex === 1) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{ index: 0, id: "edit_1", function: { name: "edit", arguments: "{}" } }],
+          finish_reason: "tool_calls",
+        })
+      } else if (requestIndex === 2) {
+        controller.enqueue({ delta: { content: "Done without tests." }, finish_reason: "stop" })
+      } else if (requestIndex === 3) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{ index: 0, id: "bash_1", function: { name: "bash", arguments: JSON.stringify({ command: "npm test" }) } }],
+          finish_reason: "tool_calls",
+        })
+      } else {
+        controller.enqueue({ delta: { content: "Done and verified." }, finish_reason: "stop" })
+      }
+      controller.close()
+    },
+  })
+  const edit = new Def({
+    id: "edit",
+    description: "test edit",
+    parameters: Schema.Struct({}),
+    execute: () => Effect.succeed(new Result({ title: "Edited", output: "changed" })),
+  })
+  const bash = new Def({
+    id: "bash",
+    description: "test bash",
+    parameters: Schema.Struct({ command: Schema.String }),
+    execute: () => Effect.succeed(new Result({ title: "Bash: npm test", output: "all tests passed" })),
+  })
+  const chunks: any[] = []
+  const gen = streamSession("change the code", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, {
+    tools: [edit, bash],
+    onRequest: (req) => requests.push({ ...req, messages: [...req.messages] }),
+  }))
+
+  let final: IteratorResult<any, Message[]>
+  do {
+    final = await gen.next()
+    if (!final.done) chunks.push(final.value)
+  } while (!final.done)
+
+  assert.equal(requestIndex, 4)
+  assert.ok(requests[2]!.messages.some((message) => String(message.content ?? "").includes("[Verification Required]")))
+  assert.equal(chunks.some((chunk) => chunk.type === "notice" && chunk.code === "verification_required"), true)
+  assert.equal(final.value.some((message) => message.role === "assistant" && message.content === "Done without tests."), false)
+  assert.equal(final.value.some((message) => message.role === "assistant" && message.content === "Done and verified."), true)
+})
+
+test("streamSession marks Bash error results as tool errors", async () => {
+  let requestIndex = 0
+  const makeStream = () => new ReadableStream({
+    start(controller) {
+      requestIndex++
+      if (requestIndex === 1) {
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{ index: 0, id: "bash_fail", function: { name: "bash", arguments: JSON.stringify({ command: "npm test" }) } }],
+          finish_reason: "tool_calls",
+        })
+      } else {
+        controller.enqueue({ delta: { content: "Tests failed." }, finish_reason: "stop" })
+      }
+      controller.close()
+    },
+  })
+  const bash = new Def({
+    id: "bash",
+    description: "test bash",
+    parameters: Schema.Struct({ command: Schema.String }),
+    execute: () => Effect.succeed(new Result({ title: "Bash error: npm test", output: "1 test failed" })),
+  })
+  const chunks: any[] = []
+  const gen = streamSession("run tests", [], {
+    abort: new AbortController().signal,
+    model: "test-model",
+    provider: "test-provider",
+    keyName: "test-key",
+    mode: "build",
+  }, runtime(makeStream, { tools: [bash] }))
+
+  while (true) {
+    const next = await gen.next()
+    if (next.done) break
+    chunks.push(next.value)
+  }
+
+  const result = chunks.find((chunk) => chunk.type === "tool_result")
+  assert.ok(result)
+  assert.equal(result.error, true)
+})

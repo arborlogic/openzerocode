@@ -14,6 +14,7 @@ import { delay, formatProviderError, isCompactionRetryableError, isRateLimitErro
 import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, normalizeReasoningEffort, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
 import type { RunOutcome, StreamChunk } from "../server/types"
+import { inferVerificationCommands, isVerificationCommand, isWorkspaceMutatingTool } from "./verification"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
 export type RunMode = "build"
@@ -444,6 +445,9 @@ async function* streamSessionImpl(
   // the loop can surface a `replan_needed` outcome once a single failure
   // pattern has been retried past the point of diminishing returns.
   const toolErrorCounts = new Map<string, { tool: string; signature: string; count: number }>()
+  let workspaceMutated = false
+  let verificationStatus: "not_required" | "pending" | "failed" | "passed" = "not_required"
+  let lastVerificationCommand: string | undefined
   // Only send levels accepted by the selected model. In particular, older
   // Codex models reject GPT-5.6's `max` level instead of silently ignoring it.
   const effectiveReasoningEffort = normalizeReasoningEffort(options.model, options.reasoning_effort)
@@ -872,6 +876,27 @@ async function* streamSessionImpl(
       reasoning_content: hasReasoning ? (reasoning || undefined) : undefined,
       tool_calls: toolCalls,
     })
+
+    if (!toolCalls && workspaceMutated && verificationStatus !== "passed" && step + 1 < maxSteps) {
+      allMessages.push(assistantMessage)
+      const suggestions = inferVerificationCommands(workdir)
+      const verificationMessage: Message = {
+        role: "system",
+        content: [
+          "[Verification Required]",
+          verificationStatus === "failed"
+            ? `The latest verification failed${lastVerificationCommand ? `: ${lastVerificationCommand}` : ""}. Diagnose the failure, repair the implementation, then rerun verification before finishing.`
+            : "Workspace files were changed in this run, but no successful verification has been observed after the latest change. Run relevant verification before finishing.",
+          suggestions.length > 0 ? `Repository-aware candidates: ${suggestions.join(" ; ")}` : undefined,
+          "Do not claim the task is complete until a relevant verification command succeeds, unless verification is genuinely unavailable; in that case explain the blocker explicitly.",
+        ].filter(Boolean).join("\n"),
+      }
+      allMessages.push(verificationMessage)
+      yield { type: "notice", kind: "system", code: "verification_required", text: "Verification required before task completion; continuing the agent loop." }
+      yield { type: "status", text: verificationStatus === "failed" ? "repairing after failed verification..." : "verification required..." }
+      continue
+    }
+
     resultHistory.push(assistantMessage)
     yield { type: "message", message: assistantMessage }
 
@@ -1008,7 +1033,25 @@ async function* streamSessionImpl(
           continue
         }
         let toolContent = convertToolResult(result)
-        const isError = result.title === "Error"
+        const isError = result.title === "Error" || result.title.startsWith("Bash error:")
+
+        if (!isError && isWorkspaceMutatingTool(name)) {
+          workspaceMutated = true
+          verificationStatus = "pending"
+          lastVerificationCommand = undefined
+        }
+        if (name === "bash") {
+          try {
+            const parsedArgs = JSON.parse(finishedCall.function.arguments ?? "{}") as { command?: unknown }
+            const command = typeof parsedArgs.command === "string" ? parsedArgs.command : ""
+            if (workspaceMutated && command && isVerificationCommand(command)) {
+              verificationStatus = isError ? "failed" : "passed"
+              lastVerificationCommand = command
+            }
+          } catch {
+            // Invalid bash args are already handled by parseToolArguments above.
+          }
+        }
         if (isError) {
           const sig = toolErrorFingerprint(name, result.output)
           toolErrorCounts.set(sig, {
