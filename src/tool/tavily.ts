@@ -161,6 +161,7 @@ async function search(args: SearchArgs, depth: "basic" | "advanced", signal: Abo
       provider: "tavily",
       searchDepth: depth,
       resultCount: response.results?.length ?? 0,
+      sources: (response.results ?? []).map((result) => result.url).filter((url): url is string => Boolean(url)),
       credits: response.usage?.credits,
       requestId: response.request_id,
     },
@@ -238,6 +239,7 @@ export const WebExtractTool = Effect.gen(function* () {
           extractDepth: args.depth,
           resultCount: response.results?.length ?? 0,
           failedCount: response.failed_results?.length ?? 0,
+          sources: (response.results ?? []).map((result) => result.url).filter((url): url is string => Boolean(url)),
           credits: response.usage?.credits,
           requestId: response.request_id,
         },
@@ -245,4 +247,3 @@ export const WebExtractTool = Effect.gen(function* () {
     }).pipe(Effect.orDie),
   })
 })
-

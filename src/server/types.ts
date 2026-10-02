@@ -34,6 +34,14 @@ export type AgentLifecycleEvent =
   | { kind: "repair_started"; tool: string }
   | { kind: "verification_passed"; command: string }
 
+export type TaskCompletionReport = {
+  status: "completed"
+  filesChanged: string[]
+  researchSources: string[]
+  verification: Array<{ command: string; status: "passed" | "failed" }>
+  remainingRisks: string[]
+}
+
 export type StreamChunk =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
@@ -44,6 +52,7 @@ export type StreamChunk =
   | { type: "status"; text: string }
   | { type: "notice"; kind: string; text: string; code?: string }
   | { type: "event"; event: AgentLifecycleEvent }
+  | { type: "report"; report: TaskCompletionReport }
   | { type: "outcome"; outcome: RunOutcome }
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens: number }
   | { type: "error"; message: string }

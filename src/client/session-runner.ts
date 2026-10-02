@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { randomUUID } from "crypto"
+import { isAbsolute, relative, resolve } from "path"
 import { ToolRegistry } from "../tool/registry"
 import { Provider } from "../provider/types"
 import type { Message, ToolCall, ModelInfo, ReasoningEffort } from "../provider/types"
@@ -13,7 +14,7 @@ import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, normalizeReasoningEffort, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
-import type { AgentLifecycleEvent, RunOutcome, StreamChunk } from "../server/types"
+import type { AgentLifecycleEvent, RunOutcome, StreamChunk, TaskCompletionReport } from "../server/types"
 import { inferVerificationCommands, isVerificationCommand, isWorkspaceMutatingTool } from "./verification"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
@@ -93,6 +94,15 @@ function lifecycleText(event: AgentLifecycleEvent): string {
     case "repair_started": return `Repairing after failed verification with ${event.tool}.`
     case "verification_passed": return `Verification passed: ${event.command}`
   }
+}
+
+function completionReportText(report: TaskCompletionReport): string {
+  const lines = ["Task complete"]
+  if (report.filesChanged.length > 0) lines.push(`Files changed: ${report.filesChanged.join(", ")}`)
+  if (report.researchSources.length > 0) lines.push(`Research sources: ${report.researchSources.length}`)
+  for (const item of report.verification) lines.push(`Verification ${item.status}: ${item.command}`)
+  if (report.remainingRisks.length > 0) lines.push(`Remaining risks: ${report.remainingRisks.join("; ")}`)
+  return lines.join("\n")
 }
 
 /**
@@ -460,6 +470,25 @@ async function* streamSessionImpl(
   let workspaceMutated = false
   let verificationStatus: "not_required" | "pending" | "failed" | "passed" = "not_required"
   let lastVerificationCommand: string | undefined
+  const changedFiles = new Set<string>()
+  const researchSources = new Set<string>()
+  const verificationResults: Array<{ command: string; status: "passed" | "failed" }> = []
+  const recordChangedFile = (candidate: unknown) => {
+    if (typeof candidate !== "string" || !candidate.trim()) return
+    const absolute = resolve(workdir, candidate)
+    const rel = relative(workdir, absolute)
+    if (!rel || rel.startsWith("..") || isAbsolute(rel)) return
+    changedFiles.add(rel)
+  }
+  const buildCompletionReport = (): TaskCompletionReport => ({
+    status: "completed",
+    filesChanged: [...changedFiles].sort(),
+    researchSources: [...researchSources].sort(),
+    verification: [...verificationResults],
+    remainingRisks: workspaceMutated && verificationStatus !== "passed"
+      ? ["Workspace changed without a successful verification after the latest change."]
+      : [],
+  })
   // Only send levels accepted by the selected model. In particular, older
   // Codex models reject GPT-5.6's `max` level instead of silently ignoring it.
   const effectiveReasoningEffort = normalizeReasoningEffort(options.model, options.reasoning_effort)
@@ -870,8 +899,26 @@ async function* streamSessionImpl(
     if (!content && !hasReasoning && !toolCalls) {
       const hadProgressThisTurn = resultHistory.length > turnProgressStart
       if (hadProgressThisTurn && finishReason !== "length") {
+        if (workspaceMutated && verificationStatus !== "passed" && step + 1 < maxSteps) {
+          const suggestions = inferVerificationCommands(workdir)
+          allMessages.push({
+            role: "system",
+            content: [
+              "[Verification Required]",
+              "Workspace files were changed in this run, but no successful verification has been observed after the latest change.",
+              suggestions.length > 0 ? `Repository-aware candidates: ${suggestions.join(" ; ")}` : undefined,
+              "Run relevant verification and repair any failures before finishing.",
+            ].filter(Boolean).join("\n"),
+          })
+          yield { type: "notice", kind: "system", code: "verification_required", text: "Verification required before task completion; continuing the agent loop." }
+          continue
+        }
         const replan = dominantToolErrorOutcome(toolErrorCounts)
-        yield makeOutcome(replan ?? { kind: "completed" })
+        if (replan) yield makeOutcome(replan)
+        else {
+          yield { type: "report", report: buildCompletionReport() }
+          yield makeOutcome({ kind: "completed" })
+        }
         yield { type: "done" }
         return resultHistory
       }
@@ -930,7 +977,11 @@ async function* streamSessionImpl(
         continue
       }
       const replan = dominantToolErrorOutcome(toolErrorCounts)
-      yield makeOutcome(replan ?? { kind: "completed" })
+      if (replan) yield makeOutcome(replan)
+      else {
+        yield { type: "report", report: buildCompletionReport() }
+        yield makeOutcome({ kind: "completed" })
+      }
       yield { type: "done" }
       return resultHistory
     }
@@ -1064,6 +1115,20 @@ async function* streamSessionImpl(
           workspaceMutated = true
           verificationStatus = "pending"
           lastVerificationCommand = undefined
+          try {
+            const parsedArgs = JSON.parse(finishedCall.function.arguments ?? "{}") as Record<string, unknown>
+            recordChangedFile(parsedArgs.filePath)
+            recordChangedFile(parsedArgs.path)
+            if (name === "apply_patch" && typeof parsedArgs.patchText === "string") {
+              for (const line of parsedArgs.patchText.split("\n")) {
+                for (const prefix of ["*** Add File: ", "*** Update File: ", "*** Delete File: "]) {
+                  if (line.startsWith(prefix)) recordChangedFile(line.slice(prefix.length))
+                }
+              }
+            }
+          } catch {
+            // Tool arguments were already schema-validated; reporting is best-effort.
+          }
         }
         if (name === "bash") {
           try {
@@ -1072,6 +1137,7 @@ async function* streamSessionImpl(
             if (workspaceMutated && command && isVerificationCommand(command)) {
               verificationStatus = isError ? "failed" : "passed"
               lastVerificationCommand = command
+              verificationResults.push({ command, status: isError ? "failed" : "passed" })
               yield {
                 type: "event",
                 event: isError
@@ -1086,6 +1152,10 @@ async function* streamSessionImpl(
 
         if (!isError && (name === "web_search" || name === "web_search_deep" || name === "web_extract")) {
           const resultCount = typeof result.metadata?.resultCount === "number" ? result.metadata.resultCount : undefined
+          const sources = Array.isArray(result.metadata?.sources) ? result.metadata.sources : []
+          for (const source of sources) {
+            if (typeof source === "string" && (source.startsWith("http://") || source.startsWith("https://"))) researchSources.add(source)
+          }
           yield { type: "event", event: { kind: "evidence_found", tool: name, resultCount } }
         }
         if (isError) {
@@ -1263,6 +1333,9 @@ export async function runSession(
           break
         case "event":
           ui.notify(lifecycleText(chunk.event), "system", chunk.event.kind)
+          break
+        case "report":
+          ui.notify(completionReportText(chunk.report), "system", "completion_report")
           break
         case "outcome":
           // Callback already fired inside the generator via makeOutcome; this
