@@ -393,11 +393,21 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for detailed guidance on:
          │
          └── tool layer ────────────────────────────┐
             src/tool/registry.ts                    │
-            - 19 built-in tools                     │
+            - core coding and web tools             │
             - optional GEASS browser + peer groups  │
+            - optional Tavily research group        │
             - dynamically loaded MCP tools          │
             └───────────────────────────────────────┘
 ```
+
+### Tavily web research
+
+Set `TAVILY_API_KEY` to expose the optional `web_search`, `web_search_deep`, and
+`web_extract` tools to the agent. OpenZeroCode uses them only when current
+external evidence is needed; direct URL reads continue to use `web_fetch`.
+
+The API key is read from the process environment and is never included in tool
+results or session metadata.
 
 ## Prompt Memory Model
 

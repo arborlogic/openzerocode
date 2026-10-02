@@ -7,7 +7,7 @@ export type PermissionRule = {
 }
 
 export function isSafePermission(permission: string) {
-  return ["read", "grep", "glob", "web_fetch"].includes(permission)
+  return ["read", "grep", "glob", "web_fetch", "web_search", "web_search_deep", "web_extract"].includes(permission)
 }
 
 export function shouldAutoApprove(request: Omit<PermissionRequest, "id">, rules: PermissionRule[]) {

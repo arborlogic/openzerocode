@@ -8,6 +8,7 @@ import { BashTool } from "./bash"
 import { EditTool } from "./edit"
 import { ApplyPatchTool } from "./apply-patch"
 import { WebFetchTool } from "./web-fetch"
+import { WebSearchTool, WebSearchDeepTool, WebExtractTool, isTavilyConfigured } from "./tavily"
 import { TodoWriteTool } from "./todo"
 import { BrowserNavigateTool } from "./browser-navigate"
 import { BrowserReadTool } from "./browser-read"
@@ -35,6 +36,14 @@ export class ToolRegistry extends Context.Service<ToolRegistry, Interface>()("@o
 export const layer = Layer.effect(
   ToolRegistry,
   Effect.gen(function* () {
+    const researchTools: Def[] = []
+    if (isTavilyConfigured()) {
+      researchTools.push(
+        yield* WebSearchTool,
+        yield* WebSearchDeepTool,
+        yield* WebExtractTool,
+      )
+    }
     const builtins: Def[] = [
       yield* ReadTool,
       yield* WriteTool,
@@ -44,6 +53,7 @@ export const layer = Layer.effect(
       yield* EditTool,
       yield* ApplyPatchTool,
       yield* WebFetchTool,
+      ...researchTools,
       yield* TodoWriteTool,
       yield* BrowserNavigateTool,
       yield* BrowserReadTool,

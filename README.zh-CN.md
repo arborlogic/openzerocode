@@ -394,11 +394,20 @@ npx tsx --test src/client/workspace-memory.test.ts
          │
          └── tool layer ────────────────────────────┐
             src/tool/registry.ts                    │
-            - 19 built-in tools                     │
+            - core coding and web tools             │
             - optional GEASS browser + peer groups  │
+            - optional Tavily research group        │
             - dynamically loaded MCP tools          │
             └───────────────────────────────────────┘
 ```
+
+### Tavily 网络研究
+
+设置 `TAVILY_API_KEY` 后，Agent 会获得可选用的 `web_search`、
+`web_search_deep` 和 `web_extract` 工具。OpenZeroCode 只在需要当前外部信息时
+使用这些工具；已知 URL 的直接读取仍由 `web_fetch` 处理。
+
+API key 只从进程环境读取，不会放入 tool result 或 session metadata。
 
 ## Prompt 记忆模型
 

@@ -28,6 +28,10 @@ export const TOOL_GROUPS: Record<string, { label: string; description: string }>
     label: "Peer calls",
     description: "Send tasks to other named openzerocode processes (requires --name)",
   },
+  research: {
+    label: "Web research (Tavily)",
+    description: "JIT web search and source extraction for current external evidence",
+  },
 }
 
 /**

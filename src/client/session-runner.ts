@@ -907,7 +907,7 @@ async function* streamSessionImpl(
 
     // Only parallelize tools that are read-only and independent. Mutating tools
     // (write/edit/bash/todowrite/browser/call_peer/etc.) must preserve model order.
-    const parallelToolIds = new Set(["read", "grep", "glob", "web_fetch"])
+    const parallelToolIds = new Set(["read", "grep", "glob", "web_fetch", "web_search", "web_search_deep", "web_extract"])
     const canRunInParallel = (call: ToolCall): boolean => parallelToolIds.has(call.function.name ?? "unknown")
 
     // Serialize permission prompts so the UI only shows one at a time, while

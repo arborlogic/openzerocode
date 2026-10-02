@@ -19,6 +19,7 @@ const tools = [
   mk("browser_navigate", "browser"),
   mk("browser_read", "browser"),
   mk("call_peer", "peer"),
+  mk("web_search", "research"),
 ]
 
 describe("tool selection", () => {
@@ -34,12 +35,12 @@ describe("tool selection", () => {
   it("drops every tool in a disabled group but keeps core tools", () => {
     const enabled = selectEnabledTools(tools, ["browser"])
     const ids = enabled.map((t) => t.id)
-    assert.deepEqual(ids, ["read", "bash", "call_peer"])
+    assert.deepEqual(ids, ["read", "bash", "call_peer", "web_search"])
   })
 
   it("can disable multiple groups at once", () => {
     const enabled = selectEnabledTools(tools, ["browser", "peer"])
-    assert.deepEqual(enabled.map((t) => t.id), ["read", "bash"])
+    assert.deepEqual(enabled.map((t) => t.id), ["read", "bash", "web_search"])
   })
 
   it("excludes dynamic and delegation tools in Lite mode", () => {
@@ -58,15 +59,17 @@ describe("tool selection", () => {
     const groups = listSelectableGroups(tools, ["peer"])
     const browser = groups.find((g) => g.id === "browser")!
     const peer = groups.find((g) => g.id === "peer")!
+    const research = groups.find((g) => g.id === "research")!
     assert.equal(browser.count, 2)
     assert.equal(browser.enabled, true)
     assert.equal(browser.label, "Browser (GEASS)")
     assert.equal(peer.enabled, false)
+    assert.equal(research.label, "Web research (Tavily)")
   })
 
   it("does not list core (ungrouped) tools as groups", () => {
     const groups = listSelectableGroups(tools, [])
-    assert.deepEqual(groups.map((g) => g.id).sort(), ["browser", "peer"])
+    assert.deepEqual(groups.map((g) => g.id).sort(), ["browser", "peer", "research"])
   })
 
   it("toggles a group in and out of the denylist", () => {
