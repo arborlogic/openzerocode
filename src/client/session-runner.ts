@@ -13,7 +13,7 @@ import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
 import { delay, formatProviderError, isCompactionRetryableError, isRateLimitError, isTransientProviderError } from "./errors"
 import { estimateMessageRequestTokens, estimateTokens, getEffectiveContextLimit, normalizeReasoningEffort, modelSupportsVision } from "../provider/models"
 import { analyzeImageWithLocalVlm, getDefaultLocalVlmEndpoint, getDefaultLocalVlmModel } from "../browser/local-vlm-client"
-import type { RunOutcome, StreamChunk } from "../server/types"
+import type { AgentLifecycleEvent, RunOutcome, StreamChunk } from "../server/types"
 import { inferVerificationCommands, isVerificationCommand, isWorkspaceMutatingTool } from "./verification"
 
 type AccToolCall = { id?: string; index?: number; name: string; arguments: string }
@@ -81,6 +81,18 @@ const REPLAN_REPEAT_THRESHOLD = 3
  */
 function makeOutcome(outcome: RunOutcome): StreamChunk {
   return { type: "outcome", outcome }
+}
+
+function lifecycleText(event: AgentLifecycleEvent): string {
+  switch (event.kind) {
+    case "research_required": return `Research required${event.query ? `: ${event.query}` : "."}`
+    case "research_started": return `Researching external sources${event.query ? `: ${event.query}` : "..."}`
+    case "evidence_found": return `External evidence collected${event.resultCount !== undefined ? ` (${event.resultCount} source${event.resultCount === 1 ? "" : "s"})` : ""}.`
+    case "verification_started": return `Verifying: ${event.command}`
+    case "verification_failed": return `Verification failed: ${event.command}`
+    case "repair_started": return `Repairing after failed verification with ${event.tool}.`
+    case "verification_passed": return `Verification passed: ${event.command}`
+  }
 }
 
 /**
@@ -978,6 +990,19 @@ async function* streamSessionImpl(
       const name = call.function.name ?? "unknown"
       const def = tools.find((tool) => tool.id === name)
       if (def && parseToolArguments(def, call.function.arguments).ok) {
+        let parsedArgs: Record<string, unknown> = {}
+        try { parsedArgs = JSON.parse(call.function.arguments ?? "{}") as Record<string, unknown> } catch {}
+        if (name === "web_search" || name === "web_search_deep" || name === "web_extract") {
+          const query = typeof parsedArgs.query === "string" ? parsedArgs.query : undefined
+          yield { type: "event" as const, event: { kind: "research_required" as const, tool: name, query } }
+          yield { type: "event" as const, event: { kind: "research_started" as const, tool: name, query } }
+        }
+        if (name === "bash" && typeof parsedArgs.command === "string" && isVerificationCommand(parsedArgs.command)) {
+          yield { type: "event" as const, event: { kind: "verification_started" as const, command: parsedArgs.command } }
+        }
+        if (verificationStatus === "failed" && isWorkspaceMutatingTool(name)) {
+          yield { type: "event" as const, event: { kind: "repair_started" as const, tool: name } }
+        }
         yield { type: "status" as const, text: `running tool: ${name}` }
         yield { type: "tool_start" as const, id: call.id, name, input: call.function.arguments ?? "" }
       }
@@ -1047,10 +1072,21 @@ async function* streamSessionImpl(
             if (workspaceMutated && command && isVerificationCommand(command)) {
               verificationStatus = isError ? "failed" : "passed"
               lastVerificationCommand = command
+              yield {
+                type: "event",
+                event: isError
+                  ? { kind: "verification_failed", command }
+                  : { kind: "verification_passed", command },
+              }
             }
           } catch {
             // Invalid bash args are already handled by parseToolArguments above.
           }
+        }
+
+        if (!isError && (name === "web_search" || name === "web_search_deep" || name === "web_extract")) {
+          const resultCount = typeof result.metadata?.resultCount === "number" ? result.metadata.resultCount : undefined
+          yield { type: "event", event: { kind: "evidence_found", tool: name, resultCount } }
         }
         if (isError) {
           const sig = toolErrorFingerprint(name, result.output)
@@ -1224,6 +1260,9 @@ export async function runSession(
           break
         case "notice":
           ui.notify(chunk.text, chunk.kind, chunk.code)
+          break
+        case "event":
+          ui.notify(lifecycleText(chunk.event), "system", chunk.event.kind)
           break
         case "outcome":
           // Callback already fired inside the generator via makeOutcome; this

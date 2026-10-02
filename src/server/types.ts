@@ -25,6 +25,15 @@ export type RunOutcome =
   | { kind: "internal_error"; message: string }
   | { kind: "aborted" }
 
+export type AgentLifecycleEvent =
+  | { kind: "research_required"; tool: string; query?: string }
+  | { kind: "research_started"; tool: string; query?: string }
+  | { kind: "evidence_found"; tool: string; resultCount?: number }
+  | { kind: "verification_started"; command: string }
+  | { kind: "verification_failed"; command: string }
+  | { kind: "repair_started"; tool: string }
+  | { kind: "verification_passed"; command: string }
+
 export type StreamChunk =
   | { type: "text"; content: string }
   | { type: "reasoning"; content: string }
@@ -34,6 +43,7 @@ export type StreamChunk =
   | { type: "message"; message: Message }
   | { type: "status"; text: string }
   | { type: "notice"; kind: string; text: string; code?: string }
+  | { type: "event"; event: AgentLifecycleEvent }
   | { type: "outcome"; outcome: RunOutcome }
   | { type: "usage"; inputTokens: number; outputTokens: number; cachedInputTokens: number }
   | { type: "error"; message: string }
