@@ -159,6 +159,15 @@ async function handleHeadlessRun(args: string[]): Promise<void> {
       case "status":
         process.stderr.write(`\r${chunk.text.padEnd(40)}\r`)
         break
+      case "notice":
+        process.stderr.write(`\n[${chunk.code ?? chunk.kind}] ${chunk.text}\n`)
+        break
+      case "event":
+        process.stderr.write(`\n[event:${chunk.event.kind}] ${JSON.stringify(chunk.event)}\n`)
+        break
+      case "report":
+        process.stderr.write(`\n[completion-report]\n${JSON.stringify(chunk.report, null, 2)}\n`)
+        break
       case "error":
         process.stderr.write(`\nError: ${chunk.message}\n`)
         runOutcome = "fail"

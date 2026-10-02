@@ -1709,7 +1709,7 @@ test("streamSession requires fresh verification after a workspace mutation befor
       if (requestIndex === 1) {
         controller.enqueue({
           delta: {},
-          tool_calls: [{ index: 0, id: "edit_1", function: { name: "edit", arguments: "{}" } }],
+          tool_calls: [{ index: 0, id: "edit_1", function: { name: "edit", arguments: JSON.stringify({ filePath: "src/demo.ts" }) } }],
           finish_reason: "tool_calls",
         })
       } else if (requestIndex === 2) {
@@ -1729,7 +1729,7 @@ test("streamSession requires fresh verification after a workspace mutation befor
   const edit = new Def({
     id: "edit",
     description: "test edit",
-    parameters: Schema.Struct({}),
+    parameters: Schema.Struct({ filePath: Schema.String }),
     execute: () => Effect.succeed(new Result({ title: "Edited", output: "changed" })),
   })
   const bash = new Def({
@@ -1759,6 +1759,13 @@ test("streamSession requires fresh verification after a workspace mutation befor
   assert.equal(requestIndex, 4)
   assert.ok(requests[2]!.messages.some((message) => String(message.content ?? "").includes("[Verification Required]")))
   assert.equal(chunks.some((chunk) => chunk.type === "notice" && chunk.code === "verification_required"), true)
+  assert.equal(chunks.some((chunk) => chunk.type === "event" && chunk.event.kind === "verification_started"), true)
+  assert.equal(chunks.some((chunk) => chunk.type === "event" && chunk.event.kind === "verification_passed"), true)
+  const report = chunks.find((chunk) => chunk.type === "report")?.report
+  assert.ok(report)
+  assert.deepEqual(report.filesChanged, ["src/demo.ts"])
+  assert.deepEqual(report.verification, [{ command: "npm test", status: "passed" }])
+  assert.deepEqual(report.remainingRisks, [])
   assert.equal(final.value.some((message) => message.role === "assistant" && message.content === "Done without tests."), false)
   assert.equal(final.value.some((message) => message.role === "assistant" && message.content === "Done and verified."), true)
 })
