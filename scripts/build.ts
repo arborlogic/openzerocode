@@ -16,6 +16,7 @@ import * as path from "path"
 import * as os from "os"
 import { replaceBundledSkills } from "./bundled-skills"
 import { resolveBuildVersion } from "./version"
+import { signBinary } from "./sign-binary"
 
 const PLATFORM_MAP: Record<string, string> = { darwin: "darwin", linux: "linux", win32: "windows" }
 const ARCH_MAP: Record<string, string> = { x64: "x64", arm64: "arm64", arm: "arm" }
@@ -88,17 +89,7 @@ if (chmodResult.exitCode !== 0) {
   process.exit(chmodResult.exitCode)
 }
 
-// Bun's compiled Mach-O has embedded data appended after its linker signature.
-// macOS rejects it with SIGKILL until the finished binary is signed again.
-if (platform === "darwin") {
-  const signResult = Bun.spawnSync(["codesign", "--force", "--sign", "-", outfile])
-  if (signResult.exitCode !== 0) {
-    const stderr = signResult.stderr.toString().trim()
-    console.error(`❌ Failed to sign macOS build output: ${outfile}`)
-    if (stderr) console.error(`   ${stderr}`)
-    process.exit(signResult.exitCode ?? 1)
-  }
-}
+signBinary(outfile)
 
 const bundledSkillsSource = path.join(dir, "skills")
 const bundledSkillsDestination = path.join(path.dirname(outfile), "bundled-skills")

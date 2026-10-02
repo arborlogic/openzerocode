@@ -277,9 +277,10 @@ export function getEffectiveContextLimit(model: string, metadata?: ModelInfo): n
 /**
  * Return a reasoning effort accepted by the selected model.
  *
- * Advanced levels are model-specific: GPT-5.6 accepts both `xhigh` and `max`,
- * while older Codex models accept only low/medium/high. DeepSeek V4 Pro keeps
- * its existing `max` level; other advanced values fall back safely to `high`.
+ * Advanced levels are model-specific: GPT-5.6 and GPT-6 accept both `xhigh`
+ * and `max`, while older Codex models accept only low/medium/high. DeepSeek V4
+ * Pro keeps its existing `max` level; other advanced values fall back safely
+ * to `high`.
  */
 export function normalizeReasoningEffort(model: string, effort?: ReasoningEffort): ReasoningEffort | undefined {
   if (!effort || !getModelConfig(model).reasoning) return undefined

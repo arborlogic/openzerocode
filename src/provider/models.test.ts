@@ -36,6 +36,15 @@ describe("getKnownModelConfig", () => {
     }
   })
 
+  it("marks provider-prefixed GPT-6 Astra as reasoning-capable", () => {
+    for (const model of ["gpt-6-astra", "openaicodex/gpt-6-astra", "openai/gpt-6-astra"]) {
+      const cfg = getKnownModelConfig(model)
+      assert.ok(cfg, `expected config for ${model}`)
+      assert.equal(cfg.reasoning, true)
+      assert.equal(cfg.vision, true)
+    }
+  })
+
   it("marks every advertised Codex GPT-5.x and GPT-6 model as reasoning-capable", () => {
     for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2"]) {
       const cfg = getKnownModelConfig(model)
@@ -173,6 +182,11 @@ describe("normalizeReasoningEffort", () => {
     assert.equal(normalizeReasoningEffort("openaicodex/gpt-6-luna", "high"), "high")
   })
 
+  it("preserves every GPT-6 Astra reasoning level across providers", () => {
+    assert.equal(normalizeReasoningEffort("openaicodex/gpt-6-astra", "xhigh"), "xhigh")
+    assert.equal(normalizeReasoningEffort("openai/gpt-6-astra", "max"), "max")
+  })
+
   it("downgrades advanced levels for older Codex models", () => {
     assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.5", "max"), "high")
     assert.equal(normalizeReasoningEffort("openaicodex/gpt-5.5", "xhigh"), "high")
@@ -186,6 +200,7 @@ describe("normalizeReasoningEffort", () => {
 
   it("omits reasoning effort for unsupported models", () => {
     assert.equal(normalizeReasoningEffort("gpt-4o", "high"), undefined)
+    assert.equal(normalizeReasoningEffort("grok-4.20-0309-non-reasoning", "high"), undefined)
   })
 })
 

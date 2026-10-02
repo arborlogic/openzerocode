@@ -74,7 +74,7 @@ describe("zero-api provider request serialization", () => {
 
   it("serializes reasoning effort and token controls", async () => {
     const requestBody = await captureCompleteRequest({
-      model: "openaicodex/gpt-5.6-terra",
+      model: "openaicodex/gpt-6-astra",
       messages: [{ role: "user", content: "solve this" }],
       stream: false,
       max_tokens: 4096,
