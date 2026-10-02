@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-10-02
+
+### Added
+
+- Added bundled GitHub issue workflows with safeguards for remote mutations, plus pull request workflows and review guidance that support large diffs.
+- Added GPT-6 Codex model variants and preserved advanced reasoning-effort settings, with medium reasoning and all-turn reasoning context as defaults.
+
+### Changed
+
+- Simplified the runtime to Build mode and streamlined its instructions to prioritize direct workspace changes, focused verification, and concise completion reports.
+- Simplified idle footer status in the TUI.
+- Stopped automatic continuation after provider output limits; partial responses are preserved and output-limit outcomes are surfaced instead.
+
+### Fixed
+
+- Validate tool arguments before execution and return actionable errors for malformed or invalid inputs.
+- Support file paths in `grep` searches and preserve the searched directory in result paths.
+- Recover line-number-prefixed `read` output in edit requests only when the numbered content still matches the target file.
+- Preserve partial assistant output when provider streams fail.
+- Re-sign compiled macOS binaries to prevent code-signature rejection at launch.
+- Tolerate concurrent npm publication when the same package version has already been published.
+- Updated the `brace-expansion` dependency override to version 5.0.12.
+
+### Breaking changes
+
+- Removed Plan and Compose modes. Build is now the only runtime mode; read-only Plan tool restrictions are no longer available.
+- Removed the `/learn` command. Existing Compose skills remain available independently of the removed runtime mode.
+
 ## 0.8.6 - 2026-09-04
 
 ### Fixed
