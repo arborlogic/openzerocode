@@ -4,6 +4,7 @@ import { ToolRegistry } from "../tool/registry"
 import { Provider, type Message, type CompletionResult } from "../provider/types"
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { convertToolsToDefs, convertToolResult } from "./convert"
+import { parseToolArguments } from "../tool/arguments"
 
 export type LoopConfig = {
   model: string
@@ -68,13 +69,26 @@ export function runLoop(
       }
 
       for (const call of toolCalls) {
-        const args = parseToolArgs(call.function.arguments ?? "{}")
         const def = tools.find((t) => t.id === (call.function.name ?? ""))
         if (!def) {
           const tm = createToolMessage({
             tool_call_id: call.id,
             tool: call.function.name,
             output: `Unknown tool: ${call.function.name}`,
+            error: true,
+          })
+          allMessages.push(tm)
+          history.push(tm)
+          continue
+        }
+
+        const parsed = parseToolArguments(def, call.function.arguments)
+        if (!parsed.ok) {
+          const toolContent = convertToolResult(parsed.result)
+          const tm = createToolMessage({
+            tool_call_id: call.id,
+            tool: def.id,
+            output: toolContent.text,
             error: true,
           })
           allMessages.push(tm)
@@ -93,7 +107,7 @@ export function runLoop(
           metadata: () => Effect.void,
         })
 
-        const toolResult = yield* def.execute(args, ctx).pipe(
+        const toolResult = yield* def.execute(parsed.value, ctx).pipe(
           Effect.catchCause((cause) =>
             Effect.succeed(new Result({ title: "Error", output: `Tool error: ${cause}` }))
           ),
@@ -115,12 +129,4 @@ export function runLoop(
   })
 
   return run.pipe(Effect.orDie)
-}
-
-function parseToolArgs(raw: string): Record<string, unknown> {
-  try {
-    return JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    return {}
-  }
 }

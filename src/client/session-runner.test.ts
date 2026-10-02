@@ -1488,6 +1488,70 @@ test("streamSession emits a replan_needed outcome when a single tool error fires
     assert.match(replan.recentErrors[0]?.signature ?? "", /bash::/)
     assert.equal(stepIndex, 3, "expected the third matching failure to terminate the run immediately")
     assert.deepEqual(outcomes.map((outcome) => outcome.kind), ["replan_needed"])
+    assert.match(outcomes[0].reason, /bash failed with the same error 3 times/)
+  } finally {
+    if (previousMaxSteps === undefined) delete process.env.OPENZEROCODE_MAX_STEPS
+    else process.env.OPENZEROCODE_MAX_STEPS = previousMaxSteps
+  }
+})
+
+test("streamSession rejects empty bash arguments clearly, does not start the tool, and stops after three repeats", async () => {
+  const previousMaxSteps = process.env.OPENZEROCODE_MAX_STEPS
+  process.env.OPENZEROCODE_MAX_STEPS = "10"
+  try {
+    let stepIndex = 0
+    let executions = 0
+    const makeStream = () => new ReadableStream({
+      start(controller) {
+        stepIndex++
+        controller.enqueue({
+          delta: {},
+          tool_calls: [{
+            index: 0,
+            id: `invalid_bash_${stepIndex}`,
+            function: { name: "bash", arguments: "{}" },
+          }],
+          finish_reason: "tool_calls",
+        })
+        controller.close()
+      },
+    })
+    const bash = new Def({
+      id: "bash",
+      description: "test bash",
+      parameters: Schema.Struct({ command: Schema.String }),
+      execute: () => {
+        executions++
+        return Effect.succeed(new Result({ title: "Bash", output: "should not execute" }))
+      },
+    })
+
+    const outcomes: any[] = []
+    const chunks: any[] = []
+    const gen = streamSession("hello", [], {
+      abort: new AbortController().signal,
+      model: "test-model",
+      provider: "test-provider",
+      keyName: "test-key",
+      mode: "build",
+      onOutcome: (outcome) => outcomes.push(outcome),
+    }, runtime(makeStream, { tools: [bash] }))
+
+    while (true) {
+      const next = await gen.next()
+      if (next.done) break
+      chunks.push(next.value)
+    }
+
+    assert.equal(executions, 0)
+    assert.equal(stepIndex, 3)
+    assert.equal(chunks.some((chunk) => chunk.type === "tool_start"), false)
+    const errors = chunks.filter((chunk) => chunk.type === "tool_result")
+    assert.equal(errors.length, 3)
+    assert.ok(errors.every((chunk) => chunk.error === true))
+    assert.match(errors[0].output, /Invalid arguments for tool "bash": missing required parameter "command"/)
+    assert.doesNotMatch(errors[0].output, /Cause\(|Die\(/)
+    assert.deepEqual(outcomes.map((outcome) => outcome.kind), ["replan_needed"])
   } finally {
     if (previousMaxSteps === undefined) delete process.env.OPENZEROCODE_MAX_STEPS
     else process.env.OPENZEROCODE_MAX_STEPS = previousMaxSteps

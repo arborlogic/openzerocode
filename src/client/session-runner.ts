@@ -6,6 +6,7 @@ import type { Message, ToolCall, ModelInfo, ReasoningEffort } from "../provider/
 import { createAssistantMessage, createToolMessage } from "../provider/message-parts"
 import { Context, Result } from "../tool/tool"
 import type { PermissionRequest } from "../tool/types"
+import { parseToolArguments } from "../tool/arguments"
 import { convertToolsToDefs, convertToolResult } from "../core/convert"
 import { selectEnabledTools, selectLiteTools } from "../tool/selection"
 import { getHarnessProfile, type HarnessProfile } from "./system-prompt"
@@ -887,8 +888,12 @@ async function* streamSessionImpl(
       if (!def) {
         return Promise.resolve({ call, name, result: null as null })
       }
+      const parsed = parseToolArguments(def, call.function.arguments)
+      if (!parsed.ok) {
+        return Promise.resolve({ call, name, result: parsed.result })
+      }
       return Effect.runPromise(
-        def.execute(runtime.parseJson(call.function.arguments ?? "{}"), new Context({
+        def.execute(parsed.value, new Context({
           abort: options.abort,
           cwd: workdir,
           root: workdir,
@@ -910,7 +915,7 @@ async function* streamSessionImpl(
     const emitToolStart = function* (call: ToolCall) {
       const name = call.function.name ?? "unknown"
       const def = tools.find((tool) => tool.id === name)
-      if (def) {
+      if (def && parseToolArguments(def, call.function.arguments).ok) {
         yield { type: "status" as const, text: `running tool: ${name}` }
         yield { type: "tool_start" as const, id: call.id, name, input: call.function.arguments ?? "" }
       }
@@ -968,7 +973,7 @@ async function* streamSessionImpl(
         let toolContent = convertToolResult(result)
         const isError = result.title === "Error"
         if (isError) {
-          const sig = toolErrorFingerprint(name, toolContent.text)
+          const sig = toolErrorFingerprint(name, result.output)
           toolErrorCounts.set(sig, {
             tool: name,
             signature: sig,
@@ -1002,7 +1007,7 @@ async function* streamSessionImpl(
         }
 
         yield { type: "tool_result", id: finishedCall.id, name, output: toolContent.text, error: isError }
-        const toolMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: toolContent.text, contentParts: toolContent.contentParts })
+        const toolMsg = createToolMessage({ tool_call_id: finishedCall.id, tool: name, output: toolContent.text, error: isError, contentParts: toolContent.contentParts })
         allMessages.push(toolMsg)
         resultHistory.push(toolMsg)
         yield { type: "message", message: toolMsg }
